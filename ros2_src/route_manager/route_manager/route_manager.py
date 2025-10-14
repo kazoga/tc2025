@@ -118,7 +118,7 @@ class RouteManager(Node):
         self.declare_parameter("waiting_deadline_sec", 8.0)
         self.declare_parameter("skip_threshold_m", 0.8)
         self.declare_parameter("avoid_max_retry", 3)
-        self.declare_parameter("offset_step", 0.5)
+        self.declare_parameter("offset_step_m", 0.5)
         self.declare_parameter("state_publish_rate_hz", 1.0)
 
         self.auto_request = self.get_parameter("auto_request_on_startup").value
@@ -126,7 +126,7 @@ class RouteManager(Node):
         self.waiting_deadline_sec = float(self.get_parameter("waiting_deadline_sec").value)
         self.skip_threshold_m = float(self.get_parameter("skip_threshold_m").value)
         self.avoid_max_retry = int(self.get_parameter("avoid_max_retry").value)
-        self.offset_step = float(self.get_parameter("offset_step").value)
+        self.offset_step_m = float(self.get_parameter("offset_step_m").value)
         self.state_publish_rate_hz = float(self.get_parameter("state_publish_rate_hz").value)
 
         # Internal state
@@ -182,18 +182,20 @@ class RouteManager(Node):
 
         wps = self.active_route.waypoints
         current_index = int(req.current_index)
-        if current_index < 0 or current_index >= len(wps):
+        if current_index < 1 or current_index >= len(wps):
             self._set_manager_state("holding")
             self._set_last_decision("failed", "invalid_index")
             res.note = f"invalid current_index={current_index}"
             return res
 
+        prev_wp = wps[current_index - 1]
+        next_wp = wps[current_index]
+
         self.current_index = current_index
-        current_wp = wps[current_index]
-        self.current_label = current_wp.label
+        self.current_label = next_wp.label
 
         # ---- Layer 1: lateral offset replan ---------------------------------
-        offset_hint = self._compute_offset_hint(req, current_wp)
+        offset_hint = self._compute_offset_hint(req, next_wp)
         if offset_hint is not None:
             note = f"replan with lateral offset ({offset_hint:+.2f} m)"
             if self._try_update_route(reason=f"offset_replan:{offset_hint:+.2f}"):
@@ -241,23 +243,23 @@ class RouteManager(Node):
         if not bool(req.last_hint_blocked):
             return None
 
-        left_open = max(float(getattr(target_wp, "left_open", 0.0)), 0.0)
-        right_open = max(float(getattr(target_wp, "right_open", 0.0)), 0.0)
+        left_open = max(float(getattr(next_wp, "left_open", 0.0)), 0.0)
+        right_open = max(float(getattr(next_wp, "right_open", 0.0)), 0.0)
         if left_open <= 0.0 and right_open <= 0.0:
             return None
 
         last_offset = float(req.last_applied_offset_m)
         # Prefer alternating sides depending on the last applied offset.
         if last_offset <= 0.0 and left_open > 0.0:
-            return -float(self.offset_step)
+            return -float(self.offset_step_m)
         if last_offset >= 0.0 and right_open > 0.0:
-            return float(self.offset_step)
+            return float(self.offset_step_m)
 
         # Fallback: pick the side with wider opening.
         if left_open >= right_open and left_open > 0.0:
-            return -float(self.offset_step)
+            return -float(self.offset_step_m)
         if right_open > 0.0:
-            return float(self.offset_step)
+            return float(self.offset_step_m)
         return None
 
     def _can_skip(

@@ -1,0 +1,11 @@
+# route_srvs/srv/ReportStuck.srv
+# route_follower → route_manager への滞留・回避失敗報告
+
+int32 route_version
+int32 current_index
+geometry_msgs/Pose current_pose_map
+string reason
+---
+bool accepted
+string decision
+string note

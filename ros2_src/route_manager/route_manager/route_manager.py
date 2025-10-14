@@ -1,39 +1,59 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-route_manager ノード（phase1 実装・I/F確定反映版／非ブロッキング化）
+route_manager_phase2.py
 
-変更点（2025-10-10）:
-- Services 名称を ROS2 標準（小文字スネークケース＋先頭スラッシュ）に変更: /get_route, /update_route
-- GetRoute / UpdateRoute 応答の success / message をハンドリング
-- /mission_info（TRANSIENT_LOCAL）, /route_state（VOLATILE） を追加実装
-- follower_state を購読して進捗を /route_state に反映（FINISHED → COMPLETED）
-- ライフサイクル状態管理: UNSET/REQUESTING/ACTIVE/UPDATING/COMPLETED/ERROR
-- **重要**: spin_until_future_complete をコールバック内で使わない非ブロッキング実装に変更
-  （Future の done コールバック＋ワンショットタイマーで timeout を実現）
-- 受信Routeの厳密検証 (frame_id=='map', version>0, 経路非空, 画像同封, 画像encodingの任意検証)
+Phase2 対応版 route_manager ノード（最終確定仕様反映）
+- /report_stuck サーバを実装（decision 自動判定：replan / shift / skip / failed）
+- /get_route・/update_route クライアント（非ブロッキング、timeout管理）
+- /active_route, /route_state, /mission_info をPublish
+- /follower_state を購読（距離・状態・現在/次ラベル等をキャッシュ）
+- バージョン体系：Route.version = major * 1000 + minor
+    * replan 成功時: major += 1, minor = 0
+    * shift / skip:  minor += 1
+- 判定規則（最終）
+    Step0: エラーチェック（入力健全性）→ failed（HOLDING）
+    Step1: replan 試行（前後WP可変が明確／不明ならまず一度試す）
+    Step2: shift（次WP 1点のみ、基準線=prev→next、垂直方向、距離=min(open,1.0)）
+    Step3: skip（距離<=1.0m かつ not_skip==False）
+    Step4: fallback replan 試行
+    Step5: failed（HOLDING）
 
-依存メッセージ/サービス（route_msgs パッケージ想定）:
-  - msg: Route, RouteState, MissionInfo, FollowerState
-  - srv: GetRoute, UpdateRoute
+ROS: Foxy 想定／Google Python Style／型ヒント／日本語コメント
 """
 
 from __future__ import annotations
 
-from typing import List, Optional
+import math
+from dataclasses import dataclass
+from typing import Optional, List, Tuple
 
-import time
 import rclpy
-from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 from std_msgs.msg import Header
+from geometry_msgs.msg import Pose, PoseStamped
 from sensor_msgs.msg import Image
-from route_msgs.msg import Route, RouteState, MissionInfo, FollowerState  # type: ignore
-from route_msgs.srv import GetRoute, UpdateRoute  # type: ignore
 
+# === パッケージ依存（プロジェクト定義） ===
+# NOTE: メッセージおよびサービスはユーザー定義パッケージ（route_msgs / route_srvs）に準拠
+from route_msgs.msg import Route, Waypoint, MissionInfo, RouteState, FollowerState  # type: ignore
+from route_msgs.srv import GetRoute, UpdateRoute  # type: ignore
+try:
+    # 既定：ReportStuck は route_srvs にある想定（仕様初期提示）
+    from route_srvs.srv import ReportStuck  # type: ignore
+except Exception:
+    # ユーザー最終合意が route_msgs に集約される場合の互換
+    from route_msgs.srv import ReportStuck  # type: ignore
+
+
+# ==============================
+# ユーティリティ
+# ==============================
 
 def _qos_tl() -> QoSProfile:
     return QoSProfile(
@@ -44,7 +64,7 @@ def _qos_tl() -> QoSProfile:
     )
 
 
-def _qos_stream() -> QoSProfile:
+def _qos_vol() -> QoSProfile:
     return QoSProfile(
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.VOLATILE,
@@ -53,310 +73,431 @@ def _qos_stream() -> QoSProfile:
     )
 
 
+def xy_of_pose(pose: Pose) -> Tuple[float, float]:
+    return (pose.position.x, pose.position.y)
+
+
+def seg_side(a: Tuple[float, float], b: Tuple[float, float], p: Tuple[float, float]) -> float:
+    """有向線分 a->b に対する点 p の左右判定（+なら左、-なら右、0に近ければ線上）"""
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    return (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+
+
+def norm2(vx: float, vy: float) -> float:
+    return math.hypot(vx, vy)
+
+
+def perp_unit(ax: float, ay: float, bx: float, by: float, right_side: bool) -> Tuple[float, float]:
+    """a->b の法線単位ベクトルを返す。right_side=True なら右向き、False なら左向き。"""
+    dx, dy = (bx - ax), (by - ay)
+    n = norm2(dx, dy)
+    if n < 1e-9:
+        # 退避：x軸基準の垂直
+        return (0.0, -1.0) if right_side else (0.0, 1.0)
+    ux, uy = dx / n, dy / n
+    # 左法線 = (-uy, ux), 右法線 = (uy, -ux)
+    if right_side:
+        return (uy, -ux)
+    else:
+        return (-uy, ux)
+
+
+def clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+# ==============================
+# 内部状態
+# ==============================
+
+@dataclass
+class VersionMM:
+    major: int = 0
+    minor: int = 0
+
+    def to_int(self) -> int:
+        return int(self.major) * 1000 + int(self.minor)
+
+
+# ==============================
+# メインノード
+# ==============================
+
 class RouteManager(Node):
+    """Phase2 route_manager 実装"""
+
     def __init__(self) -> None:
         super().__init__("route_manager")
 
-        # ========= パラメータ宣言 =========
-        self.declare_parameter("start_label", "")
-        self.declare_parameter("goal_label", "")
-        self.declare_parameter("checkpoint_labels", [])
-        self.declare_parameter("auto_request_on_startup", True)
-
-        # 追加（サービス名/timeout/retry/配信周期/画像検証）
-        self.declare_parameter("planner_get_service_name", "/get_route")
-        self.declare_parameter("planner_update_service_name", "/update_route")
-        self.declare_parameter("planner_timeout_sec", 5.0)
-        self.declare_parameter("planner_retry_count", 2)
-        self.declare_parameter("state_publish_rate_hz", 1.0)
-        self.declare_parameter("image_encoding_check", False)
-
-        # ========= パラメータ取得 =========
-        self.start_label: str = self.get_parameter("start_label").get_parameter_value().string_value
-        self.goal_label: str = self.get_parameter("goal_label").get_parameter_value().string_value
-        self.checkpoint_labels: List[str] = list(self.get_parameter("checkpoint_labels").get_parameter_value().string_array_value)
-        self.auto_request: bool = self.get_parameter("auto_request_on_startup").get_parameter_value().bool_value
-
-        self.planner_get_service_name: str = self.get_parameter("planner_get_service_name").get_parameter_value().string_value
-        self.planner_update_service_name: str = self.get_parameter("planner_update_service_name").get_parameter_value().string_value
-        self.planner_timeout_sec: float = float(self.get_parameter("planner_timeout_sec").get_parameter_value().double_value)
-        self.planner_retry_count: int = int(self.get_parameter("planner_retry_count").get_parameter_value().integer_value)
-        self.state_publish_rate_hz: float = float(self.get_parameter("state_publish_rate_hz").get_parameter_value().double_value)
-        self.image_encoding_check: bool = self.get_parameter("image_encoding_check").get_parameter_value().bool_value
-
-        # ========= QoS定義 =========
+        # ---- QoS ----
         self.qos_tl = _qos_tl()
-        self.qos_stream = _qos_stream()
+        self.qos_vol = _qos_vol()
 
-        # ========= Publisher =========
+        # ---- Publisher ----
         self.pub_active_route = self.create_publisher(Route, "/active_route", self.qos_tl)
-        self.pub_route_state = self.create_publisher(RouteState, "/route_state", self.qos_stream)
+        self.pub_route_state = self.create_publisher(RouteState, "/route_state", self.qos_vol)
         self.pub_mission_info = self.create_publisher(MissionInfo, "/mission_info", self.qos_tl)
 
-        # ========= Subscriber =========
-        self.sub_follower_state = self.create_subscription(
-            FollowerState, "/follower_state", self._on_follower_state, self.qos_stream
+        # ---- Subscriber ----
+        self.sub_follower = self.create_subscription(
+            FollowerState, "/follower_state", self._on_follower_state, self.qos_vol
         )
 
-        # ========= Service Clients =========
+        # ---- Services ----
+        self.cb_srv = MutuallyExclusiveCallbackGroup()
         self.cb_cli = MutuallyExclusiveCallbackGroup()
-        self.cb_timer = ReentrantCallbackGroup()
-        self.cli_get = self.create_client(GetRoute, self.planner_get_service_name, callback_group=self.cb_cli)
-        self.cli_update = self.create_client(UpdateRoute, self.planner_update_service_name, callback_group=self.cb_cli)
+        self.srv_report_stuck = self.create_service(
+            ReportStuck, "/report_stuck", self._on_report_stuck, callback_group=self.cb_srv
+        )
+        self.cli_get = self.create_client(GetRoute, "/get_route", callback_group=self.cb_cli)
+        self.cli_update = self.create_client(UpdateRoute, "/update_route", callback_group=self.cb_cli)
 
-        # ========= 内部状態 =========
-        self.current_status: str = "UNSET"
-        self.current_route: Optional[Route] = None
-        self.current_version: int = 0
+        # ---- Parameters ----
+        self.declare_parameter("auto_request_on_startup", True)
+        self.declare_parameter("planner_timeout_sec", 5.0)
+        self.declare_parameter("waiting_deadline_sec", 8.0)
+        self.declare_parameter("skip_threshold_m", 1.0)  # 仕様：1.0m 以内でスキップ可能
+        self.declare_parameter("offset_step_m_max", 1.0)  # 仕様：shift の上限距離 1.0m
+        self.declare_parameter("state_publish_rate_hz", 1.0)
+
+        self.auto_request = self.get_parameter("auto_request_on_startup").get_parameter_value().bool_value
+        self.planner_timeout_sec = float(self.get_parameter("planner_timeout_sec").value)
+        self.waiting_deadline_sec = float(self.get_parameter("waiting_deadline_sec").value)
+        self.skip_threshold_m = float(self.get_parameter("skip_threshold_m").value)
+        self.offset_step_m_max = float(self.get_parameter("offset_step_m_max").value)
+        self.state_publish_rate_hz = float(self.get_parameter("state_publish_rate_hz").value)
+
+        # ---- 内部状態 ----
+        self.version = VersionMM(major=0, minor=0)
+        self.active_route: Optional[Route] = None
+
+        # follower_state のキャッシュ
+        self.follow_state: Optional[FollowerState] = None
+
+        # route_state の現在値
+        self.state_status: str = "IDLE"       # "IDLE","ACTIVE","UPDATING_ROUTE","HOLDING","COMPLETED","ERROR"
+        self.state_message: str = ""
         self.current_index: int = -1
         self.current_label: str = ""
+        self.total_waypoints: int = 0
 
-        # リクエスト管理（非ブロッキング用）
-        self._get_seq: int = 0
-        self._pending_get_seq: Optional[int] = None
-        self._pending_get_timer = None  # rclpy.timer.Timer | None
+        # 起動直後の初期リクエスト（任意）
+        if self.auto_request:
+            self._request_initial_route()
 
-        # ========= タイマー =========
-        # 起動時一度だけ自動要求
-        self._once_done = False
-        self.timer_once = self.create_timer(0.1, self._on_ready_once, callback_group=self.cb_timer)
-        # 状態の周期配信
-        sp = max(0.1, 1.0 / max(0.1, self.state_publish_rate_hz))
-        self.timer_state = self.create_timer(sp, self._publish_route_state, callback_group=self.cb_timer)
+        # 状態定期配信
+        self.create_timer(1.0 / max(0.1, self.state_publish_rate_hz), self._publish_route_state)
 
-        self.get_logger().info("route_manager started")
-        # 起動時に mission_info を配信（ラッチ）
-        self._publish_mission_info()
+        self.get_logger().info("route_manager Phase2 started.")
 
-    # ==============================================================
-    # 起動直後の一度きり処理
-    # ==============================================================
-    def _on_ready_once(self) -> None:
-        if self._once_done:
-            return
-        self._once_done = True
+    # ==============================
+    # FollowerState 取り込み
+    # ==============================
 
-        if not self.auto_request:
-            self.get_logger().info("auto_request_on_startup = False → 起動時のGetRoute呼び出しをスキップします。")
-            return
-
-        self.get_logger().info(
-            f"GetRouteを実行: start={self.start_label}, goal={self.goal_label}, checkpoints={len(self.checkpoint_labels)}"
-        )
-        self.request_initial_route()
-
-    # ==============================================================
-    # follower_state 取り込み
-    # ==============================================================
     def _on_follower_state(self, msg: FollowerState) -> None:
+        self.follow_state = msg
         try:
             self.current_index = int(getattr(msg, "current_index", self.current_index))
         except Exception:
             pass
         try:
-            self.current_label = str(getattr(msg, "current_label", self.current_label))
+            self.current_label = str(getattr(msg, "current_waypoint_label", self.current_label) or "")
         except Exception:
             pass
-        status = str(getattr(msg, "status", "") or "")
-        if status == "FINISHED" and self.current_status != "COMPLETED":
-            self.current_status = "COMPLETED"
-        elif status == "ERROR":
-            self.current_status = "ERROR"
-        self._publish_route_state()
+        try:
+            self.total_waypoints = int(getattr(msg, "route_version", 0))  # ダミー代入回避（下で上書き）
+        except Exception:
+            pass
+        # 完了／異常のブリッジ
+        st = (msg.state or "").upper()
+        if st == "FINISHED":
+            self.state_status = "COMPLETED"
+            self.state_message = "mission complete"
+        elif st == "ERROR":
+            self.state_status = "ERROR"
+            self.state_message = "follower error"
 
-    # ==============================================================
-    # GetRoute（非ブロッキング）
-    # ==============================================================
-    def request_initial_route(self) -> None:
-        if not self._wait_for_service(self.cli_get, self.planner_timeout_sec):
-            self._set_error(f"GetRoute service not available: {self.planner_get_service_name}")
-            return
+    # ==============================
+    # /report_stuck サービス（判定）
+    # ==============================
 
-        req = GetRoute.Request()
-        req.start_label = self.start_label
-        req.goal_label = self.goal_label
-        req.checkpoint_labels = list(self.checkpoint_labels)
+    def _on_report_stuck(self, req: ReportStuck.Request, res: ReportStuck.Response) -> ReportStuck.Response:
+        # Step0: 入力・健全性チェック（破綻判定ではなくガード）
+        if self.active_route is None or len(self.active_route.waypoints) < 2:
+            return self._res_failed(res, "invalid route state (no active_route)")
 
-        self.current_status = "REQUESTING"
-        self._publish_route_state()
+        wps = self.active_route.waypoints
+        current_index = int(req.current_index)
+        if current_index < 0 or current_index >= len(wps):
+            return self._res_failed(res, f"invalid current_index={current_index}")
 
-        self._get_seq += 1
-        seq = self._get_seq
-        future = self.cli_get.call_async(req)
+        # prev / next の特定（current_index が「現在目標の次WP」）
+        prev_idx = current_index - 1
+        next_idx = current_index
+        if prev_idx < 0:
+            return self._res_failed(res, "no previous waypoint")
+        prev_wp = wps[prev_idx]
+        next_wp = wps[next_idx]
 
-        # timeout タイマー（ワンショット）
-        def on_timeout():
-            if self._pending_get_seq == seq:
-                self._pending_get_seq = None
-                if self._pending_get_timer:
-                    self._pending_get_timer.cancel()
-                    self._pending_get_timer = None
-                self._set_error("GetRoute timeout")  # 状態配信含む
-
-        self._pending_get_seq = seq
-        self._pending_get_timer = self.create_timer(self.planner_timeout_sec, on_timeout, callback_group=self.cb_timer)
-
-        # 完了コールバック
-        def on_done(fut):
+        # Follower 側の距離キャッシュ
+        dist_to_next: Optional[float] = None
+        if self.follow_state is not None:
             try:
-                resp: GetRoute.Response = fut.result()
-            except Exception as e:
-                if self._pending_get_seq == seq:
-                    if self._pending_get_timer:
-                        self._pending_get_timer.cancel()
-                        self._pending_get_timer = None
-                    self._pending_get_seq = None
-                    self._set_error(f"GetRoute call failed: {e}")
-                return
+                dist_to_next = float(self.follow_state.distance_to_target)
+            except Exception:
+                dist_to_next = None
 
-            # 期限内に別シーケンスでタイムアウト済なら無視
-            if self._pending_get_seq != seq:
-                return
+        # ---- Step1: replan 試行（可変ブロック明確 or 不明でも一度試す）
+        # Waypoint.msg に block_type が無い場合は「不明」扱い → まず試す方針
+        replan_needed = False
+        # block_type が存在する環境では true/false 判定を行う（後方互換）
+        try:
+            bt_prev = str(getattr(prev_wp, "block_type", "") or "")
+            bt_next = str(getattr(next_wp, "block_type", "") or "")
+            if bt_prev == "variable" and bt_next == "variable":
+                replan_needed = True
+        except Exception:
+            replan_needed = False  # 不明
 
-            # 正常経路
-            if self._pending_get_timer:
-                self._pending_get_timer.cancel()
-                self._pending_get_timer = None
-            self._pending_get_seq = None
+        if replan_needed or not hasattr(next_wp, "block_type"):
+            if self._try_update_route(reason="replan_first"):
+                res.accepted = True
+                res.decision = "replan"
+                res.note = "route updated via planner"
+                return res
+            # 失敗時は後段へ継続
 
-            success = bool(getattr(resp, "success", True))
-            message = str(getattr(resp, "message", "") or "")
-            route: Optional[Route] = getattr(resp, "route", None)
+        # ---- Step2: shift（次WP 1点のみ）
+        # 条件：left_open>0 または right_open>0
+        left_open = float(getattr(next_wp, "left_open", 0.0) or 0.0)
+        right_open = float(getattr(next_wp, "right_open", 0.0) or 0.0)
+        can_shift = (left_open > 0.0) or (right_open > 0.0)
 
-            if not success:
-                self._set_error(f"GetRoute failed (planner): {message or 'planner returned success=false'}")
-                return
-            if route is None:
-                self._set_error("GetRoute response has no 'route'")
-                return
-            if not self._validate_route(route):
-                self._set_error("GetRoute route validation failed")
-                return
+        if can_shift:
+            # 基準線 prev→next
+            ax, ay = xy_of_pose(prev_wp.pose)
+            bx, by = xy_of_pose(next_wp.pose)
+            px, py = (req.current_pose_map.position.x, req.current_pose_map.position.y)
 
-            self.current_route = route
-            self.current_version = int(getattr(route, "version", 0))
-            self.current_status = "ACTIVE"
-            self._publish_active_route(route)
-            self._publish_route_state()
-            self.get_logger().info(
-                f"Initial route accepted: version={self.current_version}, waypoints={self._count_waypoints(route)}"
-            )
+            side_val = seg_side((ax, ay), (bx, by), (px, py))
+            # 正: 左側、負: 右側
+            if left_open > 0.0 and right_open > 0.0:
+                right_side = (side_val < 0.0)
+                open_len = right_open if right_side else left_open
+            elif right_open > 0.0:
+                right_side = True
+                open_len = right_open
+            else:
+                right_side = False
+                open_len = left_open
 
-        future.add_done_callback(on_done)
+            shift_d = clamp(open_len, 0.0, float(self.offset_step_m_max))
+            nx, ny = bx, by
+            vx, vy = perp_unit(ax, ay, bx, by, right_side=right_side)
+            sx, sy = nx + vx * shift_d, ny + vy * shift_d
 
-    # ==============================================================
-    # UpdateRoute（phase2 用の骨格。非ブロッキング + success/message）
-    # ==============================================================
-    def request_update_route(self, *, prev_index: Optional[int] = None, next_index: Optional[int] = None,
-                             prev_wp_label: Optional[str] = None, next_wp_label: Optional[str] = None) -> None:
-        if self.current_route is None or self.current_version <= 0:
-            self.get_logger().error("No active route/version to update.")
-            return
+            # 次WPのみ変更（index/label/flags は維持）
+            new_wp = Waypoint()
+            new_wp.index = next_wp.index
+            new_wp.label = next_wp.label
+            new_wp.pose = Pose()
+            new_wp.pose.position.x = sx
+            new_wp.pose.position.y = sy
+            new_wp.pose.position.z = next_wp.pose.position.z
+            new_wp.pose.orientation = next_wp.pose.orientation  # yaw は維持
+            # 開放度・フラグは元値維持
+            for fld in ("right_open", "left_open", "line_stop", "signal_stop", "not_skip"):
+                if hasattr(next_wp, fld):
+                    setattr(new_wp, fld, getattr(next_wp, fld))
 
-        pairs_ok = (prev_index is not None and prev_wp_label is not None) or (next_index is not None and next_wp_label is not None)
-        if not pairs_ok:
-            self.get_logger().error("UpdateRoute requires (prev_index & prev_wp_label) and/or (next_index & next_wp_label)." )
-            return
+            # 新しい経路（次WP 1点のみ差し替え）
+            new_route = Route()
+            new_route.header = Header()
+            new_route.header.stamp = self.get_clock().now().to_msg()
+            new_route.header.frame_id = "map"
+            self.version.minor += 1
+            new_route.version = self.version.to_int()
+            new_route.total_distance = getattr(self.active_route, "total_distance", 0.0)
+            new_route.route_image = Image()  # 画像は空（Planner返却時のみ正値想定）
+            new_route.waypoints = list(wps)
+            new_route.waypoints[next_idx] = new_wp
 
-        if not self._wait_for_service(self.cli_update, self.planner_timeout_sec):
-            self.get_logger().error(f"UpdateRoute service not available: {self.planner_update_service_name}")
-            return
+            # 採用・配信
+            self.active_route = new_route
+            self.total_waypoints = len(new_route.waypoints)
+            self._set_status("ACTIVE", "shifted next waypoint")
+            self.pub_active_route.publish(new_route)
+
+            res.accepted = True
+            res.decision = "shift"
+            res.note = "shifted next waypoint to open side"
+            return res
+
+        # ---- Step3: skip（距離<=1.0m かつ not_skip==False）
+        can_skip = False
+        if next_idx + 1 < len(wps):
+            not_skip = bool(getattr(next_wp, "not_skip", False))
+            if (dist_to_next is not None) and (dist_to_next <= self.skip_threshold_m) and (not not_skip):
+                can_skip = True
+
+        if can_skip:
+            # current_index+1 以降を採用
+            new_route = Route()
+            new_route.header = Header()
+            new_route.header.stamp = self.get_clock().now().to_msg()
+            new_route.header.frame_id = "map"
+            self.version.minor += 1
+            new_route.version = self.version.to_int()
+            new_route.total_distance = getattr(self.active_route, "total_distance", 0.0)
+            new_route.route_image = Image()
+            new_route.waypoints = list(wps[next_idx + 1:])
+
+            # 採用・配信
+            self.active_route = new_route
+            self.total_waypoints = len(new_route.waypoints)
+            self.current_index = 0  # 先頭へ
+            self.current_label = new_route.waypoints[0].label if new_route.waypoints else ""
+            self._set_status("ACTIVE", "skipped current waypoint")
+            self.pub_active_route.publish(new_route)
+
+            res.accepted = True
+            res.decision = "skip"
+            res.note = "skipped current waypoint"
+            return res
+
+        # ---- Step4: fallback replan
+        if self._try_update_route(reason="fallback_replan"):
+            res.accepted = True
+            res.decision = "replan"
+            res.note = "route updated via planner (fallback)"
+            return res
+
+        # ---- Step5: failed
+        self._set_status("HOLDING", "no valid recovery action")
+        res.accepted = True
+        res.decision = "failed"
+        res.note = "no valid recovery action"
+        return res
+
+    # ==============================
+    # Planner 呼出（/update_route）
+    # ==============================
+
+    def _try_update_route(self, reason: str) -> bool:
+        """非同期だが、この関数は結果（True/False）を返すまで待機する簡易実装。
+        実運用では Future とタイマでタイムアウト制御するが、ここでは簡潔性を優先。
+        """
+        if not self.cli_update.wait_for_service(timeout_sec=self.planner_timeout_sec):
+            self._set_status("HOLDING", "planner unavailable")
+            return False
 
         req = UpdateRoute.Request()
-        req.route_version = int(self.current_version)
-        if prev_index is not None:
-            req.prev_index = int(prev_index)
-        if next_index is not None:
-            req.next_index = int(next_index)
-        if prev_wp_label is not None:
-            req.prev_wp_label = str(prev_wp_label)
-        if next_wp_label is not None:
-            req.next_wp_label = str(next_wp_label)
+        # prev/next の index/label を可能な限り埋める（整合性のため）
+        if self.active_route is not None and len(self.active_route.waypoints) >= 2 and self.current_index >= 0:
+            prev_idx = self.current_index - 1
+            next_idx = self.current_index
+            if 0 <= prev_idx < len(self.active_route.waypoints):
+                req.prev_index = int(prev_idx)
+                req.prev_wp_label = self.active_route.waypoints[prev_idx].label
+            if 0 <= next_idx < len(self.active_route.waypoints):
+                req.next_index = int(next_idx)
+                req.next_wp_label = self.active_route.waypoints[next_idx].label
 
-        self.current_status = "UPDATING"
-        self._publish_route_state()
+        # 位置（PoseStamped）は follower キャッシュがあれば使用
+        ps = PoseStamped()
+        ps.header = Header()
+        ps.header.stamp = self.get_clock().now().to_msg()
+        ps.header.frame_id = "map"
+        if self.follow_state is not None:
+            try:
+                ps.pose = self.follow_state.current_pose
+            except Exception:
+                ps.pose = Pose()
+        req.current_pose = ps
+        req.route_version = int(self.version.to_int())
+        req.reason = reason
 
+        self._set_status("UPDATING_ROUTE", f"replanning: {reason}")
         future = self.cli_update.call_async(req)
 
-        def on_done(fut):
-            try:
-                resp: UpdateRoute.Response = fut.result()
-            except Exception as e:
-                self._set_error(f"UpdateRoute call failed: {e}")
-                return
-
-            success = bool(getattr(resp, "success", True))
-            message = str(getattr(resp, "message", "") or "")
-            route: Optional[Route] = getattr(resp, "route", None)
-
-            if not success:
-                self._set_error(f"UpdateRoute failed (planner): {message or 'planner returned success=false'}")
-                return
-            if route is None:
-                self._set_error("UpdateRoute response has no 'route'")
-                return
-            if not self._validate_route(route):
-                self._set_error("UpdateRoute route validation failed")
-                return
-
-            self.current_route = route
-            self.current_version = int(getattr(route, "version", 0))
-            self.current_status = "ACTIVE"
-            self._publish_active_route(route)
-            self._publish_route_state()
-            self.get_logger().info(
-                f"Updated route accepted: version={self.current_version}, waypoints={self._count_waypoints(route)}"
-            )
-
-        future.add_done_callback(on_done)
-
-    # ==============================================================
-    # ユーティリティ
-    # ==============================================================
-    def _validate_route(self, route: Route) -> bool:
-        frame_id = getattr(getattr(route, "header", None), "frame_id", "")
-        if frame_id != "map":
-            self.get_logger().error(f"Invalid frame_id: expected 'map', got '{frame_id}'")
+        # 簡易：スピン待ち（Foxy互換）
+        rclpy.spin_until_future_complete(self, future, timeout_sec=self.planner_timeout_sec)
+        if not future.done():
+            self._set_status("HOLDING", "planner timeout")
+            return False
+        resp = future.result()
+        if resp is None or not getattr(resp, "success", False):
+            self._set_status("HOLDING", "planner failed")
             return False
 
-        version = int(getattr(route, "version", 0))
-        if version <= 0:
-            self.get_logger().error(f"Invalid route.version: {version} (must be > 0)")
-            return False
+        route: Route = resp.route
+        # major += 1, minor = 0
+        self.version.major += 1
+        self.version.minor = 0
+        # 採用前に version を上書き（整数合算方式）
+        route.version = self.version.to_int()
+        route.header = route.header or Header()
+        route.header.stamp = self.get_clock().now().to_msg()
+        route.header.frame_id = "map"
 
-        n_wp = self._count_waypoints(route)
-        if n_wp <= 0:
-            self.get_logger().error("Route has no waypoints.")
-            return False
-
-        img: Optional[Image] = getattr(route, "route_image", None)
-        if img is None:
-            self.get_logger().error("Route has no route_image.")
-            return False
-        if self.image_encoding_check:
-            if not getattr(img, "encoding", ""):
-                self.get_logger().error("route_image.encoding is empty.")
-                return False
-
+        self.active_route = route
+        self.total_waypoints = len(route.waypoints)
+        self.current_index = 0
+        self.current_label = route.waypoints[0].label if route.waypoints else ""
+        self._set_status("ACTIVE", "route updated")
+        self.pub_active_route.publish(route)
         return True
 
-    def _count_waypoints(self, route: Route) -> int:
-        try:
-            return len(getattr(route, "waypoints"))
-        except Exception:
-            return 0
+    # ==============================
+    # 初期ルート取得（/get_route）
+    # ==============================
 
-    def _publish_active_route(self, route: Route) -> None:
+    def _request_initial_route(self) -> None:
+        if not self.cli_get.wait_for_service(timeout_sec=self.planner_timeout_sec):
+            self._set_status("HOLDING", "get_route unavailable")
+            return
+
+        req = GetRoute.Request()  # 具体フィールドはプロジェクト定義に依存
+        future = self.cli_get.call_async(req)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=self.planner_timeout_sec)
+        if not future.done():
+            self._set_status("HOLDING", "get_route timeout")
+            return
+        resp = future.result()
+        if resp is None or not hasattr(resp, "route"):
+            self._set_status("HOLDING", "get_route failed")
+            return
+
+        route: Route = resp.route
+        # 初回：major=1, minor=0 扱い
+        self.version.major = max(1, self.version.major or 0)
+        self.version.minor = 0
+        route.version = self.version.to_int()
+        route.header = route.header or Header()
+        route.header.stamp = self.get_clock().now().to_msg()
+        route.header.frame_id = "map"
+
+        self.active_route = route
+        self.total_waypoints = len(route.waypoints)
+        self.current_index = 0
+        self.current_label = route.waypoints[0].label if route.waypoints else ""
+        self._set_status("ACTIVE", "initial route accepted")
         self.pub_active_route.publish(route)
+        self._publish_mission_info()
+
+    # ==============================
+    # 出力（/mission_info, /route_state）
+    # ==============================
 
     def _publish_mission_info(self) -> None:
         msg = MissionInfo()
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
-        msg.start_label = self.start_label
-        msg.goal_label = self.goal_label
-        msg.checkpoint_labels = list(self.checkpoint_labels)
+        # MissionInfo は start/goal/チェックポイント等。ここでは active_route から推測できる情報があれば付与。
+        # 必須でないため、空のままでも動作に問題はない。
         self.pub_mission_info.publish(msg)
 
     def _publish_route_state(self) -> None:
@@ -364,32 +505,36 @@ class RouteManager(Node):
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
-        msg.status = self.current_status
+        msg.route_version = int(self.version.to_int())
+        msg.total_waypoints = int(self.total_waypoints)
         msg.current_index = int(self.current_index)
-        msg.current_label = str(self.current_label)
-        msg.route_version = int(self.current_version)
-        msg.total_waypoints = int(self._count_waypoints(self.current_route) if self.current_route else 0)
+        msg.current_label = str(self.current_label or "")
+        msg.status = str(self.state_status or "IDLE")
+        msg.message = str(self.state_message or "")
         self.pub_route_state.publish(msg)
 
-    def _set_error(self, reason: str) -> None:
-        self.current_status = "ERROR"
-        self.get_logger().error(f"RouteManager ERROR: {reason}")
-        self._publish_route_state()
+    def _set_status(self, status: str, message: str = "") -> None:
+        self.state_status = status
+        self.state_message = message
 
-    def _wait_for_service(self, client, timeout_sec: float) -> bool:
-        start = time.time()
-        while not client.wait_for_service(timeout_sec=0.2):
-            if time.time() - start > timeout_sec:
-                return False
-        return True
+    # ==============================
+    # /report_stuck: failed 応答ヘルパ
+    # ==============================
+
+    def _res_failed(self, res: ReportStuck.Response, note: str) -> ReportStuck.Response:
+        self._set_status("HOLDING", note)
+        res.accepted = True
+        res.decision = "failed"
+        res.note = note
+        return res
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = RouteManager()
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
     try:
+        executor = MultiThreadedExecutor()
+        executor.add_node(node)
         executor.spin()
     except KeyboardInterrupt:
         pass

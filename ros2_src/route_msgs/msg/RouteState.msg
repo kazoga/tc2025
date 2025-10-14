@@ -5,7 +5,7 @@ int32 route_version
 int32 total_waypoints
 int32 current_index
 string current_label
-string status    # "UNSET","ACTIVE","UPDATING","COMPLETED","ERROR"
+string status    # "IDLE","RUNNING","UPDATING_ROUTE","HOLDING"
 string message
 
 

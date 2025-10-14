@@ -71,26 +71,23 @@ ros2 launch route_manager route_manager.launch.py start_label:=A1 goal_label:=B5
 ## 主なパラメータ
 | 名称 | 型 | 既定値 | 概要 |
 |------|----|--------|------|
-| `start_label` | str | "" | 出発ノードラベル(未指定の場合は先頭から開始) |
-| `goal_label` | str | "" | 目的ノードラベル(未指定の場合は末尾まで継続) |
-| `planner_get_service_name` | str | "/get_route" | 経路取得サービス名 |
-| `planner_update_service_name` | str | "/update_route" | 経路更新サービス名 |
-| `planner_timeout_sec` | float | 5.0 | サービス呼出タイムアウト |
-| `planner_retry_count` | int | 3 | 再試行回数 |
-| `publish_rate_hz` | float | 1.0 | 状態更新周期 |
-| `auto_request_on_startup` | bool | True | 起動直後に経路要求を自動実行するか |
+| `auto_request_on_startup` | bool | True | 起動時に `/get_route` を自動呼び出すか |
+| `planner_timeout_sec` | float | 5.0 | `/get_route` `/update_route` のタイムアウト秒 |
+| `waiting_deadline_sec` | float | 8.0 | follower が WAITING_REROUTE で待機できる上限 |
+| `skip_threshold_m` | float | 0.8 | スキップ判定時の次WP距離閾値 |
+| `avoid_max_retry` | int | 3 | follower 側の回避試行許容回数 |
+| `offset_step` | float | 0.5 | 左右オフセット再計画で用いるステップ幅 |
+| `state_publish_rate_hz` | float | 1.0 | `/route_state` Publish 周期 |
 
 ---
 
 ## 状態遷移
 | 状態 | 概要 |
 |------|------|
-| UNSET | 初期状態 |
-| REQUESTING | 経路要求中（内部状態） |
-| ACTIVE | 経路有効 |
-| UPDATING | 更新要求中（phase2以降で使用） |
-| COMPLETED | 更新完了（phase2以降で使用） |
-| ERROR | エラー発生時 |
+| IDLE | 初期状態／経路未設定 |
+| RUNNING | 経路追従中（通常運用） |
+| UPDATING_ROUTE | 再計画・スキップ判定中 |
+| HOLDING | planner 失敗や通信断で保留中 |
 
 ---
 

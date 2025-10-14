@@ -92,9 +92,9 @@ dy2 =  sin(yaw)*forward
 
 | 項目 | 値 |
 |------|----|
-| サービス型 | route_srvs/ReportStuck |
-| リクエスト | route_version:int32, current_index:int32, current_pose_map:Pose, reason:string |
-| レスポンス | accepted:bool, decision:string(replan/skip/failed), note:string |
+| サービス型 | route_msgs/srv/ReportStuck |
+| リクエスト | route_version:int32, current_index:int32, current_wp_label:string, current_pose_map:Pose, reason:string, avoid_trial_count:uint32, last_hint_blocked:bool, last_applied_offset_m:float |
+| レスポンス | decision:uint8(1=replan/2=skip/3=failed), waiting_deadline:Duration, offset_hint:float, note:string |
 | 呼出方式 | 同期（timeout=30s） |
 | decision処理 | replan/skip→WAITING_REROUTE, failed→ERROR |
 

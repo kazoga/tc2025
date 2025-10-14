@@ -10,6 +10,7 @@ find_package(builtin_interfaces REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FollowerState.msg"
+  "msg/ManagerStatus.msg"
   "msg/MissionInfo.msg"
   "msg/Route.msg"
   "msg/RouteState.msg"

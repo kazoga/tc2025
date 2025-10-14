@@ -60,6 +60,11 @@ from route_msgs.msg import Route, Waypoint, FollowerState, ObstacleAvoidanceHint
 from route_msgs.srv import ReportStuck  # type: ignore
 
 
+DECISION_REPLAN = 1
+DECISION_SKIP = 2
+DECISION_FAILED = 3
+
+
 # ===============================
 # QoS ヘルパ
 # ===============================
@@ -217,9 +222,11 @@ class RouteFollower(Node):
         self._avoid_active: bool = False
         self._avoid_subgoals: Deque[Tuple[str, Pose]] = deque()  # (label, pose)
         self._avoid_attempt_count: int = 0
+        self._last_applied_offset_m: float = 0.0
 
         # WAITING_REROUTE タイマ
         self._reroute_wait_start: Optional[float] = None
+        self._reroute_wait_deadline: Optional[float] = None
 
         # Hint キャッシュ
         self._hint_cache: Deque[HintSample] = deque()
@@ -231,6 +238,8 @@ class RouteFollower(Node):
         # WARNデバウンス
         self._last_pose_warn_time: float = 0.0
         self._warn_interval_s: float = 2.0
+
+        self._last_stagnation_reason: str = ""
 
         # ===== Pub/Sub/Service =====
         self.sub_route = self.create_subscription(Route, "/active_route", self._on_route, self.qos_tl)
@@ -328,6 +337,9 @@ class RouteFollower(Node):
             self._avoid_active = False
             self._avoid_subgoals.clear()
             self._reroute_wait_start = None
+            self._reroute_wait_deadline = None
+            self._last_applied_offset_m = 0.0
+            self._last_stagnation_reason = ""
             try:
                 self._route_version = int(getattr(new, "version", -1))
             except Exception:
@@ -357,17 +369,24 @@ class RouteFollower(Node):
                     self._avoid_attempt_count = 0
                     self._avoid_active = False
                     self._avoid_subgoals.clear()
+                    self._last_applied_offset_m = 0.0
                     self._publish_target_pose(self._wp_list[self._index].pose)
                     self._change_state(FollowerStatus.RUNNING)
                 else:
                     self._change_state(FollowerStatus.FINISHED)
 
         # 3) WAITING_REROUTE のタイムアウト
-        if self._status == FollowerStatus.WAITING_REROUTE and self._reroute_wait_start is not None:
-            elapsed = time.time() - self._reroute_wait_start
-            if elapsed > float(self.get_parameter("reroute_timeout_sec").value):
-                self.get_logger().warn("WAITING_REROUTE timeout. Transition to ERROR.")
-                self._change_state(FollowerStatus.ERROR)
+        if self._status == FollowerStatus.WAITING_REROUTE:
+            now = time.time()
+            if self._reroute_wait_deadline is not None:
+                if now >= self._reroute_wait_deadline:
+                    self.get_logger().warn("WAITING_REROUTE deadline reached. Transition to ERROR.")
+                    self._change_state(FollowerStatus.ERROR)
+            elif self._reroute_wait_start is not None:
+                elapsed = now - self._reroute_wait_start
+                if elapsed > float(self.get_parameter("reroute_timeout_sec").value):
+                    self.get_logger().warn("WAITING_REROUTE timeout. Transition to ERROR.")
+                    self._change_state(FollowerStatus.ERROR)
 
         # 4) RUNNING / AVOIDING 動作
         if self._status in (FollowerStatus.RUNNING, FollowerStatus.AVOIDING):
@@ -423,7 +442,12 @@ class RouteFollower(Node):
                             self._avoid_attempt_count + 1,
                             int(self.get_parameter("max_avoidance_attempts_per_wp").value),
                         )
-                        self._report_stuck_and_wait(decision_reason="avoidance_failed")
+                        fb_major, _, _, enough = self._evaluate_hint_cache()
+                        self._report_stuck_and_wait(
+                            reason="avoidance_failed",
+                            hint_blocked=fb_major,
+                            hint_enough=enough,
+                        )
                 self._publish_state()
                 return
 
@@ -439,6 +463,7 @@ class RouteFollower(Node):
                     self._avoid_attempt_count = 0
                     self._avoid_active = False
                     self._avoid_subgoals.clear()
+                    self._last_applied_offset_m = 0.0
                     next_wp = self._wp_list[self._index]
                     self.get_logger().info(
                         f"Proceed to next waypoint. index={self._index}, label='{next_wp.label}'"
@@ -459,17 +484,17 @@ class RouteFollower(Node):
                     # 滞留後の状態把握（front_blocked 多数決）
                     fb_major, med_l, med_r, enough = self._evaluate_hint_cache()
                     if not enough:
-                        self.get_logger().warn("Insufficient hint samples. Reporting 'unknown_stuck'.")
-                        self._report_stuck_and_wait(decision_reason="unknown_stuck")
+                        self.get_logger().warn("Insufficient hint samples. Reporting 'no_hint'.")
+                        self._report_stuck_and_wait(reason="no_hint", hint_blocked=False, hint_enough=False)
                     elif not fb_major:
-                        self.get_logger().warn("front_blocked majority = False. Reporting 'unknown_stuck'.")
-                        self._report_stuck_and_wait(decision_reason="unknown_stuck")
+                        self.get_logger().warn("front_blocked majority = False. Reporting 'no_hint'.")
+                        self._report_stuck_and_wait(reason="no_hint", hint_blocked=False, hint_enough=True)
                     else:
                         # 前方閉塞 True → 回避可否を評価（L字必須）
                         success = self._start_avoidance_sequence(cur_wp, cur_pose, med_l, med_r)
                         if not success:
-                            self.get_logger().warn("No feasible lateral space. Reporting 'unknown_stuck'.")
-                            self._report_stuck_and_wait(decision_reason="unknown_stuck")
+                            self.get_logger().warn("No feasible lateral space. Reporting 'no_space'.")
+                            self._report_stuck_and_wait(reason="no_space", hint_blocked=True, hint_enough=True)
                         else:
                             self._change_state(FollowerStatus.AVOIDING)
 
@@ -635,28 +660,40 @@ class RouteFollower(Node):
             self._avoid_attempt_count + 1,
             int(self.get_parameter("max_avoidance_attempts_per_wp").value),
         )
+        self._last_applied_offset_m = -offset if side == "L" else offset
         first_label, first_pose = self._avoid_subgoals[0]
         self.get_logger().info(f"Start avoidance sequence: {first_label} "
                                f"(steps={len(self._avoid_subgoals)}, side={side}, offset={offset:.2f}m)")
         self._publish_target_pose(first_pose)
         return True
 
-    def _report_stuck_and_wait(self, decision_reason: str) -> None:
-        """report_stuck を同期呼び出しし、decision に応じて遷移する."""
+    def _report_stuck_and_wait(self, reason: str, hint_blocked: bool, hint_enough: bool) -> None:
+        """Call /report_stuck synchronously and handle the returned decision."""
+        self._last_stagnation_reason = reason
+
         if not self.cli_report_stuck.service_is_ready():
             self.get_logger().warn("/report_stuck service not ready.")
             self._change_state(FollowerStatus.WAITING_REROUTE)
             self._reroute_wait_start = time.time()
+            self._reroute_wait_deadline = time.time() + float(
+                self.get_parameter("reroute_timeout_sec").value
+            )
             return
 
         req = ReportStuck.Request()
         req.route_version = int(self._route_version)
         req.current_index = int(self._index)
+        req.current_wp_label = (
+            self._wp_list[self._index].label if self._wp_list and 0 <= self._index < len(self._wp_list) else ""
+        )
         if self._current_pose_st is not None:
             req.current_pose_map = self._current_pose_st.pose
         else:
             req.current_pose_map = Pose()
-        req.reason = str(decision_reason)  # "avoidance_failed" | "unknown_stuck"
+        req.reason = str(reason)
+        req.avoid_trial_count = int(max(self._avoid_attempt_count, 0))
+        req.last_hint_blocked = bool(hint_blocked and hint_enough)
+        req.last_applied_offset_m = float(self._last_applied_offset_m)
 
         timeout_s = float(self.get_parameter("reroute_timeout_sec").value)
         future = self.cli_report_stuck.call_async(req)
@@ -670,18 +707,30 @@ class RouteFollower(Node):
             self.get_logger().warn("report_stuck timeout. Enter WAITING_REROUTE.")
             self._change_state(FollowerStatus.WAITING_REROUTE)
             self._reroute_wait_start = time.time()
+            self._reroute_wait_deadline = time.time() + timeout_s
             return
 
         res: ReportStuck.Response = future.result()
-        self.get_logger().info(f"report_stuck decision='{res.decision}', accepted={res.accepted}")
+        self.get_logger().info(
+            f"report_stuck decision={res.decision} note='{res.note}' offset_hint={res.offset_hint:.2f}"
+        )
 
-        if res.decision in ("replan", "skip"):
+        if res.decision in (DECISION_REPLAN, DECISION_SKIP):
+            wait_sec = (
+                float(res.waiting_deadline.sec)
+                + float(res.waiting_deadline.nanosec) / 1e9
+                if res.waiting_deadline is not None
+                else 0.0
+            )
+            if wait_sec <= 0.0:
+                wait_sec = float(self.get_parameter("reroute_timeout_sec").value)
             self._change_state(FollowerStatus.WAITING_REROUTE)
             self._reroute_wait_start = time.time()
-        elif res.decision == "failed":
+            self._reroute_wait_deadline = self._reroute_wait_start + wait_sec
+        elif res.decision == DECISION_FAILED:
             self._change_state(FollowerStatus.ERROR)
         else:
-            self.get_logger().warn(f"Unknown decision: '{res.decision}'. Transition to ERROR.")
+            self.get_logger().warn(f"Unknown decision code: {res.decision}. Transition to ERROR.")
             self._change_state(FollowerStatus.ERROR)
 
     # ====================== Publish helpers ======================
@@ -710,6 +759,9 @@ class RouteFollower(Node):
         if new_state != self._status:
             self.get_logger().info(f"state change: {self._status.name} -> {new_state.name}")
             self._status = new_state
+            if new_state != FollowerStatus.WAITING_REROUTE:
+                self._reroute_wait_start = None
+                self._reroute_wait_deadline = None
 
     def _publish_state(self) -> None:
         """/follower_state をデバウンス付きで発行."""
@@ -750,7 +802,7 @@ class RouteFollower(Node):
         msg.front_blocked_majority = bool(fb_major) if enough else False
         msg.hint_left_open_m_median = float(med_l if enough else 0.0)
         msg.hint_right_open_m_median = float(med_r if enough else 0.0)
-        msg.last_stagnation_reason = ""
+        msg.last_stagnation_reason = str(self._last_stagnation_reason)
 
         self.pub_state.publish(msg)
 

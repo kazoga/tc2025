@@ -112,10 +112,15 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 |----------|-------------|----|------|
 | Req | route_version | int32 | 経路バージョン |
 | Req | current_index | int32 | 現在Waypointインデックス |
+| Req | current_wp_label | string | 現在のWaypointラベル |
 | Req | current_pose_map | geometry_msgs/Pose | 現在地(map基準) |
-| Req | reason | string | 滞留・回避失敗理由 |
-| Res | accepted | bool | 要求受理可否 |
-| Res | decision | string | replan / skip / failed |
+| Req | reason | string | 滞留・回避失敗理由（"no_hint" 等） |
+| Req | avoid_trial_count | uint32 | 当該Waypointでの回避試行回数 |
+| Req | last_hint_blocked | bool | 直近Hintが閉塞を示したか |
+| Req | last_applied_offset_m | float32 | 直前に適用した横オフセット[m] |
+| Res | decision | uint8 | 1=replan, 2=skip, 3=failed |
+| Res | waiting_deadline | Duration | WAITING_REROUTE継続上限 |
+| Res | offset_hint | float32 | plannerへ提示する左右オフセット提案 |
 | Res | note | string | 任意メモ |
 
 ---

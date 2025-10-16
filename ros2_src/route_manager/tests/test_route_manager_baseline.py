@@ -93,7 +93,6 @@ def test_follower_state_transitions_to_running(route_manager_node: RouteManagerN
 
     msg = FollowerState()
     msg.state = "RUNNING"
-    msg.status = "RUNNING"
     route_manager_node._on_follower_state(msg)
 
     time.sleep(0.05)

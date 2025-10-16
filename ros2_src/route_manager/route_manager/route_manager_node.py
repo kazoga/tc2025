@@ -150,10 +150,7 @@ class RouteManagerNode(Node):
     # callbacks
     # ------------------------------------------------------------------
     def _on_follower_state(self, msg: FollowerState) -> None:
-        raw_state = getattr(msg, "state", None)
-        if raw_state is None:
-            raw_state = getattr(msg, "status", "")
-
+        raw_state = getattr(msg, "state", "")
         state = str(raw_state).upper()
         if not state:
             return

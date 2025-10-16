@@ -127,7 +127,6 @@ class FollowerState:  # noqa: D401 - stub
         self.current_waypoint_label = ""
         self.current_pose = Pose()
         self.state = ""
-        self.status = ""
 
 
 class ManagerStatus:  # noqa: D401 - stub

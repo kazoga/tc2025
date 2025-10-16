@@ -150,9 +150,17 @@ class RouteManagerNode(Node):
     # callbacks
     # ------------------------------------------------------------------
     def _on_follower_state(self, msg: FollowerState) -> None:
-        if msg.status.upper() == "RUNNING":
+        raw_state = getattr(msg, "state", None)
+        if raw_state is None:
+            raw_state = getattr(msg, "status", "")
+
+        state = str(raw_state).upper()
+        if not state:
+            return
+
+        if state == "RUNNING":
             self._submit(self.fsm.transition("RUNNING"))
-        elif msg.status.upper() == "IDLE":
+        elif state == "IDLE":
             self._submit(self.fsm.transition("IDLE"))
 
     def _on_report_stuck(self, request: ReportStuck.Request, response: ReportStuck.Response) -> ReportStuck.Response:

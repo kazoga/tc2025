@@ -92,6 +92,7 @@ def test_follower_state_transitions_to_running(route_manager_node: RouteManagerN
     route_manager_node.fsm.transition = _bind_async(record_transition, route_manager_node.fsm)
 
     msg = FollowerState()
+    msg.state = "RUNNING"
     msg.status = "RUNNING"
     route_manager_node._on_follower_state(msg)
 

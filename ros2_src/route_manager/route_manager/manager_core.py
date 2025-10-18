@@ -5,7 +5,7 @@ route_manager の**非ROS依存**コア実装。
 
 目的:
 - Node層（ROS2依存）は通信・入出力に限定し、すべての業務ロジックを本モジュールへ集約する。
-- 既存の `route_manager_node.py` に含まれていたロジック（5段階 replan/shift/skip/fallback/failed、
+- 既存の `route_manager_node.py` に含まれていたロジック（再計画/SHIFT/SKIP/failed までの回避シーケンス、
   ルート受理・バージョン管理、幾何計算など）を、**コメントも含め省略や要約を行わず移植**する。
 - FSM（manager_fsm.py）と連携し、初期GetRouteやReportStuckを非同期に安全実行する。
 
@@ -73,6 +73,20 @@ class WaypointLite:
     right_open: float = 0.0
     left_open: float = 0.0
 
+
+
+@dataclass
+class ReportStuckContext:
+    """/report_stuck リクエスト内容をCoreで扱うための軽量コンテキスト。"""
+
+    route_version: int = 0
+    current_index: int = -1
+    current_wp_label: str = ""
+    reason: str = ""
+    avoid_trial_count: int = 0
+    last_hint_blocked: bool = False
+    last_applied_offset_m: float = 0.0
+    current_pose: Any | None = None
 
 
 @dataclass
@@ -212,7 +226,7 @@ class RouteManagerCore:
     """RouteManager の非ROS依存コア。
 
     - FSMの生成・駆動
-    - 5段階 replan/shift/skip/fallback/failed の完全実装
+    - 再計画/SHIFT/SKIP/failed の回避シーケンスを完全実装
     - ルート受理・バージョン管理・状態更新
     - Node層からの各種コールバック注入
     """
@@ -238,6 +252,9 @@ class RouteManagerCore:
         self.current_index: int = -1
         self.current_label: str = ""
         self.current_status: str = "IDLE"
+        self._status_cause: str = ""
+        self.no_obstacle_wait_timeout_sec: float = 60.0
+        self._no_obstacle_wait_handle: Optional[asyncio.TimerHandle] = None
 
         # FSM 構築（timeoutはNode層から調整可能）
         self.fsm = RouteManagerFSM(
@@ -340,10 +357,13 @@ class RouteManagerCore:
         self._initial_checkpoints = list(checkpoint_labels)
         return await self.fsm.handle_event(RouteManagerFSM.E_REQUEST_INITIAL_ROUTE, None)
 
-    async def on_report_stuck(self) -> ServiceResult:
-        """ReportStuck受付時の処理をFSMに委譲（内部で5段階ロジックを実行）。"""
-        self._log("[Core] on_report_stuck: received")
-        return await self.fsm.handle_event(RouteManagerFSM.E_REPORT_STUCK, None)
+    async def on_report_stuck(self, ctx: Optional[ReportStuckContext] = None) -> ServiceResult:
+        """ReportStuck受付時の処理をFSMに委譲する。"""
+        self._log(
+            "[Core] on_report_stuck: received "
+            f"reason='{getattr(ctx, 'reason', '')}' last_hint_blocked={getattr(ctx, 'last_hint_blocked', None)}"
+        )
+        return await self.fsm.handle_event(RouteManagerFSM.E_REPORT_STUCK, ctx)
 
     # ------------------------------------------------------------------
     # FSM用コールバック（Get/Update/Replan）
@@ -382,14 +402,39 @@ class RouteManagerCore:
         self._log(f"[Core] _cb_update_route: result ok={ok}")
         return SimpleServiceResult(ok, "update_route " + ("ok" if ok else "failed"))
 
-    async def _cb_replan(self, _unused: Optional[Any]) -> ServiceResult:
-        """ReportStuck時の再計画（5段階ロジック）。成功でTrue。"""
-        self._log("[Core] _cb_replan: begin 5-step sequence")
+    async def _cb_replan(self, data: Optional[Any]) -> ServiceResult:
+        """ReportStuck時の再計画。成功でTrue。"""
+        ctx = data if isinstance(data, ReportStuckContext) else None
+        if self._should_defer_avoidance(ctx):
+            self._log("[Core] _cb_replan: defer avoidance -> waiting")
+            self._set_status("waiting", decision="pending", cause="no_obstacle")
+            return SimpleServiceResult(True, "waiting")
+
+        self._log("[Core] _cb_replan: begin avoidance sequence")
+        self._cancel_no_obstacle_wait_timeout()
+
+        prefer_skip_first = False
+        dist_to_wp = self._distance_to_current_waypoint(ctx)
+        if dist_to_wp is not None and dist_to_wp <= 1.0:
+            prefer_skip_first = True
+            self._log(
+                f"[Core] _cb_replan: prefer SKIP before SHIFT (dist_to_wp={dist_to_wp:.2f}m <= 1.0m)"
+            )
+
         # 1) UpdateRoute（最初の試行）
         self._log("[Core] _cb_replan: step1 try UpdateRoute (replan_first)")
         if await self._try_update_route(reason="replan_first"):
             self._log("[Core] _cb_replan: step1 success")
             return SimpleServiceResult(True, "replan_first")
+
+        skip_attempted = False
+        if self.route_model is not None and prefer_skip_first:
+            cur = self.route_model.current_index
+            self._log(f"[Core] _cb_replan: step2 pre-check SKIP cur={cur}")
+            skip_attempted = True
+            if cur is not None and self._try_skip(cur):
+                self._log("[Core] _cb_replan: step2 success (SKIP preferred)")
+                return SimpleServiceResult(True, "skipped")
 
         # 2) SHIFT（左右オフセット）
         if self.route_model is not None:
@@ -406,19 +451,14 @@ class RouteManagerCore:
         # 3) SKIP（次WPスキップ）
         if self.route_model is not None:
             cur = self.route_model.current_index
-            self._log(f"[Core] _cb_replan: step3 try SKIP cur={cur}")
+            suffix = " (retry)" if skip_attempted else ""
+            self._log(f"[Core] _cb_replan: step3 try SKIP cur={cur}{suffix}")
             if cur is not None and self._try_skip(cur):
                 self._log("[Core] _cb_replan: step3 success (SKIP)")
                 return SimpleServiceResult(True, "skipped")
 
-        # 4) UpdateRoute（フォールバック）
-        self._log("[Core] _cb_replan: step4 try UpdateRoute (fallback_replan)")
-        if await self._try_update_route(reason="fallback_replan"):
-            self._log("[Core] _cb_replan: step4 success")
-            return SimpleServiceResult(True, "fallback_replan")
-
-        # 5) 失敗
-        self._log("[Core] _cb_replan: step5 failed -> holding")
+        # 4) 失敗
+        self._log("[Core] _cb_replan: step4 failed -> holding")
         self._set_status("holding", decision="failed", cause="avoidance_failed")
         return SimpleServiceResult(False, "avoidance_failed")
 
@@ -510,11 +550,17 @@ class RouteManagerCore:
         if self.route_model is None:
             self._log("[Core] _try_skip: no route_model")
             return False
-        cur_idx = self.route_model.waypoints[cur_idx]
-        not_skip = bool(getattr(cur_idx, "not_skip", False))
-        self._log(f"[Core] _try_skip: cur_idx={cur_idx}, not_skip={not_skip}")
+        try:
+            cur_wp = self.route_model.waypoints[cur_idx]
+        except (IndexError, TypeError):
+            self._log(f"[Core] _try_skip: invalid cur_idx={cur_idx}")
+            return False
+        not_skip = bool(getattr(cur_wp, "not_skip", False))
+        self._log(
+            f"[Core] _try_skip: cur_idx={cur_idx}, label='{getattr(cur_wp, 'label', '')}', not_skip={not_skip}"
+        )
         if not_skip:
-            self._log("[Core] _try_skip: cur_idx.not_skip -> abort")
+            self._log("[Core] _try_skip: cur_wp.not_skip -> abort")
             return False
         if cur_idx + 1 >= self.route_model.total():
             self._log("[Core] _try_skip: next is last -> abort")
@@ -539,6 +585,90 @@ class RouteManagerCore:
         )
         self._accept_route(rm, log_prefix="Local SKIP", source="local")
         return True
+
+    def _should_defer_avoidance(self, ctx: Optional[ReportStuckContext]) -> bool:
+        """障害物不在が明らかな場合は回避シーケンスを抑止する。"""
+        if ctx is None:
+            return False
+        reason = (ctx.reason or "").lower()
+        if not ctx.last_hint_blocked and reason in ("", "stagnation", "no_hint"):
+            return True
+        return False
+
+    def _distance_to_current_waypoint(self, ctx: Optional[ReportStuckContext]) -> Optional[float]:
+        """現在地から current waypoint までの距離[m]を推定する。"""
+        if ctx is None or self.route_model is None:
+            return None
+        pose_msg = getattr(ctx, "current_pose", None)
+        if pose_msg is None:
+            return None
+        pos = getattr(pose_msg, "position", None)
+        if pos is None:
+            return None
+        try:
+            robot_x = float(getattr(pos, "x"))
+            robot_y = float(getattr(pos, "y"))
+        except Exception:
+            return None
+
+        idx = int(getattr(ctx, "current_index", -1))
+        if idx < 0 or idx >= self.route_model.total():
+            idx = int(getattr(self.route_model, "current_index", -1))
+        if idx < 0 or idx >= self.route_model.total():
+            return None
+
+        wp = self.route_model.waypoints[idx]
+        wp_pose = getattr(wp, "pose", None)
+        if wp_pose is None:
+            return None
+        try:
+            wx = float(getattr(wp_pose, "x"))
+            wy = float(getattr(wp_pose, "y"))
+        except Exception:
+            return None
+        return math.hypot(robot_x - wx, robot_y - wy)
+
+    def _schedule_no_obstacle_wait_timeout(self) -> None:
+        """障害物不在待機のタイムアウト監視を開始する。"""
+        if threading.current_thread() is not self._loop_thread:
+            self.loop.call_soon_threadsafe(self._schedule_no_obstacle_wait_timeout)
+            return
+
+        timeout = float(getattr(self, "no_obstacle_wait_timeout_sec", 0.0))
+        if timeout <= 0.0:
+            return
+
+        self._cancel_no_obstacle_wait_timeout()
+
+        def _fire() -> None:
+            self._no_obstacle_wait_handle = None
+            asyncio.ensure_future(self._on_no_obstacle_wait_timeout(), loop=self.loop)
+
+        self._no_obstacle_wait_handle = self.loop.call_later(timeout, _fire)
+
+    def _cancel_no_obstacle_wait_timeout(self) -> None:
+        """障害物不在待機のタイマーを停止する。"""
+        if threading.current_thread() is not self._loop_thread:
+            self.loop.call_soon_threadsafe(self._cancel_no_obstacle_wait_timeout)
+            return
+
+        handle = self._no_obstacle_wait_handle
+        if handle is not None:
+            handle.cancel()
+            self._no_obstacle_wait_handle = None
+
+    async def _on_no_obstacle_wait_timeout(self) -> None:
+        """待機継続中にタイムアウトした場合は IDLE へ遷移する。"""
+        if self.current_status != "waiting" or self._status_cause != "no_obstacle":
+            return
+
+        self._log("[Core] waiting (no_obstacle) timeout reached -> IDLE")
+        if hasattr(self, "fsm") and self.fsm is not None:
+            if hasattr(self.fsm, "force_idle"):
+                await self.fsm.force_idle()
+            else:  # フォールバック（旧バージョン互換）
+                await self.fsm._transition(self.fsm.S_IDLE)
+        self._set_status("idle", decision="none", cause="no_obstacle_timeout")
 
     def _accept_route(self, rm: RouteModel, *, log_prefix: str, source: str) -> None:
         """Route を受理し、内部モデル・公開情報・バージョンを統一して更新する。"""
@@ -584,6 +714,7 @@ class RouteManagerCore:
             self.route_model.version.to_int() if self.route_model else 0
         ))
         self.current_status = state
+        self._status_cause = cause
         self._log(f"[Core] _set_status: state={state}, decision={decision}, cause={cause}, ver={ver}")
         self._publish_status(state, decision, cause, ver)
         # RouteStateも更新
@@ -594,6 +725,11 @@ class RouteManagerCore:
             int(self.route_model.total() if self.route_model else 0),
             str(self.current_status),
         )
+
+        if state == "waiting" and cause == "no_obstacle":
+            self._schedule_no_obstacle_wait_timeout()
+        else:
+            self._cancel_no_obstacle_wait_timeout()
 
     # ------------------------------------------------------------------
     # FSM Transition Hook

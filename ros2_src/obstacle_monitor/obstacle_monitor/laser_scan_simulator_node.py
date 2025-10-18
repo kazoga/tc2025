@@ -8,12 +8,17 @@
 """
 
 import math
+import os
 import threading
 from typing import List, Tuple, Optional
 
 import cv2
 import numpy as np
 import rclpy
+from ament_index_python.packages import (
+    get_package_share_directory,
+    PackageNotFoundError,
+)
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
@@ -30,7 +35,15 @@ class LaserScanSimulatorNode(Node):
         super().__init__('laser_scan_simulator')
 
         # パラメータ
-        self.declare_parameter('map_image_path', '/tmp/map.bmp')
+        try:
+            default_map_path = os.path.join(
+                get_package_share_directory('obstacle_monitor'), 'map', 'map.bmp'
+            )
+        except PackageNotFoundError:
+            default_map_path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), os.pardir, 'map', 'map.bmp')
+            )
+        self.declare_parameter('map_image_path', default_map_path)
         self.declare_parameter('map_resolution_m', 0.2)
         self.declare_parameter('publish_rate_hz', 40.0)
         self.declare_parameter('enable_debug_view', True)

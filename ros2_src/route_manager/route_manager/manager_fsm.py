@@ -129,6 +129,11 @@ class RouteManagerFSM:
         """現在の状態名を返す。"""
         return self._state
 
+    async def force_idle(self) -> None:
+        """外部要求で強制的にIDLEへ戻すユーティリティ。"""
+        async with self._lock:
+            await self._transition(self.S_IDLE)
+
     # ----------------------- メイン処理 -------------------------
     async def handle_event(self, event: str, data: Optional[Any] = None) -> SimpleServiceResult:
         """イベントを受け取り、必要なら非同期処理を実行して状態遷移する。"""

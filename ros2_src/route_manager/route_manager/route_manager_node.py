@@ -10,8 +10,8 @@ Phase2 準拠・正式版（5段階 replan/shift/skip/fallback/failed を統合�
   1) UpdateRoute をまず試す（replan_first）
   2) shift（左右オフセットで次WPのみ横シフト）
   3) skip（次WPをスキップしてローカル再配信）
-  4) フォールバック UpdateRoute（fallback_replan）
-  5) failed（HOLDING）
+  4) failed（HOLDING）
+    ※ 障害物が検知されていないと判断した場合は上記手順を実行せず waiting 状態で保留する。
 - バージョン：Route.version = major*1000 + minor。planner へは major のみ送信。
 - GetRoute は初期ルート取得にのみ使用（ReportStuck では使用しない）。
 - Google Python Style + 型ヒント + 日本語コメント を付与。
@@ -52,6 +52,7 @@ from manager_core import (
     WaypointLite,
     Pose2D,
     VersionMM,
+    ReportStuckContext,
 )
 
 # -----------------------------------------------------------------------------
@@ -281,8 +282,11 @@ class RouteManagerNode(Node):
             current_index = int(getattr(msg, "current_index", -1))
         except Exception:
             current_index = -1
+        label_candidate = getattr(msg, "current_waypoint_label", None)
+        if not label_candidate:
+            label_candidate = getattr(msg, "current_label", "")
         try:
-            current_label = str(getattr(msg, "current_label", "") or "")
+            current_label = str(label_candidate or "")
         except Exception:
             current_label = ""
         #self.get_logger().info(f"[Node] recv /follower_state: idx={current_index}, label='{current_label}'")
@@ -293,23 +297,47 @@ class RouteManagerNode(Node):
     # ------------------------------------------------------------------
     def _on_report_stuck(self, req: ReportStuck.Request, res: ReportStuck.Response) -> ReportStuck.Response:
         self.get_logger().info("[Node] /report_stuck: received -> delegate to Core/FSM")
+        ctx = ReportStuckContext(
+            route_version=int(getattr(req, "route_version", 0)),
+            current_index=int(getattr(req, "current_index", -1)),
+            current_wp_label=str(getattr(req, "current_wp_label", "") or ""),
+            reason=str(getattr(req, "reason", "") or ""),
+            avoid_trial_count=int(getattr(req, "avoid_trial_count", 0)),
+            last_hint_blocked=bool(getattr(req, "last_hint_blocked", False)),
+            last_applied_offset_m=float(getattr(req, "last_applied_offset_m", 0.0)),
+            current_pose=getattr(req, "current_pose_map", None),
+        )
         # Coreのイベントループ上でFSM処理を非同期実行し、結果を同期的に取得
-        result = self.core.run_async(self.core.on_report_stuck()).result()
+        result = self.core.run_async(self.core.on_report_stuck(ctx)).result()
         # Coreの決定内容をReportStuck.Responseに整形
         note = getattr(result, "message", "")
         if getattr(result, "success", False):
             # replan/shift/skip の区別は note で示す（元実装のコメントを維持）
-            if note == "skipped":
+            if note == "waiting":
+                res.decision = 0  # DECISION_WAIT（障害物が無いので待機継続）
+                timeout = float(getattr(self.core, "no_obstacle_wait_timeout_sec", 60.0))
+                base = max(timeout, 0.0)
+                sec = int(base)
+                frac = base - float(sec)
+                nanosec = int(round(frac * 1_000_000_000))
+                if nanosec >= 1_000_000_000:
+                    sec += 1
+                    nanosec -= 1_000_000_000
+                res.waiting_deadline = Duration(sec=sec, nanosec=nanosec)
+            elif note == "skipped":
                 res.decision = 2  # DECISION_SKIP
+                res.waiting_deadline = Duration(sec=0, nanosec=200 * 10**6)
             else:
                 res.decision = 1  # DECISION_REPLAN（shift含む）
+                res.waiting_deadline = Duration(sec=0, nanosec=200 * 10**6)
             res.note = note
-            res.waiting_deadline = Duration(sec=0, nanosec=200 * 10**6)
+            res.offset_hint = 0.0
             self.get_logger().info(f"[Node] /report_stuck: success decision={res.decision} note='{note}'")
         else:
             res.decision = 3  # DECISION_FAILED
             res.note = note or "avoidance_failed"
             res.waiting_deadline = Duration(sec=0, nanosec=0)
+            res.offset_hint = 0.0
             self.get_logger().info(f"[Node] /report_stuck: failed note='{res.note}'")
         return res
 

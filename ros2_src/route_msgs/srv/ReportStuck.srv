@@ -9,7 +9,7 @@ uint32 avoid_trial_count
 bool last_hint_blocked
 float32 last_applied_offset_m
 ---
-uint8 decision  # 1=REPLAN, 2=SKIP, 3=FAILED
+uint8 decision  # 0=WAIT, 1=REPLAN, 2=SKIP, 3=FAILED
 builtin_interfaces/Duration waiting_deadline
 float32 offset_hint
 string note

@@ -52,8 +52,8 @@ class ObstacleMonitorNode(Node):
         # 停止しきい値 [m]（くさび内で x < stop_dist_m なら閉塞）
         self.declare_parameter('stop_dist_m', 1.0)
 
-        # 回避対象障害物の最大距離 [m]（legacy: 1.5m 固定）
-        self.declare_parameter('max_obstacle_distance_m', 1.5)
+        # 回避対象障害物の最大距離 [m]（指示により 5.0m に拡張）
+        self.declare_parameter('max_obstacle_distance_m', 5.0)
 
         # ロボット幅 [m]（legacy: 0.8）
         self.declare_parameter('robot_width_m', 0.8)
@@ -158,11 +158,25 @@ class ObstacleMonitorNode(Node):
         # ---- 前方閉塞判定（±front_half_deg くさび & x < stop_dist_m） ----
         front_half_deg = float(self.get_parameter('front_half_deg').value)
         stop_dist_m = float(self.get_parameter('stop_dist_m').value)
-        front_blocked = self._is_front_blocked(xy_extract, robot_width, stop_dist_m, 5.0, 5)
+        front_blocked, nearest_dist, has_band_points = self._is_front_blocked(
+            xy_extract,
+            robot_width,
+            front_half_deg,
+            stop_dist_m,
+            5.0,
+            5,
+        )
+        if has_band_points:
+            front_distance = float(nearest_dist)
+        else:
+            front_distance = float('nan')
 
         # ---- ヒント publish ----
-        self.get_logger().info(f"Publish hint: dist={stop_dist_m:.2f}, front_blocked={front_blocked}, left_is_open={offset_l:.2f}, right_is_open={offset_r:.2f}")
-        self._publish_hint(front_blocked, offset_l, offset_r)
+        self.get_logger().info(
+            "Publish hint: stop_dist=%.2f, front_blocked=%s, front_distance=%.3f, left_is_open=%.2f, right_is_open=%.2f"
+            % (stop_dist_m, front_blocked, front_distance, offset_l, offset_r)
+        )
+        self._publish_hint(front_blocked, front_distance, offset_l, offset_r)
 
         # ---- 画像 publish（laserScanViewer 相当） ----
         self._publish_scan_image(xy, offset_l, offset_r, robot_width, half_width)
@@ -231,45 +245,71 @@ class ObstacleMonitorNode(Node):
     # -------------------------------
     # 前方閉塞判定（帯＋分位点）
     # -------------------------------
-    def _is_front_blocked(self, pts: np.ndarray, robot_width_m: float, stop_dist_m: float, perc: float = 5.0, min_points: int = 5) -> bool:
-        """前方閉塞判定（帯＋分位点）。
+    def _is_front_blocked(
+        self,
+        pts: np.ndarray,
+        robot_width_m: float,
+        front_half_deg: float,
+        stop_dist_m: float,
+        perc: float = 5.0,
+        min_points: int = 5,
+    ) -> Tuple[bool, float, bool]:
+        """前方閉塞判定（帯＋分位点）と最近障害物距離の推定。
 
         Args:
             pts: _scan_to_xy() が出力した XY点群 [ [x0, y0], [x1, y1], ... ]。
             robot_width_m: ロボット全幅[m]（安全マージン込み）。
+            front_half_deg: 閉塞判定に用いるくさび角の半角 [deg]。
             stop_dist_m: 停止距離[m]。
             perc: 分位点[%]（例: 5.0 → 帯内x距離の下位5%を評価）。
             min_points: 判定に必要な最小点数。
 
         Returns:
-            bool: 前方閉塞していればTrue。
+            Tuple[bool, float, bool]:
+                - bool: 前方閉塞していればTrue。
+                - float: 帯域内で検出した最近障害物までの距離[m]。測距点が存在しない場合は NaN。
+                - bool: 帯域内に有効な測距点が存在したか（NaN なら False）。
         """
-        if pts.size == 0 or pts.shape[0] < min_points:
-            return False
+        if pts.size == 0:
+            return False, float('nan'), False
 
         xs = pts[:, 0]
         ys = pts[:, 1]
 
         # y方向±half_widthの帯内
         half_w = 0.5 * robot_width_m
+        wedge_rad = math.radians(front_half_deg)
         mask = (xs > 0.0) & (np.abs(ys) <= half_w)
+        if front_half_deg > 0.0:
+            mask = mask & (np.abs(np.arctan2(ys, xs)) <= wedge_rad)
         if not np.any(mask):
-            return False
+            return False, float('nan'), False
 
         x_band = xs[mask]
+        nearest = float(np.min(x_band)) if x_band.size > 0 else float('nan')
+        if x_band.size < max(1, int(min_points)):
+            return False, nearest, True
+
         x_q = float(np.percentile(x_band, perc))
-        return x_q <= stop_dist_m
+        return x_q <= stop_dist_m, nearest, True
 
 
     # -------------------------------
     # ヒント publish
     # -------------------------------
-    def _publish_hint(self, front_blocked: bool, left_open_m: float, right_open_m: float) -> None:
+    def _publish_hint(
+        self,
+        front_blocked: bool,
+        front_distance_m: float,
+        left_open_m: float,
+        right_open_m: float,
+    ) -> None:
         """ObstacleAvoidanceHint を publish."""
         msg = ObstacleAvoidanceHint()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "base_link"
         msg.front_blocked = bool(front_blocked)
+        msg.front_distance = float(front_distance_m)
         msg.left_is_open = float(left_open_m)
         msg.right_is_open = float(right_open_m)
 

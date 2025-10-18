@@ -153,6 +153,7 @@ class RouteFollowerNode(Node):
         sample = HintSample(
             t=time.time(),
             front_blocked=bool(msg.front_blocked),
+            front_distance=float(msg.front_distance),
             left_open=float(msg.left_is_open),
             right_open=float(msg.right_is_open),
         )
@@ -224,6 +225,8 @@ class RouteFollowerNode(Node):
         msg.current_index = int(state["index"])
         msg.avoidance_attempt_count = int(state["avoid_count"])
         msg.last_stagnation_reason = str(state["reason"])
+        msg.current_waypoint_label = str(state.get("current_waypoint_label", ""))
+        msg.next_waypoint_label = str(state.get("next_waypoint_label", ""))
         self.pub_state.publish(msg)
 
     # ========================================================
@@ -239,8 +242,13 @@ class RouteFollowerNode(Node):
         req = ReportStuck.Request()
         req.route_version = int(self.core.route_version)
         req.current_index = int(self.core.index)
+        req.current_wp_label = str(self.core.get_current_waypoint_label())
+        pose_snapshot = self.core.get_current_pose()
+        if pose_snapshot is not None:
+            req.current_pose_map = self._pose_to_msg(pose_snapshot)
         req.reason = str(self.core.last_stagnation_reason)
         req.avoid_trial_count = int(self.core.avoid_attempt_count)
+        req.last_hint_blocked = bool(self.core.get_hint_front_blocked())
         req.last_applied_offset_m = float(self.core.last_applied_offset_m)
 
         future = self.cli_report_stuck.call_async(req)

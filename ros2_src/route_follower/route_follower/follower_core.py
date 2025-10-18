@@ -70,6 +70,7 @@ class Route:
 class HintSample:
     t: float
     front_blocked: bool
+    front_distance: float
     left_open: float
     right_open: float
 
@@ -179,6 +180,7 @@ class FollowerCore:
 
         # 統計結果（update_hintで逐次更新）
         self._hint_front_blocked_majority = False
+        self._hint_front_distance_median = float("inf")
         self._hint_left_open_median = 0.0
         self._hint_right_open_median = 0.0
         self._hint_enough = False
@@ -228,6 +230,7 @@ class FollowerCore:
             n = len(self._hint_cache)
             if n < int(self.hint_min_samples):
                 self._hint_front_blocked_majority = False
+                self._hint_front_distance_median = float("inf")
                 self._hint_left_open_median = 0.0
                 self._hint_right_open_median = 0.0
                 self._hint_enough = False
@@ -236,9 +239,11 @@ class FollowerCore:
             self._hint_front_blocked_majority = (sum(fb_vals) / n) >= float(self.hint_majority_true_ratio)
             fb_samples = [s for s in self._hint_cache if s.front_blocked]
             if fb_samples:
+                self._hint_front_distance_median = float(median(s.front_distance for s in fb_samples))
                 self._hint_left_open_median = float(median(s.left_open for s in fb_samples))
                 self._hint_right_open_median = float(median(s.right_open for s in fb_samples))
             else:
+                self._hint_front_distance_median = float("inf")
                 self._hint_left_open_median = 0.0
                 self._hint_right_open_median = 0.0
             self._hint_enough = True
@@ -254,6 +259,21 @@ class FollowerCore:
     def _get_control_snapshot(self) -> Tuple[Optional[bool], Optional[int]]:
         with self._ctrl_lock:
             return self._manual_start_mb, self._sig_recog_mb
+
+    def get_current_waypoint_label(self) -> str:
+        """現在追従中のwaypointラベルを取得（存在しなければ空文字）。"""
+        if self.route and 0 <= self.index < len(self.route.waypoints):
+            return str(self.route.waypoints[self.index].label or "")
+        return ""
+
+    def get_current_pose(self) -> Optional[Pose]:
+        """最新の自己位置スナップショットを返す（未取得ならNone）。"""
+        return self.current_pose
+
+    def get_hint_front_blocked(self) -> bool:
+        """Hint統計の多数決が前方閉塞を示しているか。"""
+        with self._hint_lock:
+            return bool(self._hint_front_blocked_majority)
 
     # ========================= 周期処理（唯一の状態更新点） =========================
     def tick(self) -> FollowerOutput:

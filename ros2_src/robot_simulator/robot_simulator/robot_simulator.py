@@ -167,6 +167,8 @@ class RobotSimulatorNode(Node):
 
         step = self.v_mps * self.dt
         cand_x, cand_y = px + step * ux, py + step * uy
+        new_yaw = yaw
+        yaw_overridden = False
 
         # 極小解停止
         if not self.target_changed and d <= self.stop_radius_m and math.hypot(tx - cand_x, ty - cand_y) > d:
@@ -188,6 +190,7 @@ class RobotSimulatorNode(Node):
                     new_yaw = target_yaw
                 else:
                     new_yaw = yaw + math.copysign(max_yaw_change, yaw_diff)
+                yaw_overridden = True
 
                 if self.log_debug:
                     self.get_logger().warn(
@@ -200,7 +203,8 @@ class RobotSimulatorNode(Node):
                 step *= max(0.0, scale)
                 cand_x, cand_y = px + step * ux, py + step * uy
 
-        new_yaw = math.atan2(uy, ux) if (ux or uy) else yaw
+        if not yaw_overridden and (ux or uy):
+            new_yaw = math.atan2(uy, ux)
         out_x = cand_x + random.gauss(0, self.noise_pos_std_m) if self.noise_pos_std_m > 0 else cand_x
         out_y = cand_y + random.gauss(0, self.noise_pos_std_m) if self.noise_pos_std_m > 0 else cand_y
         out_yaw = new_yaw + math.radians(random.gauss(0, self.noise_yaw_std_deg)) if self.noise_yaw_std_deg > 0 else new_yaw

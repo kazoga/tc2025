@@ -8,7 +8,7 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     # --- パッケージ共有ディレクトリを取得 ---
-    pkg_share = FindPackageShare('laser_scan_simulator')
+    pkg_share = FindPackageShare('obstacle_monitor')
     default_map_path = PathJoinSubstitution([pkg_share, 'map', 'map.bmp'])
 
     # --- launch引数の宣言 ---
@@ -20,7 +20,7 @@ def generate_launch_description():
 
     # --- ノード定義 ---
     node = Node(
-        package='laser_scan_simulator',
+        package='obstacle_monitor',
         executable='laser_scan_simulator',
         name='laser_scan_simulator',
         output='screen',

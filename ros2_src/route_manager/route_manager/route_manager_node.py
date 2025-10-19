@@ -282,6 +282,10 @@ class RouteManagerNode(Node):
             current_index = int(getattr(msg, "current_index", -1))
         except Exception:
             current_index = -1
+        try:
+            route_version = int(getattr(msg, "route_version", -1))
+        except Exception:
+            route_version = -1
         label_candidate = getattr(msg, "current_waypoint_label", None)
         if not label_candidate:
             label_candidate = getattr(msg, "current_label", "")
@@ -290,7 +294,7 @@ class RouteManagerNode(Node):
         except Exception:
             current_label = ""
         #self.get_logger().info(f"[Node] recv /follower_state: idx={current_index}, label='{current_label}'")
-        self.core.update_follower_state(current_index, current_label)
+        self.core.update_follower_state(current_index, current_label, route_version)
 
     # ------------------------------------------------------------------
     # Service Server: /report_stuck（Core+FSMで5段階ロジックを維持）

@@ -304,10 +304,78 @@ class RouteManagerCore:
         import concurrent.futures
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    def update_follower_state(self, current_index: int, current_label: str) -> None:
-        """FollowerStateの進捗をCoreへ反映する（非ROS依存）。"""
-        #self._log(f"[Core] update_follower_state: idx={current_index}, label='{current_label}'")
-        self.current_index = int(current_index)
+    def update_follower_state(
+        self,
+        current_index: int,
+        current_label: str,
+        route_version: Optional[int] = None,
+    ) -> None:
+        """FollowerStateの進捗をCoreへ反映する（非ROS依存）。
+
+        route_version は follower が認識している経路バージョン。Core 側で保持している
+        route_model のバージョンより古い場合は、旧ルートに基づく進捗と判断して無視する。
+        """
+        #self._log(f"[Core] update_follower_state: idx={current_index}, label='{current_label}' ver={route_version}")
+
+        follower_version: Optional[int] = None
+        if route_version is not None:
+            try:
+                follower_version = int(route_version)
+            except Exception:
+                follower_version = None
+
+        expected_version: Optional[int] = None
+        route_index: Optional[int] = None
+        if self.route_model is not None:
+            try:
+                expected_version = int(self.route_model.version.to_int())
+            except Exception:
+                expected_version = None
+            try:
+                route_index = int(getattr(self.route_model, "current_index", -1))
+            except Exception:
+                route_index = None
+
+        # ローカルSKIP等で route_model が先行している場合、旧バージョンの進捗で巻き戻さない
+        if (
+            expected_version is not None
+            and follower_version is not None
+            and follower_version < expected_version
+        ):
+            self._log(
+                "[Core] update_follower_state: ignore stale progress "
+                f"idx={current_index} ver={follower_version} < {expected_version}"
+            )
+            return
+
+        if (
+            expected_version is not None
+            and follower_version is not None
+            and follower_version > expected_version
+        ):
+            self._log(
+                "[Core] update_follower_state: follower reports future version "
+                f"ver={follower_version} (> {expected_version})"
+            )
+
+        try:
+            follower_index = int(current_index)
+        except Exception:
+            follower_index = -1
+
+        if (
+            route_index is not None
+            and route_index >= 0
+            and follower_index >= 0
+            and follower_index < route_index
+        ):
+            self._log(
+                "[Core] update_follower_state: ignore regressed index "
+                f"idx={follower_index} < route_model={route_index}"
+            )
+            return
+
+        self.current_index = follower_index
         self.current_label = str(current_label or "")
 
         # 進捗をroute_modelへ反映
@@ -674,9 +742,19 @@ class RouteManagerCore:
         """Route を受理し、内部モデル・公開情報・バージョンを統一して更新する。"""
         self._log(f"[Core] _accept_route: source={source}, {log_prefix}")
         self.route_model = rm
+
         # 現在インデックス同期
         if self.current_index >= 0:
+            # Local SKIP 等で route_model 側が進捗を先行させている場合がある。
+            # その場合は現在の追従インデックスも更新し、再び巻き戻さないようにする。
+            if 0 <= getattr(self.route_model, "current_index", -1) > self.current_index:
+                self.current_index = int(self.route_model.current_index)
+                self.current_label = str(getattr(self.route_model, "current_label", "") or self.current_label)
             self.route_model.advance_to(index=self.current_index, label=self.current_label or "")
+        elif getattr(self.route_model, "current_index", -1) >= 0:
+            # Core側のcurrent_indexが未設定（-1）だがルートに進捗情報がある場合は同期しておく。
+            self.current_index = int(self.route_model.current_index)
+            self.current_label = str(getattr(self.route_model, "current_label", "") or "")
         # publish（Node層へ委譲）。非ROSだが、Node側のpublish関数は変換を担保する。
         self._publish_active_route(self.route_model)
         self._publish_route_state(

@@ -270,14 +270,24 @@ class RobotNavigator(Node):
         if self.current_pose:
             pose_pos = self.current_pose.position
             distance = math.hypot(goal_pos.x - pose_pos.x, goal_pos.y - pose_pos.y)
+
+            current_yaw = self.quaternion_to_yaw(self.current_pose.orientation)
+            target_yaw = self.quaternion_to_yaw(self.current_goal.orientation)
+            bearing = math.atan2(goal_pos.y - pose_pos.y, goal_pos.x - pose_pos.x)
+            yaw_error = self.normalize_angle(bearing - current_yaw)
+            if distance <= self.pos_tol:
+                yaw_error = self.normalize_angle(target_yaw - current_yaw)
+
+            angle_error_deg = math.degrees(yaw_error)
+
             self.get_logger().info(
-                f"active_target: x={goal_pos.x:.3f}, y={goal_pos.y:.3f}, z={goal_pos.z:.3f}"
-                f" / 距離={distance:.3f}m",
+                f"active_target: x={goal_pos.x:.3f}, y={goal_pos.y:.3f} / 距離={distance:.3f}m"
+                f" / 角度誤差={angle_error_deg:.2f}°",
             )
         else:
             self.get_logger().info(
-                f"active_target: x={goal_pos.x:.3f}, y={goal_pos.y:.3f}, z={goal_pos.z:.3f}"
-                " / 現在位置未取得のため距離不明",
+                f"active_target: x={goal_pos.x:.3f}, y={goal_pos.y:.3f}"
+                " / 現在位置未取得のため距離・角度不明",
             )
 
     # -------------------- ユーティリティ --------------------

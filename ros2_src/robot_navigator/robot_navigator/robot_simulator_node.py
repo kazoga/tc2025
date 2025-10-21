@@ -3,7 +3,7 @@
 """robot_simulator_node.py
 ROS 2 ノード: robot_simulator
 - /cmd_vel を購読し、差動二輪モデルで運動学を積分
-- 最初に受信した /amcl_pose を原点 (map→odom 初期変換) として扱う
+- 最初に受信した /active_target で初期姿勢と map→odom 原点を確定し、以降は /amcl_pose で原点更新に対応
 - /odom, /amcl_pose, /tf を配信
 """
 
@@ -19,11 +19,10 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 
-from geometry_msgs.msg import Twist, PoseWithCovarianceStamped, Quaternion, TransformStamped
+from geometry_msgs.msg import Twist, PoseWithCovarianceStamped, PoseStamped, Quaternion, TransformStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 from tf2_ros import TransformBroadcaster
-from route_msgs.msg import ActiveTarget
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
@@ -87,7 +86,6 @@ class RobotSimulatorNode(Node):
         self.declare_parameter('yaw0_deg', 0.0)
         self.declare_parameter('timer_publish_odom_ms', 100)
         self.declare_parameter('cmd_timeout_sec', 2.0)
-        self.declare_parameter('use_active_target_as_initial_pose', False)
 
         self._cycle_hz: float = float(self.get_parameter('cycle_hz').value)
         self._dt: float = 1.0 / self._cycle_hz if self._cycle_hz > 0.0 else 0.1
@@ -96,7 +94,7 @@ class RobotSimulatorNode(Node):
         self._enable_limit: bool = bool(self.get_parameter('enable_cmd_limit').value)
         self._pose_noise_std_m: float = float(self.get_parameter('pose_noise_std_m').value)
         self._yaw_noise_std_deg: float = float(self.get_parameter('yaw_noise_std_deg').value)
-        self._publish_tf: bool = bool(self.get_parameter('publish_tf').value)
+        self._enable_tf_pub: bool = bool(self.get_parameter('publish_tf').value)
         self._frame_map: str = str(self.get_parameter('frame_map').value)
         self._frame_odom: str = str(self.get_parameter('frame_odom').value)
         self._frame_base: str = str(self.get_parameter('frame_base').value)
@@ -106,9 +104,6 @@ class RobotSimulatorNode(Node):
         self._odom_period_ms: int = int(self.get_parameter('timer_publish_odom_ms').value)
         self._cmd_timeout_sec: float = float(self.get_parameter('cmd_timeout_sec').value)
 
-        self._use_active_target_as_initial_pose: bool = bool(self.get_parameter('use_active_target_as_initial_pose').value)
-
-
         # --- 状態 ---
         now = time.time()
         self._state = SimulatorState(x0, y0, yaw0, 0.0, 0.0, now)
@@ -116,6 +111,7 @@ class RobotSimulatorNode(Node):
         self._last_limit_warn = 0.0
         self._odom_accum_ms = 0.0
         self._odom_period_s = max(0.01, float(self._odom_period_ms) / 1000.0)
+        self._last_wait_log = 0.0
 
         # --- 初期AMCL姿勢保持（map→odom変換） ---
         self._amcl_origin_received = False
@@ -127,13 +123,12 @@ class RobotSimulatorNode(Node):
         qos = QoSProfile(depth=10)
         self._pub_odom = self.create_publisher(Odometry, '/odom', qos)
         self._pub_amcl = self.create_publisher(PoseWithCovarianceStamped, '/amcl_pose', qos)
-        self._tf_broadcaster: Optional[TransformBroadcaster] = TransformBroadcaster(self) if self._publish_tf else None
+        self._tf_broadcaster: Optional[TransformBroadcaster] = TransformBroadcaster(self) if self._enable_tf_pub else None
 
         # --- 購読 ---
         self._sub_cmd = self.create_subscription(Twist, '/cmd_vel', self._on_cmd_vel, qos)
         self._sub_amcl = self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self._on_amcl_origin, qos)
-        if self._use_active_target_as_initial_pose:
-            self._sub_active_target = self.create_subscription(ActiveTarget, '/active_target', self._on_active_target, qos)
+        self._sub_active_target = self.create_subscription(PoseStamped, '/active_target', self._on_active_target, qos)
 
         # --- タイマ ---
         self._timer_update = self.create_timer(self._dt, self._on_timer_update)
@@ -160,25 +155,30 @@ class RobotSimulatorNode(Node):
             self.get_logger().error('Invalid /cmd_vel (NaN/Inf) ignored')
             return
 
+        if not self._initial_pose_set:
+            return
+
         self._state.v = v
         self._state.w = w
         self._state.last_cmd_time = now
 
     def _on_amcl_origin(self, msg: PoseWithCovarianceStamped) -> None:
-        """最初の /amcl_pose を原点(map→odom変換)として採用。"""
-        if not self._amcl_origin_received:
-            self._map_origin_x = msg.pose.pose.position.x
-            self._map_origin_y = msg.pose.pose.position.y
-            self._map_origin_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
-            self._amcl_origin_received = True
-            self.get_logger().info(
-                f"Initial AMCL pose set as map→odom origin: "
-                f"({self._map_origin_x:.2f}, {self._map_origin_y:.2f}, "
-                f"yaw={math.degrees(self._map_origin_yaw):.1f}°)"
-            )
+        """初期化完了後の /amcl_pose で map→odom 原点を更新。"""
+        if not self._initial_pose_set:
+            return
+
+        self._map_origin_x = msg.pose.pose.position.x
+        self._map_origin_y = msg.pose.pose.position.y
+        self._map_origin_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
+        self._amcl_origin_received = True
+
+        self.get_logger().info(
+            f"AMCL origin updated from /amcl_pose: "
+            f"({self._map_origin_x:.2f}, {self._map_origin_y:.2f}, yaw={math.degrees(self._map_origin_yaw):.1f}°)"
+        )
 
     
-    def _on_active_target(self, msg: ActiveTarget) -> None:
+    def _on_active_target(self, msg: PoseStamped) -> None:
         """最初の /active_target を初期姿勢として採用（1回のみ）。"""
         if self._initial_pose_set:
             return
@@ -196,10 +196,20 @@ class RobotSimulatorNode(Node):
         self._map_origin_yaw = yaw
         self._amcl_origin_received = True
         self._initial_pose_set = True
-        self.get_logger().info(f"Initial pose set from first /active_target: x={x:.2f}, y={y:.2f}, yaw={math.degrees(yaw):.1f}°")
+        self._state.last_cmd_time = time.time()
+        self._last_wait_log = 0.0
+        self.get_logger().info(
+            f"Initial pose set from first /active_target: x={x:.2f}, y={y:.2f}, yaw={math.degrees(yaw):.1f}°"
+        )
 
     def _on_timer_update(self) -> None:
         now = time.time()
+        if not self._initial_pose_set:
+            if now - self._last_wait_log > 1.0:
+                self._last_wait_log = now
+                self.get_logger().info('Waiting for /active_target to initialize initial pose. Simulator outputs are on hold.')
+            return
+
         if (now - self._state.last_cmd_time) > self._cmd_timeout_sec:
             self._state.v = 0.0
             self._state.w = 0.0
@@ -217,7 +227,7 @@ class RobotSimulatorNode(Node):
             self._odom_accum_ms = 0.0
             self._publish_odom()
             self._publish_amcl_pose()
-            if self._publish_tf and self._tf_broadcaster is not None:
+            if self._enable_tf_pub and self._tf_broadcaster is not None:
                 self._publish_tf()
 
     # ------------------------------

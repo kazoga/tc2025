@@ -340,8 +340,16 @@ class RobotNavigator(Node):
         dy = ty - cy
         distance_error = math.hypot(dx, dy)
 
-        yaw_error = self.normalize_angle(target_yaw - current_yaw)
+        # 目標姿勢ではなく、目標位置へのベアリングで方向誤差を求める。
+        # 旧ROS1実装同様、位置到達前に目標姿勢のヨー角を使うと、
+        # ゴールを通過した際に進行方向を維持したまま離脱してしまう。
+        target_bearing = math.atan2(dy, dx)
+        yaw_error = self.normalize_angle(target_bearing - current_yaw)
         angle_diff = abs(yaw_error)
+
+        if distance_error <= self.pos_tol:
+            yaw_error = self.normalize_angle(target_yaw - current_yaw)
+            angle_diff = abs(yaw_error)
 
         # --- 角速度（PID）---
         self.integral_w += yaw_error * self.dt

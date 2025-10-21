@@ -82,7 +82,7 @@ class RobotNavigator(Node):
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('amcl_pose_topic', '/amcl_pose')
-        self.declare_parameter('goal_topic', '/goal')
+        self.declare_parameter('goal_topic', '/active_target')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('marker_topic', '/direction_marker')
         self.declare_parameter('marker_frame', 'map')
@@ -153,6 +153,7 @@ class RobotNavigator(Node):
 
         # --- 制御タイマー ---
         self.timer = self.create_timer(self.dt, self.on_timer)
+        self.goal_log_timer = self.create_timer(1.0, self._log_goal_status)
 
         # --- CSV ログ準備 ---
         try:
@@ -184,7 +185,7 @@ class RobotNavigator(Node):
         self.current_pose = msg.pose.pose
 
     def on_goal(self, msg: PoseStamped) -> None:
-        """/goal から目標姿勢（Pose）を保持する。"""
+        """目標トピック（PoseStamped）から目標姿勢（Pose）を保持する。"""
         self.current_goal = msg.pose
 
     def on_scan(self, msg: LaserScan) -> None:
@@ -251,8 +252,33 @@ class RobotNavigator(Node):
 
     def _publish_stop_with_throttle(self) -> None:
         """入力未揃い時の安全停止（5秒スロットルの WARN ログ付き）。"""
-        self.get_logger().warn('データ待ち（/amcl_pose, /odom, /goal）', throttle_duration_sec=5.0)
+        self.get_logger().warn(
+            f"データ待ち（{self.amcl_pose_topic}, {self.odom_topic}, {self.goal_topic})",
+            throttle_duration_sec=5.0,
+        )
         self.cmd_pub.publish(Twist())
+
+    def _log_goal_status(self) -> None:
+        """active_target の座標と距離を 1 秒周期で INFO ログ出力する。"""
+        if not self.current_goal:
+            self.get_logger().info(
+                f"active_target待機中: 目標未受信（{self.goal_topic}）",
+            )
+            return
+
+        goal_pos = self.current_goal.position
+        if self.current_pose:
+            pose_pos = self.current_pose.position
+            distance = math.hypot(goal_pos.x - pose_pos.x, goal_pos.y - pose_pos.y)
+            self.get_logger().info(
+                f"active_target: x={goal_pos.x:.3f}, y={goal_pos.y:.3f}, z={goal_pos.z:.3f}"
+                f" / 距離={distance:.3f}m",
+            )
+        else:
+            self.get_logger().info(
+                f"active_target: x={goal_pos.x:.3f}, y={goal_pos.y:.3f}, z={goal_pos.z:.3f}"
+                " / 現在位置未取得のため距離不明",
+            )
 
     # -------------------- ユーティリティ --------------------
     @staticmethod
@@ -345,7 +371,9 @@ class RobotNavigator(Node):
             if self.obstacle_distance <= stopping_distance:
                 # 完全停止（緊急停止領域）
                 v_scaled = 0.0
-                w_desired = 0.0
+                if abs(yaw_error) <= self.ang_tol:
+                    # 目標向きに十分近い場合のみ角速度も停止
+                    w_desired = 0.0
             elif self.obstacle_distance < self.safety_distance:
                 # 安全距離内では線形に減速（min_obst_dist で 0、safety で v_scaled）
                 denom = max(1e-6, (self.safety_distance - self.min_obstacle_distance))

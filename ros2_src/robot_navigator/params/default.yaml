@@ -11,7 +11,7 @@ robot_navigator:
     scan_topic: "/scan"
     odom_topic: "/odom"
     amcl_pose_topic: "/amcl_pose"
-    goal_topic: "/goal"
+    goal_topic: "/active_target"
     cmd_vel_topic: "/cmd_vel"
     marker_topic: "/direction_marker"
     marker_frame: "map"

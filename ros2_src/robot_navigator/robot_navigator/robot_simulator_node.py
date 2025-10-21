@@ -119,6 +119,7 @@ class RobotSimulatorNode(Node):
         self._map_origin_x = 0.0
         self._map_origin_y = 0.0
         self._map_origin_yaw = 0.0
+        self._last_published_amcl_stamp: Optional[tuple[int, int]] = None
 
         qos = QoSProfile(depth=10)
         self._pub_odom = self.create_publisher(Odometry, '/odom', qos)
@@ -165,6 +166,10 @@ class RobotSimulatorNode(Node):
     def _on_amcl_origin(self, msg: PoseWithCovarianceStamped) -> None:
         """初期化完了後の /amcl_pose で map→odom 原点を更新。"""
         if not self._initial_pose_set:
+            return
+
+        stamp_tuple = (msg.header.stamp.sec, msg.header.stamp.nanosec)
+        if self._last_published_amcl_stamp is not None and stamp_tuple == self._last_published_amcl_stamp:
             return
 
         self._map_origin_x = msg.pose.pose.position.x
@@ -253,7 +258,8 @@ class RobotSimulatorNode(Node):
 
     def _publish_amcl_pose(self) -> None:
         msg = PoseWithCovarianceStamped()
-        msg.header = Header(stamp=self.get_clock().now().to_msg(), frame_id=self._frame_map)
+        stamp = self.get_clock().now().to_msg()
+        msg.header = Header(stamp=stamp, frame_id=self._frame_map)
 
         # odom->map 変換
         x_odom, y_odom, yaw_odom = self._state.x, self._state.y, self._state.yaw
@@ -284,6 +290,7 @@ class RobotSimulatorNode(Node):
         cov[35] = max(1e-3, math.radians(max(1e-3, self._yaw_noise_std_deg)) ** 2)
         msg.pose.covariance = cov
 
+        self._last_published_amcl_stamp = (stamp.sec, stamp.nanosec)
         self._pub_amcl.publish(msg)
 
     def _publish_tf(self) -> None:

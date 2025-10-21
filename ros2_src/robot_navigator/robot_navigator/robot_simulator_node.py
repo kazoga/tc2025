@@ -191,14 +191,19 @@ class RobotSimulatorNode(Node):
         x = float(msg.pose.position.x)
         y = float(msg.pose.position.y)
         yaw = quaternion_to_yaw(msg.pose.orientation)
-        # 内部状態に反映
-        self._state.x = x
-        self._state.y = y
-        self._state.yaw = yaw
-        # map→odom 初期変換としても採用（/amcl_pose を map 座標で自然に見せる）
-        self._map_origin_x = x
-        self._map_origin_y = y
-        self._map_origin_yaw = yaw
+
+        # 現在のオドメトリ状態を保持したまま、map→odom の原点を
+        # /active_target で指定された姿勢と一致するように調整する。
+        odom_x = self._state.x
+        odom_y = self._state.y
+        odom_yaw = self._state.yaw
+
+        self._map_origin_yaw = normalize_angle(yaw - odom_yaw)
+        c = math.cos(self._map_origin_yaw)
+        s = math.sin(self._map_origin_yaw)
+        self._map_origin_x = x - (c * odom_x - s * odom_y)
+        self._map_origin_y = y - (s * odom_x + c * odom_y)
+
         self._amcl_origin_received = True
         self._initial_pose_set = True
         self._state.last_cmd_time = time.time()

@@ -25,6 +25,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.parameter import ParameterDescriptor
 from rclpy.duration import Duration
 
 from geometry_msgs.msg import Twist
@@ -33,6 +34,7 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose, Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from route_msgs.msg import ObstacleAvoidanceHint
 from visualization_msgs.msg import Marker
 
 
@@ -77,6 +79,12 @@ class RobotNavigator(Node):
         self.declare_parameter('safety_distance', 0.8)
         self.declare_parameter('min_obstacle_distance', 0.5)
         self.declare_parameter('obst_max_dist', 5.0)
+        source_descriptor = ParameterDescriptor(
+            description='障害物距離の取得元を指定します',
+            additional_constraints="must be either 'scan' or 'hint'",
+        )
+        self.declare_parameter('obstacle_distance_source', 'hint', source_descriptor)
+        self.declare_parameter('hint_topic', '/obstacle_avoidance_hint')
 
         # トピック名
         self.declare_parameter('scan_topic', '/scan')
@@ -104,6 +112,14 @@ class RobotNavigator(Node):
         self.safety_distance: float = float(self.get_parameter('safety_distance').value)
         self.min_obstacle_distance: float = float(self.get_parameter('min_obstacle_distance').value)
         self.obst_max_dist: float = float(self.get_parameter('obst_max_dist').value)
+        source_param = str(self.get_parameter('obstacle_distance_source').value)
+        self.obstacle_distance_source: str = source_param.lower()
+        if self.obstacle_distance_source not in {'scan', 'hint'}:
+            self.get_logger().warn(
+                'obstacle_distance_source は scan/hint のみを許容します。hint を使用します。'
+            )
+            self.obstacle_distance_source = 'hint'
+        self.hint_topic: str = str(self.get_parameter('hint_topic').value)
 
         self.scan_topic: str = str(self.get_parameter('scan_topic').value)
         self.odom_topic: str = str(self.get_parameter('odom_topic').value)
@@ -149,7 +165,19 @@ class RobotNavigator(Node):
         self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, self.amcl_pose_topic, self.on_amcl_pose, 10)
         self.create_subscription(PoseStamped, self.goal_topic, self.on_goal, 10)
-        self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
+        if self.obstacle_distance_source == 'scan':
+            self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
+            self.get_logger().info('障害物距離ソース: /scan')
+        else:
+            hint_qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            self.create_subscription(
+                ObstacleAvoidanceHint, self.hint_topic, self.on_hint, hint_qos
+            )
+            self.get_logger().info(f'障害物距離ソース: {self.hint_topic}')
 
         # --- 制御タイマー ---
         self.timer = self.create_timer(self.dt, self.on_timer)
@@ -214,7 +242,28 @@ class RobotNavigator(Node):
 
             angle += msg.angle_increment
 
-        self.obstacle_distance = x_min  # None もあり得る（障害物なし）
+        self._apply_obstacle_distance(x_min)
+
+    def on_hint(self, msg: ObstacleAvoidanceHint) -> None:
+        """ヒントメッセージから障害物距離を更新する。"""
+        distance: Optional[float]
+        if msg.front_range is None or math.isinf(msg.front_range) or math.isnan(msg.front_range):
+            distance = None
+        else:
+            distance = float(msg.front_range)
+        self._apply_obstacle_distance(distance)
+
+    def _apply_obstacle_distance(self, distance: Optional[float]) -> None:
+        """障害物距離を正規化して内部状態へ反映する。"""
+        if distance is None:
+            self.obstacle_distance = None
+            return
+
+        if distance <= 0.0 or math.isnan(distance) or math.isinf(distance):
+            self.obstacle_distance = None
+            return
+
+        self.obstacle_distance = float(distance)
 
     # -------------------- 制御ループ --------------------
     def on_timer(self) -> None:

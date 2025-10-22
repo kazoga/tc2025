@@ -15,6 +15,8 @@ robot_navigator:
     cmd_vel_topic: "/cmd_vel"
     marker_topic: "/direction_marker"
     marker_frame: "map"
+    obstacle_distance_source: "hint"
+    hint_topic: "/obstacle_avoidance_hint"
     obst_fov_deg: 120.0
     obst_max_dist: 5.0
     safety_distance: 0.8

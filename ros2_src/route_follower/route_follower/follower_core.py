@@ -72,6 +72,7 @@ class HintSample:
     front_blocked: bool
     left_open: float
     right_open: float
+    front_range: float = math.inf
 
 
 @dataclass
@@ -182,6 +183,7 @@ class FollowerCore:
         self._hint_left_open_median = 0.0
         self._hint_right_open_median = 0.0
         self._hint_enough = False
+        self._hint_front_range_latest = float('inf')
 
     # ========================= 受け渡しAPI（非タイマー） =========================
     def update_route(self, route: Route) -> None:
@@ -221,6 +223,7 @@ class FollowerCore:
         with self._hint_lock:
             # 追加
             self._hint_cache.append(hint)
+            self._hint_front_range_latest = float(hint.front_range)
             # 窓外を削除
             wnd = float(self.hint_cache_window_sec)
             while self._hint_cache and (now - float(self._hint_cache[0].t)) > wnd:

@@ -153,6 +153,7 @@ class RouteFollowerNode(Node):
         sample = HintSample(
             t=time.time(),
             front_blocked=bool(msg.front_blocked),
+            front_range=float(msg.front_range),
             left_open=float(msg.left_is_open),
             right_open=float(msg.right_is_open),
         )

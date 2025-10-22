@@ -25,6 +25,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.parameter import ParameterDescriptor
 from rclpy.duration import Duration
 
 from geometry_msgs.msg import Twist
@@ -78,7 +79,11 @@ class RobotNavigator(Node):
         self.declare_parameter('safety_distance', 0.8)
         self.declare_parameter('min_obstacle_distance', 0.5)
         self.declare_parameter('obst_max_dist', 5.0)
-        self.declare_parameter('obstacle_distance_source', 'hint')
+        source_descriptor = ParameterDescriptor(
+            description='障害物距離の取得元を指定します',
+            additional_constraints="must be either 'scan' or 'hint'",
+        )
+        self.declare_parameter('obstacle_distance_source', 'hint', source_descriptor)
         self.declare_parameter('hint_topic', '/obstacle_avoidance_hint')
 
         # トピック名

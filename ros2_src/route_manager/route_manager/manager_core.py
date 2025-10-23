@@ -523,6 +523,11 @@ class RouteManagerCore:
             new_wp.left_open = max(0.0, left_open - shift_d)
             new_wp.right_open = right_open + shift_d
 
+        self._log(
+            "[Core] _try_shift: updated opens -> "
+            f"right_open={new_wp.right_open:.3f}, left_open={new_wp.left_open:.3f}"
+        )
+
         # 新ルート（ローカル更新）
         new_wps = copy.deepcopy(self.route_model.waypoints)
         new_wps[cur_idx] = new_wp

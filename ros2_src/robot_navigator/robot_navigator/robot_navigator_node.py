@@ -25,7 +25,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.qos import qos_profile_sensor_data
-from rclpy.parameter import ParameterDescriptor
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.duration import Duration
 
 from geometry_msgs.msg import Twist

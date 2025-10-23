@@ -253,6 +253,9 @@ class RouteManagerCore:
         self.current_status: str = "IDLE"
         self._skip_history: Dict[str, int] = {}
         self._skipped_indices: Set[int] = set()
+        # 1回のローカル再計画シーケンスで許可するSKIP回数は1回のみ。
+        # planner由来の新ルートを受理した時点でリセットする。
+        self._skip_allowed: bool = True
         self._shift_preference: Dict[str, bool] = {}
         self._last_stuck_report: Optional[StuckReport] = None
         self._last_known_pose: Optional[Pose2D] = None
@@ -582,6 +585,9 @@ class RouteManagerCore:
         if self.route_model is None:
             self._log("[Core] _try_skip: no route_model")
             return False
+        if not self._skip_allowed:
+            self._log("[Core] _try_skip: skip quota exhausted -> abort")
+            return False
         total = self.route_model.total()
         if cur_idx < 0 or cur_idx >= total:
             self._log(f"[Core] _try_skip: cur_idx out of range -> abort (cur_idx={cur_idx}, total={total})")
@@ -631,6 +637,7 @@ class RouteManagerCore:
         self._skipped_indices.add(cur_idx)
         self._shift_preference.pop(history_key, None)
         self._last_replan_offset_hint = 0.0
+        self._skip_allowed = False
         return True
 
     def _accept_route(self, rm: RouteModel, *, log_prefix: str, source: str) -> None:
@@ -640,6 +647,7 @@ class RouteManagerCore:
             self._skip_history.clear()
             self._skipped_indices.clear()
             self._shift_preference.clear()
+            self._skip_allowed = True
 
         self.route_model = rm
         self.current_index = int(rm.current_index)

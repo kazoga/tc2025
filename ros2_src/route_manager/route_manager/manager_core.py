@@ -3,9 +3,8 @@
 """manager_core.py
 route_manager の**非ROS依存**コア実装。
 
-目的:
 - Node層（ROS2依存）は通信・入出力に限定し、すべての業務ロジックを本モジュールへ集約する。
-- 既存の `route_manager_node.py` に含まれていたロジック（5段階 replan/shift/skip/fallback/failed、
+- 既存の `route_manager_node.py` に含まれていたロジック（Update→SHIFT→SKIP→failed の再計画、
   ルート受理・バージョン管理、幾何計算など）を、**コメントも含め省略や要約を行わず移植**する。
 - FSM（manager_fsm.py）と連携し、初期GetRouteやReportStuckを非同期に安全実行する。
 
@@ -24,7 +23,7 @@ import asyncio
 import math
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, List, Optional, Protocol, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tuple
 
 from manager_fsm import RouteManagerFSM, SimpleServiceResult, ServiceResult
 
@@ -238,6 +237,7 @@ class RouteManagerCore:
         self.current_index: int = -1
         self.current_label: str = ""
         self.current_status: str = "IDLE"
+        self._skip_history: Dict[str, int] = {}
 
         # FSM 構築（timeoutはNode層から調整可能）
         self.fsm = RouteManagerFSM(
@@ -383,8 +383,8 @@ class RouteManagerCore:
         return SimpleServiceResult(ok, "update_route " + ("ok" if ok else "failed"))
 
     async def _cb_replan(self, _unused: Optional[Any]) -> ServiceResult:
-        """ReportStuck時の再計画（5段階ロジック）。成功でTrue。"""
-        self._log("[Core] _cb_replan: begin 5-step sequence")
+        """ReportStuck時の再計画（Update→SHIFT→SKIP→failed）。成功でTrue。"""
+        self._log("[Core] _cb_replan: begin replan sequence")
         # 1) UpdateRoute（最初の試行）
         self._log("[Core] _cb_replan: step1 try UpdateRoute (replan_first)")
         if await self._try_update_route(reason="replan_first"):
@@ -411,14 +411,8 @@ class RouteManagerCore:
                 self._log("[Core] _cb_replan: step3 success (SKIP)")
                 return SimpleServiceResult(True, "skipped")
 
-        # 4) UpdateRoute（フォールバック）
-        self._log("[Core] _cb_replan: step4 try UpdateRoute (fallback_replan)")
-        if await self._try_update_route(reason="fallback_replan"):
-            self._log("[Core] _cb_replan: step4 success")
-            return SimpleServiceResult(True, "fallback_replan")
-
-        # 5) 失敗
-        self._log("[Core] _cb_replan: step5 failed -> holding")
+        # 4) 失敗
+        self._log("[Core] _cb_replan: step4 failed -> holding")
         self._set_status("holding", decision="failed", cause="avoidance_failed")
         return SimpleServiceResult(False, "avoidance_failed")
 
@@ -490,6 +484,14 @@ class RouteManagerCore:
         new_wp.pose.x = sx
         new_wp.pose.y = sy
 
+        # shift した側の余白を削り、反対側へ同量を加算して帳尻を合わせる
+        if right_side:
+            new_wp.right_open = max(0.0, right_open - shift_d)
+            new_wp.left_open = left_open + shift_d
+        else:
+            new_wp.left_open = max(0.0, left_open - shift_d)
+            new_wp.right_open = right_open + shift_d
+
         # 新ルート（ローカル更新）
         new_wps = copy.deepcopy(self.route_model.waypoints)
         new_wps[cur_idx] = new_wp
@@ -510,19 +512,36 @@ class RouteManagerCore:
         if self.route_model is None:
             self._log("[Core] _try_skip: no route_model")
             return False
-        cur_idx = self.route_model.waypoints[cur_idx]
-        not_skip = bool(getattr(cur_idx, "not_skip", False))
-        self._log(f"[Core] _try_skip: cur_idx={cur_idx}, not_skip={not_skip}")
+        total = self.route_model.total()
+        if cur_idx < 0 or cur_idx >= total:
+            self._log(f"[Core] _try_skip: cur_idx out of range -> abort (cur_idx={cur_idx}, total={total})")
+            return False
+
+        cur_wp = self.route_model.waypoints[cur_idx]
+        not_skip = bool(getattr(cur_wp, "not_skip", False))
+        label = str(getattr(cur_wp, "label", "") or "")
+        history_key = f"{cur_idx}:{label}" if label else str(cur_idx)
+        skipped_count = self._skip_history.get(history_key, 0)
+
+        self._log(
+            f"[Core] _try_skip: cur_idx={cur_idx}, label='{label}', not_skip={not_skip}, "
+            f"history_count={skipped_count}"
+        )
+
         if not_skip:
             self._log("[Core] _try_skip: cur_idx.not_skip -> abort")
             return False
-        if cur_idx + 1 >= self.route_model.total():
+        if skipped_count >= 1:
+            self._log("[Core] _try_skip: already skipped once -> abort")
+            return False
+
+        if cur_idx + 1 >= total:
             self._log("[Core] _try_skip: next is last -> abort")
             return False
 
         # 次WPをスキップ
-        nxt_idx = self.route_model.next_index()
-        if nxt_idx is None or nxt_idx >= self.route_model.total():
+        nxt_idx = cur_idx + 1
+        if nxt_idx >= total:
             self._log("[Core] _try_skip: nxt_idx is wrong -> abort")
             return False
 
@@ -538,11 +557,15 @@ class RouteManagerCore:
             current_label=new_wps[nxt_idx].label,
         )
         self._accept_route(rm, log_prefix="Local SKIP", source="local")
+        self._skip_history[history_key] = skipped_count + 1
         return True
 
     def _accept_route(self, rm: RouteModel, *, log_prefix: str, source: str) -> None:
         """Route を受理し、内部モデル・公開情報・バージョンを統一して更新する。"""
         self._log(f"[Core] _accept_route: source={source}, {log_prefix}")
+        if source != "local":
+            self._skip_history.clear()
+
         self.route_model = rm
         # 現在インデックス同期
         if self.current_index >= 0:

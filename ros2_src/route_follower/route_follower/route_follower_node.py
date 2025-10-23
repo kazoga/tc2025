@@ -107,6 +107,7 @@ class RouteFollowerNode(Node):
         self._report_lock = threading.Lock()
         self._report_stuck_pending: bool = False
         self._report_stuck_result: Optional[ReportStuck.Response] = None
+        self._report_stuck_result_ready: bool = False
 
         # Timer
         self._last_pub_target_pose = None
@@ -197,8 +198,11 @@ class RouteFollowerNode(Node):
 
     def _process_report_stuck_result(self) -> None:
         with self._report_lock:
+            if not self._report_stuck_result_ready:
+                return
             res = self._report_stuck_result
             self._report_stuck_result = None
+            self._report_stuck_result_ready = False
 
         if res is None:
             self.get_logger().warn("report_stuck call returned no response.")
@@ -293,6 +297,7 @@ class RouteFollowerNode(Node):
             with self._report_lock:
                 self._report_stuck_pending = False
                 self._report_stuck_result = res
+                self._report_stuck_result_ready = True
 
         future.add_done_callback(_cb_done)
 

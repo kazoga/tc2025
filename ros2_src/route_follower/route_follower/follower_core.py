@@ -618,3 +618,18 @@ class FollowerCore:
             "reason": str(self.last_stagnation_reason),
         }
 
+    def get_current_waypoint_label(self) -> str:
+        """現在追従中のウェイポイントラベルを返す。"""
+        if self.route and 0 <= self.index < len(self.route.waypoints):
+            return self.route.waypoints[self.index].label
+        return ""
+
+    def get_current_pose(self) -> Optional[Pose]:
+        """現在の自己位置（Pose）を返す。"""
+        return self.current_pose
+
+    def get_hint_front_blocked(self) -> bool:
+        """直近Hintで前方が塞がれているかを返す。"""
+        with self._hint_lock:
+            return bool(self._hint_front_blocked_majority)
+

@@ -36,7 +36,7 @@ from std_msgs.msg import Header
 from sensor_msgs.msg import Image
 
 # route_msgs はユーザ環境のメッセージ/サービスに準拠
-from route_msgs.msg import FollowerState, ManagerStatus, MissionInfo, Route, RouteState  # type: ignore
+from route_msgs.msg import ManagerStatus, MissionInfo, Route, RouteState  # type: ignore
 from route_msgs.msg import Waypoint  # type: ignore
 from route_msgs.srv import GetRoute, ReportStuck, UpdateRoute  # type: ignore
 
@@ -52,6 +52,7 @@ from manager_core import (
     WaypointLite,
     Pose2D,
     VersionMM,
+    StuckReport,
 )
 
 # -----------------------------------------------------------------------------
@@ -201,11 +202,6 @@ class RouteManagerNode(Node):
         self.pub_mission_info = self.create_publisher(MissionInfo, "/mission_info", self.qos_tl)
         self.pub_manager_status = self.create_publisher(ManagerStatus, "/manager_status", self.qos_stream)
 
-        # ---------------- Subscriber ----------------
-        self.sub_follower_state = self.create_subscription(
-            FollowerState, "/follower_state", self._on_follower_state, self.qos_stream
-        )
-
         # ---------------- Service Clients ----------------
         self.cb_cli = MutuallyExclusiveCallbackGroup()
         self.cli_get = self.create_client(GetRoute, self.srv_get_name, callback_group=self.cb_cli)
@@ -274,27 +270,33 @@ class RouteManagerNode(Node):
         self.pub_route_state.publish(msg)
 
     # ------------------------------------------------------------------
-    # Subscriber: follower_state
-    # ------------------------------------------------------------------
-    def _on_follower_state(self, msg: FollowerState) -> None:
-        try:
-            current_index = int(getattr(msg, "current_index", -1))
-        except Exception:
-            current_index = -1
-        try:
-            current_label = str(getattr(msg, "current_label", "") or "")
-        except Exception:
-            current_label = ""
-        #self.get_logger().info(f"[Node] recv /follower_state: idx={current_index}, label='{current_label}'")
-        self.core.update_follower_state(current_index, current_label)
-
-    # ------------------------------------------------------------------
     # Service Server: /report_stuck（Core+FSMで5段階ロジックを維持）
     # ------------------------------------------------------------------
     def _on_report_stuck(self, req: ReportStuck.Request, res: ReportStuck.Response) -> ReportStuck.Response:
-        self.get_logger().info("[Node] /report_stuck: received -> delegate to Core/FSM")
+        pose_map = getattr(req, "current_pose_map", None)
+        pose2d = Pose2D(
+            x=float(getattr(getattr(pose_map, "position", None), "x", 0.0)),
+            y=float(getattr(getattr(pose_map, "position", None), "y", 0.0)),
+        )
+        report = StuckReport(
+            route_version=int(getattr(req, "route_version", 0)),
+            current_index=int(getattr(req, "current_index", -1)),
+            current_label=str(getattr(req, "current_wp_label", "") or ""),
+            current_pose=pose2d,
+            reason=str(getattr(req, "reason", "")),
+            avoid_trial_count=int(getattr(req, "avoid_trial_count", 0)),
+            last_hint_blocked=bool(getattr(req, "last_hint_blocked", False)),
+            last_applied_offset_m=float(getattr(req, "last_applied_offset_m", 0.0)),
+        )
+
+        self.get_logger().info(
+            "[Node] /report_stuck: received -> delegate to Core/FSM "
+            f"idx={report.current_index} label='{report.current_label}' reason='{report.reason}'"
+        )
         # Coreのイベントループ上でFSM処理を非同期実行し、結果を同期的に取得
-        result = self.core.run_async(self.core.on_report_stuck()).result()
+        result = self.core.run_async(self.core.on_report_stuck(report)).result()
+        offset_hint = float(self.core.get_last_offset_hint())
+
         # Coreの決定内容をReportStuck.Responseに整形
         note = getattr(result, "message", "")
         if getattr(result, "success", False):
@@ -305,11 +307,13 @@ class RouteManagerNode(Node):
                 res.decision = 1  # DECISION_REPLAN（shift含む）
             res.note = note
             res.waiting_deadline = Duration(sec=0, nanosec=200 * 10**6)
+            res.offset_hint = offset_hint
             self.get_logger().info(f"[Node] /report_stuck: success decision={res.decision} note='{note}'")
         else:
             res.decision = 3  # DECISION_FAILED
             res.note = note or "avoidance_failed"
             res.waiting_deadline = Duration(sec=0, nanosec=0)
+            res.offset_hint = 0.0
             self.get_logger().info(f"[Node] /report_stuck: failed note='{res.note}'")
         return res
 

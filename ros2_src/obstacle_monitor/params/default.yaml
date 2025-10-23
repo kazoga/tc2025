@@ -1,0 +1,12 @@
+obstacle_monitor:
+  ros__parameters:
+    front_half_deg: 10.0
+    stop_dist_m: 1.0
+    max_obstacle_distance_m: 1.5
+    hint_range_m: 1.5
+    robot_width_m: 0.8
+    min_offset_lower_bound_m: 0.75
+    viewer_map_range_m: 8.0
+    viewer_pixel_pitch: 100
+    viewer_window: "laserscan"
+    viewer_resize_px: 500

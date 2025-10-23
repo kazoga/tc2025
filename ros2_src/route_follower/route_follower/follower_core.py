@@ -296,7 +296,10 @@ class FollowerCore:
         self.route = route
         self.route_active = True
         self.route_version = route.version
-        self.index = route.start_index
+        if route.waypoints:
+            self.index = max(0, min(route.start_index, len(route.waypoints) - 1))
+        else:
+            self.index = 0
         self.pose_hist.clear()
         self.avoid_active = False
         self.avoid_subgoals.clear()
@@ -306,7 +309,10 @@ class FollowerCore:
         self.reroute_wait_start = None
         self.reroute_wait_deadline = None
         self.stagnation_grace_until = time.time() + self.stagnation_grace_sec
-        self.last_target = route.waypoints[0].pose if route.waypoints else None
+        if route.waypoints:
+            self.last_target = route.waypoints[self.index].pose
+        else:
+            self.last_target = None
         self.log(f"[FollowerCore] Route適用 version={route.version} waypoints={len(route.waypoints)} start_index={route.start_index}")
 
     def _apply_pose(self, pose: Pose) -> None:
@@ -407,6 +413,7 @@ class FollowerCore:
             if self.route_active:
                 self.log(f"[FollowerCore] WAITING_REROUTE -> RUNNING index={self.index}")
                 next_wp = self.route.waypoints[self.index]
+                self.last_target = next_wp.pose
                 self.status = FollowerStatus.RUNNING
                 return FollowerOutput(next_wp.pose, self._make_state_dict())
             # タイムアウト管理

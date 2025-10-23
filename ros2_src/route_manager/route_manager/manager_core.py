@@ -603,19 +603,33 @@ class RouteManagerCore:
             self._log("[Core] _try_skip: nxt_idx is wrong -> abort")
             return False
 
-        # 新ルート（ローカル更新）
+        # 新ルート（ローカル更新）: 現在のWPを除去し、次のWPを同じインデックス位置へ繰り上げる
         new_wps = copy.deepcopy(self.route_model.waypoints)
+        skipped_wp = new_wps.pop(cur_idx)
+        if cur_idx >= len(new_wps):
+            self._log(
+                f"[Core] _try_skip: removal left no successor (cur_idx={cur_idx}, len={len(new_wps)}) -> abort"
+            )
+            return False
+
+        new_cur_label = new_wps[cur_idx].label
+        self._log(
+            "[Core] _try_skip: removed current waypoint -> "
+            f"skipped='{skipped_wp.label}', new_current='{new_cur_label}'"
+        )
+
         cur = self.route_model.version
         rm = RouteModel(
             waypoints=new_wps,
             version=VersionMM(major=cur.major, minor=cur.minor + 1),
             frame_id=self.route_model.frame_id,
             has_image=self.route_model.has_image,
-            current_index=nxt_idx,
-            current_label=new_wps[nxt_idx].label,
+            current_index=cur_idx,
+            current_label=new_cur_label,
         )
         self._accept_route(rm, log_prefix="Local SKIP", source="local")
         self._skip_history[history_key] = skipped_count + 1
+        self._shift_preference.pop(history_key, None)
         self._last_replan_offset_hint = 0.0
         return True
 

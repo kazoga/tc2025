@@ -225,7 +225,7 @@ class RouteManagerCore:
     """RouteManager の非ROS依存コア。
 
     - FSMの生成・駆動
-    - 5段階 replan/shift/skip/fallback/failed の完全実装
+    - 4段階 replan/shift/skip/failed の完全実装
     - ルート受理・バージョン管理・状態更新
     - Node層からの各種コールバック注入
     """

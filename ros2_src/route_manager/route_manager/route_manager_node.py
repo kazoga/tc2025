@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """route_manager_node.py
-Phase2 準拠・正式版（5段階 replan/shift/skip/fallback/failed を統合）。
+Phase2 準拠・正式版（4段階 replan/shift/skip/failed を統合）。
 
 本ファイルは**ROS2依存のラッパー**に責務を限定し、実処理は `manager_core.py` と
 `manager_fsm.py` に委譲する形へリファクタリングした。
@@ -10,8 +10,7 @@ Phase2 準拠・正式版（5段階 replan/shift/skip/fallback/failed を統合�
   1) UpdateRoute をまず試す（replan_first）
   2) shift（左右オフセットで次WPのみ横シフト）
   3) skip（次WPをスキップしてローカル再配信）
-  4) フォールバック UpdateRoute（fallback_replan）
-  5) failed（HOLDING）
+  4) failed（HOLDING）
 - バージョン：Route.version = major*1000 + minor。planner へは major のみ送信。
 - GetRoute は初期ルート取得にのみ使用（ReportStuck では使用しない）。
 - Google Python Style + 型ヒント + 日本語コメント を付与。
@@ -150,7 +149,7 @@ def core_route_to_ros(route: RouteModel) -> Route:
 # Node本体
 # -----------------------------------------------------------------------------
 class RouteManagerNode(Node):
-    """RouteManager のROS2 I/F実装（Phase2・正式5段階版）。
+    """RouteManager のROS2 I/F実装（Phase2・正式4段階版）。
 
     本ノードは「通信とI/F」に徹し、実処理は `RouteManagerCore` へ委譲する。
     """
@@ -270,7 +269,7 @@ class RouteManagerNode(Node):
         self.pub_route_state.publish(msg)
 
     # ------------------------------------------------------------------
-    # Service Server: /report_stuck（Core+FSMで5段階ロジックを維持）
+    # Service Server: /report_stuck（Core+FSMで4段階ロジックを維持）
     # ------------------------------------------------------------------
     def _on_report_stuck(self, req: ReportStuck.Request, res: ReportStuck.Response) -> ReportStuck.Response:
         pose_map = getattr(req, "current_pose_map", None)

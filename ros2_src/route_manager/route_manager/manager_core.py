@@ -490,6 +490,14 @@ class RouteManagerCore:
         new_wp.pose.x = sx
         new_wp.pose.y = sy
 
+        # shift した側の余白を削り、反対側へ同量を加算して帳尻を合わせる
+        if right_side:
+            new_wp.right_open = max(0.0, right_open - shift_d)
+            new_wp.left_open = left_open + shift_d
+        else:
+            new_wp.left_open = max(0.0, left_open - shift_d)
+            new_wp.right_open = right_open + shift_d
+
         # 新ルート（ローカル更新）
         new_wps = copy.deepcopy(self.route_model.waypoints)
         new_wps[cur_idx] = new_wp

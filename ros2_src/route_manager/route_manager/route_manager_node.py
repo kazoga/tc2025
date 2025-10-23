@@ -169,7 +169,7 @@ class RouteManagerNode(Node):
         self.declare_parameter("state_publish_rate_hz", 1.0)
         self.declare_parameter("image_encoding_check", False)
         self.declare_parameter("report_stuck_timeout_sec", 5.0)
-        self.declare_parameter("offset_step_m_max", 0.3)  # shift 最大横ずれ[m]
+        self.declare_parameter("offset_step_m_max", 1.0)  # shift 最大横ずれ[m]
 
         # ---------------- パラメータ取得 ----------------
         self.start_label: str = self.get_parameter("start_label").get_parameter_value().string_value

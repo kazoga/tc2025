@@ -360,6 +360,7 @@ class FollowerCore:
                 else:
                     # すべて消化 → 本来WPへ復帰
                     self.avoid_active = False
+                    self.status = FollowerStatus.RUNNING
                     self.last_target = cur_wp.pose
                     self.log("[FollowerCore] Avoidance completed. Back to main route.")
                     return FollowerOutput(cur_wp.pose, self._make_state_dict())

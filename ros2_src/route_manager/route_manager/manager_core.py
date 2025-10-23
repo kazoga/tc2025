@@ -3,9 +3,8 @@
 """manager_core.py
 route_manager の**非ROS依存**コア実装。
 
-目的:
 - Node層（ROS2依存）は通信・入出力に限定し、すべての業務ロジックを本モジュールへ集約する。
-- 既存の `route_manager_node.py` に含まれていたロジック（5段階 replan/shift/skip/fallback/failed、
+- 既存の `route_manager_node.py` に含まれていたロジック（Update→SHIFT→SKIP→failed の再計画、
   ルート受理・バージョン管理、幾何計算など）を、**コメントも含め省略や要約を行わず移植**する。
 - FSM（manager_fsm.py）と連携し、初期GetRouteやReportStuckを非同期に安全実行する。
 
@@ -384,8 +383,8 @@ class RouteManagerCore:
         return SimpleServiceResult(ok, "update_route " + ("ok" if ok else "failed"))
 
     async def _cb_replan(self, _unused: Optional[Any]) -> ServiceResult:
-        """ReportStuck時の再計画（5段階ロジック）。成功でTrue。"""
-        self._log("[Core] _cb_replan: begin 5-step sequence")
+        """ReportStuck時の再計画（Update→SHIFT→SKIP→failed）。成功でTrue。"""
+        self._log("[Core] _cb_replan: begin replan sequence")
         # 1) UpdateRoute（最初の試行）
         self._log("[Core] _cb_replan: step1 try UpdateRoute (replan_first)")
         if await self._try_update_route(reason="replan_first"):
@@ -412,14 +411,8 @@ class RouteManagerCore:
                 self._log("[Core] _cb_replan: step3 success (SKIP)")
                 return SimpleServiceResult(True, "skipped")
 
-        # 4) UpdateRoute（フォールバック）
-        self._log("[Core] _cb_replan: step4 try UpdateRoute (fallback_replan)")
-        if await self._try_update_route(reason="fallback_replan"):
-            self._log("[Core] _cb_replan: step4 success")
-            return SimpleServiceResult(True, "fallback_replan")
-
-        # 5) 失敗
-        self._log("[Core] _cb_replan: step5 failed -> holding")
+        # 4) 失敗
+        self._log("[Core] _cb_replan: step4 failed -> holding")
         self._set_status("holding", decision="failed", cause="avoidance_failed")
         return SimpleServiceResult(False, "avoidance_failed")
 

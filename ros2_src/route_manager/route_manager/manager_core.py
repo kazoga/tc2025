@@ -24,7 +24,7 @@ import asyncio
 import math
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, List, Optional, Protocol, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tuple
 
 from manager_fsm import RouteManagerFSM, SimpleServiceResult, ServiceResult
 
@@ -238,6 +238,7 @@ class RouteManagerCore:
         self.current_index: int = -1
         self.current_label: str = ""
         self.current_status: str = "IDLE"
+        self._skip_history: Dict[str, int] = {}
 
         # FSM 構築（timeoutはNode層から調整可能）
         self.fsm = RouteManagerFSM(
@@ -518,19 +519,36 @@ class RouteManagerCore:
         if self.route_model is None:
             self._log("[Core] _try_skip: no route_model")
             return False
-        cur_idx = self.route_model.waypoints[cur_idx]
-        not_skip = bool(getattr(cur_idx, "not_skip", False))
-        self._log(f"[Core] _try_skip: cur_idx={cur_idx}, not_skip={not_skip}")
+        total = self.route_model.total()
+        if cur_idx < 0 or cur_idx >= total:
+            self._log(f"[Core] _try_skip: cur_idx out of range -> abort (cur_idx={cur_idx}, total={total})")
+            return False
+
+        cur_wp = self.route_model.waypoints[cur_idx]
+        not_skip = bool(getattr(cur_wp, "not_skip", False))
+        label = str(getattr(cur_wp, "label", "") or "")
+        history_key = f"{cur_idx}:{label}" if label else str(cur_idx)
+        skipped_count = self._skip_history.get(history_key, 0)
+
+        self._log(
+            f"[Core] _try_skip: cur_idx={cur_idx}, label='{label}', not_skip={not_skip}, "
+            f"history_count={skipped_count}"
+        )
+
         if not_skip:
             self._log("[Core] _try_skip: cur_idx.not_skip -> abort")
             return False
-        if cur_idx + 1 >= self.route_model.total():
+        if skipped_count >= 1:
+            self._log("[Core] _try_skip: already skipped once -> abort")
+            return False
+
+        if cur_idx + 1 >= total:
             self._log("[Core] _try_skip: next is last -> abort")
             return False
 
         # 次WPをスキップ
-        nxt_idx = self.route_model.next_index()
-        if nxt_idx is None or nxt_idx >= self.route_model.total():
+        nxt_idx = cur_idx + 1
+        if nxt_idx >= total:
             self._log("[Core] _try_skip: nxt_idx is wrong -> abort")
             return False
 
@@ -546,11 +564,15 @@ class RouteManagerCore:
             current_label=new_wps[nxt_idx].label,
         )
         self._accept_route(rm, log_prefix="Local SKIP", source="local")
+        self._skip_history[history_key] = skipped_count + 1
         return True
 
     def _accept_route(self, rm: RouteModel, *, log_prefix: str, source: str) -> None:
         """Route を受理し、内部モデル・公開情報・バージョンを統一して更新する。"""
         self._log(f"[Core] _accept_route: source={source}, {log_prefix}")
+        if source != "local":
+            self._skip_history.clear()
+
         self.route_model = rm
         # 現在インデックス同期
         if self.current_index >= 0:

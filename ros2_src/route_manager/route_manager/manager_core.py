@@ -23,7 +23,7 @@ import asyncio
 import math
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set, Tuple
 
 from manager_fsm import RouteManagerFSM, SimpleServiceResult, ServiceResult
 
@@ -252,6 +252,7 @@ class RouteManagerCore:
         self.current_label: str = ""
         self.current_status: str = "IDLE"
         self._skip_history: Dict[str, int] = {}
+        self._skipped_indices: Set[int] = set()
         self._shift_preference: Dict[str, bool] = {}
         self._last_stuck_report: Optional[StuckReport] = None
         self._last_known_pose: Optional[Pose2D] = None
@@ -411,9 +412,9 @@ class RouteManagerCore:
         # 2) SHIFT（左右オフセット）
         if self.route_model is not None:
             cur = self.route_model.current_index
-            prv = self.route_model.prev_index()
-            self._log(f"[Core] _cb_replan: step2 try SHIFT cur={cur} prv={prv}")
-            if prv is not None and prv < self.route_model.total():
+            prv = self._find_prev_active_index(cur)
+            self._log(f"[Core] _cb_replan: step2 try SHIFT cur={cur} prv_active={prv}")
+            if prv is not None and cur < self.route_model.total():
                 cur_wp = self.route_model.waypoints[cur]
                 prev_wp = self.route_model.waypoints[prv]
                 if self._try_shift(prev_wp, cur_wp, cur, report):
@@ -565,6 +566,17 @@ class RouteManagerCore:
         self._last_replan_offset_hint = shift_d if right_side else -shift_d
         return True
 
+    def _find_prev_active_index(self, start_idx: int) -> Optional[int]:
+        """スキップ済みインデックスを除外して直前の有効WPを探す。"""
+        if self.route_model is None:
+            return None
+        idx = start_idx - 1
+        while idx >= 0:
+            if idx not in self._skipped_indices:
+                return idx
+            idx -= 1
+        return None
+
     def _try_skip(self, cur_idx: int) -> bool:
         """skip：次WPをスキップしてローカル再配信する。"""
         if self.route_model is None:
@@ -593,29 +605,16 @@ class RouteManagerCore:
             self._log("[Core] _try_skip: already skipped once -> abort")
             return False
 
-        if cur_idx + 1 >= total:
+        nxt_idx = cur_idx + 1
+        if nxt_idx >= total:
             self._log("[Core] _try_skip: next is last -> abort")
             return False
 
-        # 次WPをスキップ
-        nxt_idx = cur_idx + 1
-        if nxt_idx >= total:
-            self._log("[Core] _try_skip: nxt_idx is wrong -> abort")
-            return False
-
-        # 新ルート（ローカル更新）: 現在のWPを除去し、次のWPを同じインデックス位置へ繰り上げる
         new_wps = copy.deepcopy(self.route_model.waypoints)
-        skipped_wp = new_wps.pop(cur_idx)
-        if cur_idx >= len(new_wps):
-            self._log(
-                f"[Core] _try_skip: removal left no successor (cur_idx={cur_idx}, len={len(new_wps)}) -> abort"
-            )
-            return False
-
-        new_cur_label = new_wps[cur_idx].label
+        new_cur_label = new_wps[nxt_idx].label
         self._log(
-            "[Core] _try_skip: removed current waypoint -> "
-            f"skipped='{skipped_wp.label}', new_current='{new_cur_label}'"
+            "[Core] _try_skip: advance current index -> "
+            f"skipped_idx={cur_idx}, skipped_label='{label}', new_index={nxt_idx}, new_label='{new_cur_label}'"
         )
 
         cur = self.route_model.version
@@ -624,11 +623,12 @@ class RouteManagerCore:
             version=VersionMM(major=cur.major, minor=cur.minor + 1),
             frame_id=self.route_model.frame_id,
             has_image=self.route_model.has_image,
-            current_index=cur_idx,
+            current_index=nxt_idx,
             current_label=new_cur_label,
         )
         self._accept_route(rm, log_prefix="Local SKIP", source="local")
         self._skip_history[history_key] = skipped_count + 1
+        self._skipped_indices.add(cur_idx)
         self._shift_preference.pop(history_key, None)
         self._last_replan_offset_hint = 0.0
         return True
@@ -638,6 +638,7 @@ class RouteManagerCore:
         self._log(f"[Core] _accept_route: source={source}, {log_prefix}")
         if source != "local":
             self._skip_history.clear()
+            self._skipped_indices.clear()
             self._shift_preference.clear()
 
         self.route_model = rm

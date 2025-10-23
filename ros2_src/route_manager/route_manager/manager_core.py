@@ -252,6 +252,7 @@ class RouteManagerCore:
         self.current_label: str = ""
         self.current_status: str = "IDLE"
         self._skip_history: Dict[str, int] = {}
+        self._shift_preference: Dict[str, bool] = {}
         self._last_stuck_report: Optional[StuckReport] = None
         self._last_known_pose: Optional[Pose2D] = None
         self._last_replan_offset_hint: float = 0.0
@@ -482,19 +483,41 @@ class RouteManagerCore:
         """shift：次WPを横方向にずらしたローカル経路を生成し、受理・配信する。"""
         right_open = float(getattr(cur_wp, "right_open", 0.0) or 0.0)
         left_open = float(getattr(cur_wp, "left_open", 0.0) or 0.0)
-        self._log(f"[Core] _try_shift: right_open={right_open}, left_open={left_open}, cur_idx={cur_idx}")
+        label = str(getattr(cur_wp, "label", "") or "")
+        pref_key = f"{cur_idx}:{label}" if label else str(cur_idx)
+        self._log(
+            f"[Core] _try_shift: right_open={right_open}, left_open={left_open}, cur_idx={cur_idx} key='{pref_key}'"
+        )
         if right_open <= 0.0 and left_open <= 0.0:
             self._log("[Core] _try_shift: no open space -> abort")
             return False
 
-        # 空きが大きい側を基本としつつ、直近の横シフト情報で優先度を調整
-        right_side = right_open >= left_open
-        if report is not None:
-            last_offset = float(report.last_applied_offset_m)
-            if last_offset > 0.0 and left_open > 0.0:
-                right_side = False
-            elif last_offset < 0.0 and right_open > 0.0:
-                right_side = True
+        ax, ay = float(prev_wp.pose.x), float(prev_wp.pose.y)
+        bx, by = float(cur_wp.pose.x), float(cur_wp.pose.y)
+        stored_pref = self._shift_preference.get(pref_key)
+        right_side = stored_pref if stored_pref is not None else (right_open >= left_open)
+
+        if stored_pref is None:
+            oriented: Optional[bool] = None
+            if report is not None:
+                px, py = float(report.current_pose.x), float(report.current_pose.y)
+                seg_x, seg_y = bx - ax, by - ay
+                vec_x, vec_y = px - bx, py - by
+                if not math.isclose(seg_x, 0.0, abs_tol=1e-9) or not math.isclose(seg_y, 0.0, abs_tol=1e-9):
+                    cross = seg_x * vec_y - seg_y * vec_x
+                    if not math.isclose(cross, 0.0, abs_tol=1e-6):
+                        oriented = cross < 0.0
+                        self._log(
+                            f"[Core] _try_shift: orientation from report -> cross={cross:.6f}, right_side={oriented}"
+                        )
+            if oriented is None:
+                oriented = right_side
+            right_side = oriented
+            self._shift_preference[pref_key] = right_side
+        else:
+            self._log(
+                f"[Core] _try_shift: reuse stored orientation right_side={right_side} for key='{pref_key}'"
+            )
 
         open_len = right_open if right_side else left_open
         shift_d = clamp(open_len, 0.0, float(self.offset_step_m_max))
@@ -504,8 +527,6 @@ class RouteManagerCore:
             return False
 
         # 位置算出
-        ax, ay = float(prev_wp.pose.x), float(prev_wp.pose.y)
-        bx, by = float(cur_wp.pose.x), float(cur_wp.pose.y)
         nvec = unit_normal((ax, ay), (bx, by), right_side=right_side)
         sx, sy = bx + nvec[0] * shift_d, by + nvec[1] * shift_d
         self._log(f"[Core] _try_shift: base pose=({bx:.3f},{by:.3f}), new pose=({sx:.3f},{sy:.3f}), right_side={right_side}")
@@ -603,6 +624,7 @@ class RouteManagerCore:
         self._log(f"[Core] _accept_route: source={source}, {log_prefix}")
         if source != "local":
             self._skip_history.clear()
+            self._shift_preference.clear()
 
         self.route_model = rm
         self.current_index = int(rm.current_index)

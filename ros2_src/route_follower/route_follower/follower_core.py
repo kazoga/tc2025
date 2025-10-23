@@ -495,6 +495,18 @@ class FollowerCore:
         self.reroute_wait_start = now
         self.reroute_wait_deadline = now + self.reroute_timeout_sec
 
+    def notify_reroute_failed(self, note: str = "") -> None:
+        """/report_stuck が失敗した際にノード層から呼び出す。"""
+        self.route_active = False
+        self.avoid_active = False
+        self.avoid_subgoals.clear()
+        self.reroute_wait_start = None
+        self.reroute_wait_deadline = None
+        if note:
+            self.last_stagnation_reason = note
+        self.status = FollowerStatus.ERROR
+        self.log(f"[FollowerCore] WAITING_REROUTE failed -> ERROR note='{note}'")
+
     def _check_stagnation_tick(self, exclude_stop: bool) -> bool:
         """滞留判定。
         条件:

@@ -452,8 +452,13 @@ class FollowerCore:
                 return FollowerOutput(None, self._make_state_dict())
 
             # --- 未到達：滞留判定（グレース期間内はスキップ） ---
+            exclude_stop = False
+            if cur_wp.line_stop or cur_wp.signal_stop:
+                # 停止系WPでも停止線に到達する前は滞留判定を有効にする
+                exclude_stop = dist < self.arrival_threshold
+
             if time.time() >= self.stagnation_grace_until:
-                if self._check_stagnation_tick(exclude_stop=(cur_wp.line_stop or cur_wp.signal_stop)):
+                if self._check_stagnation_tick(exclude_stop=exclude_stop):
                     self.status = FollowerStatus.STAGNATION_DETECTED
                     # Hint統計（Node側集約）に基づく判断
                     if not enough:

@@ -106,6 +106,7 @@ class RouteFollowerNode(Node):
         self.core.arrival_threshold = arrival_threshold
         self.core.control_rate_hz = control_rate
         self.core.republish_target_hz = 1.0 / resend_interval
+        self.core.start_immediately = self.start_immediately
         self.get_logger().info("route_follower_node started.")
 
         # QoS設定

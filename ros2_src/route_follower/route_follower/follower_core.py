@@ -154,6 +154,9 @@ class FollowerCore:
         self.reroute_wait_start: Optional[float] = None
         self.reroute_wait_deadline: Optional[float] = None
 
+        # 起動時自動開始フラグ
+        self.start_immediately: bool = True
+
         # 直近の滞留理由
         self.last_stagnation_reason = ""
         
@@ -258,6 +261,12 @@ class FollowerCore:
         with self._ctrl_lock:
             return self._manual_start_mb, self._sig_recog_mb
 
+    def _consume_control_inputs(self) -> None:
+        """manual_startおよびsig_recogのラッチ値を消費済みとしてクリアする。"""
+        with self._ctrl_lock:
+            self._manual_start_mb = None
+            self._sig_recog_mb = None
+
     # ========================= 周期処理（唯一の状態更新点） =========================
     def tick(self) -> FollowerOutput:
         """1周期の更新処理。
@@ -334,10 +343,13 @@ class FollowerCore:
         # IDLEでルートが設定されたらRUNNINGに遷移
         if self.status == FollowerStatus.IDLE:
             if self.route_active:
-                self.log(f"[FollowerCore] IDLE -> RUNNING index={self.index}")
-                next_wp = self.route.waypoints[self.index]
-                self.status = FollowerStatus.RUNNING
-                return FollowerOutput(next_wp.pose, self._make_state_dict())
+                if self.start_immediately or bool(manual_start):
+                    if not self.start_immediately:
+                        self._consume_control_inputs()
+                    self.log(f"[FollowerCore] IDLE -> RUNNING index={self.index}")
+                    next_wp = self.route.waypoints[self.index]
+                    self.status = FollowerStatus.RUNNING
+                    return FollowerOutput(next_wp.pose, self._make_state_dict())
             return FollowerOutput(None, self._make_state_dict())
 
         # RUNNING/AVOIDING/WAITING_STOP/WAITING_REROUTE
@@ -390,6 +402,7 @@ class FollowerCore:
                 return FollowerOutput(self.last_target, self._make_state_dict())
 
             # 解除：次WP or FINISHED
+            self._consume_control_inputs()
             if self.index < len(self.route.waypoints) - 1:
                 self.index += 1
                 next_wp = self.route.waypoints[self.index]
@@ -433,6 +446,7 @@ class FollowerCore:
                 # STOP系
                 if cur_wp.line_stop or cur_wp.signal_stop:
                     self.status = FollowerStatus.WAITING_STOP
+                    self._consume_control_inputs()
                     self.log(f"[FollowerCore] Reached STOP waypoint -> WAITING_STOP (line_stop={cur_wp.line_stop}, signal_stop={cur_wp.signal_stop})")
                     return FollowerOutput(self.last_target, self._make_state_dict())
                 # 次WPへ

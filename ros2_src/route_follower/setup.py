@@ -10,6 +10,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name + '/launch', ['launch/route_follower.launch.py']),
+        ('share/' + package_name + '/params', glob('params/*.yaml')),
         ('share/' + package_name + '/routes', glob('routes/**/*', recursive=True)),
         ('share/' + package_name, ['package.xml']),
     ],

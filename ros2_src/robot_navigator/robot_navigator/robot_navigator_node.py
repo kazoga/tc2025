@@ -25,6 +25,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.qos import qos_profile_sensor_data
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.duration import Duration
 
 from geometry_msgs.msg import Twist
@@ -33,6 +34,7 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose, Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from route_msgs.msg import ObstacleAvoidanceHint
 from visualization_msgs.msg import Marker
 
 
@@ -77,12 +79,18 @@ class RobotNavigator(Node):
         self.declare_parameter('safety_distance', 0.8)
         self.declare_parameter('min_obstacle_distance', 0.5)
         self.declare_parameter('obst_max_dist', 5.0)
+        source_descriptor = ParameterDescriptor(
+            description='障害物距離の取得元を指定します',
+            additional_constraints="must be either 'scan' or 'hint'",
+        )
+        self.declare_parameter('obstacle_distance_source', 'hint', source_descriptor)
+        self.declare_parameter('hint_topic', '/obstacle_avoidance_hint')
 
         # トピック名
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('amcl_pose_topic', '/amcl_pose')
-        self.declare_parameter('goal_topic', '/goal')
+        self.declare_parameter('goal_topic', '/active_target')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('marker_topic', '/direction_marker')
         self.declare_parameter('marker_frame', 'map')
@@ -104,6 +112,14 @@ class RobotNavigator(Node):
         self.safety_distance: float = float(self.get_parameter('safety_distance').value)
         self.min_obstacle_distance: float = float(self.get_parameter('min_obstacle_distance').value)
         self.obst_max_dist: float = float(self.get_parameter('obst_max_dist').value)
+        source_param = str(self.get_parameter('obstacle_distance_source').value)
+        self.obstacle_distance_source: str = source_param.lower()
+        if self.obstacle_distance_source not in {'scan', 'hint'}:
+            self.get_logger().warn(
+                'obstacle_distance_source は scan/hint のみを許容します。hint を使用します。'
+            )
+            self.obstacle_distance_source = 'hint'
+        self.hint_topic: str = str(self.get_parameter('hint_topic').value)
 
         self.scan_topic: str = str(self.get_parameter('scan_topic').value)
         self.odom_topic: str = str(self.get_parameter('odom_topic').value)
@@ -149,10 +165,23 @@ class RobotNavigator(Node):
         self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, self.amcl_pose_topic, self.on_amcl_pose, 10)
         self.create_subscription(PoseStamped, self.goal_topic, self.on_goal, 10)
-        self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
+        if self.obstacle_distance_source == 'scan':
+            self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
+            self.get_logger().info('障害物距離ソース: /scan')
+        else:
+            hint_qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            self.create_subscription(
+                ObstacleAvoidanceHint, self.hint_topic, self.on_hint, hint_qos
+            )
+            self.get_logger().info(f'障害物距離ソース: {self.hint_topic}')
 
         # --- 制御タイマー ---
         self.timer = self.create_timer(self.dt, self.on_timer)
+        self.goal_log_timer = self.create_timer(1.0, self._log_goal_status)
 
         # --- CSV ログ準備 ---
         try:
@@ -184,7 +213,7 @@ class RobotNavigator(Node):
         self.current_pose = msg.pose.pose
 
     def on_goal(self, msg: PoseStamped) -> None:
-        """/goal から目標姿勢（Pose）を保持する。"""
+        """目標トピック（PoseStamped）から目標姿勢（Pose）を保持する。"""
         self.current_goal = msg.pose
 
     def on_scan(self, msg: LaserScan) -> None:
@@ -213,7 +242,28 @@ class RobotNavigator(Node):
 
             angle += msg.angle_increment
 
-        self.obstacle_distance = x_min  # None もあり得る（障害物なし）
+        self._apply_obstacle_distance(x_min)
+
+    def on_hint(self, msg: ObstacleAvoidanceHint) -> None:
+        """ヒントメッセージから障害物距離を更新する。"""
+        distance: Optional[float]
+        if msg.front_range is None or math.isinf(msg.front_range) or math.isnan(msg.front_range):
+            distance = None
+        else:
+            distance = float(msg.front_range)
+        self._apply_obstacle_distance(distance)
+
+    def _apply_obstacle_distance(self, distance: Optional[float]) -> None:
+        """障害物距離を正規化して内部状態へ反映する。"""
+        if distance is None:
+            self.obstacle_distance = None
+            return
+
+        if distance <= 0.0 or math.isnan(distance) or math.isinf(distance):
+            self.obstacle_distance = None
+            return
+
+        self.obstacle_distance = float(distance)
 
     # -------------------- 制御ループ --------------------
     def on_timer(self) -> None:
@@ -251,8 +301,43 @@ class RobotNavigator(Node):
 
     def _publish_stop_with_throttle(self) -> None:
         """入力未揃い時の安全停止（5秒スロットルの WARN ログ付き）。"""
-        self.get_logger().warn('データ待ち（/amcl_pose, /odom, /goal）', throttle_duration_sec=5.0)
+        self.get_logger().warn(
+            f"データ待ち（{self.amcl_pose_topic}, {self.odom_topic}, {self.goal_topic})",
+            throttle_duration_sec=5.0,
+        )
         self.cmd_pub.publish(Twist())
+
+    def _log_goal_status(self) -> None:
+        """active_target の座標と距離を 1 秒周期で INFO ログ出力する。"""
+        if not self.current_goal:
+            self.get_logger().info(
+                f"active_target待機中: 目標未受信（{self.goal_topic}）",
+            )
+            return
+
+        goal_pos = self.current_goal.position
+        if self.current_pose:
+            pose_pos = self.current_pose.position
+            distance = math.hypot(goal_pos.x - pose_pos.x, goal_pos.y - pose_pos.y)
+
+            current_yaw = self.quaternion_to_yaw(self.current_pose.orientation)
+            target_yaw = self.quaternion_to_yaw(self.current_goal.orientation)
+            bearing = math.atan2(goal_pos.y - pose_pos.y, goal_pos.x - pose_pos.x)
+            yaw_error = self.normalize_angle(bearing - current_yaw)
+            if distance <= self.pos_tol:
+                yaw_error = self.normalize_angle(target_yaw - current_yaw)
+
+            angle_error_deg = math.degrees(yaw_error)
+
+            self.get_logger().info(
+                f"active_target: x={goal_pos.x:.3f}, y={goal_pos.y:.3f} / 距離={distance:.3f}m"
+                f" / 角度誤差={angle_error_deg:.2f}°",
+            )
+        else:
+            self.get_logger().info(
+                f"active_target: x={goal_pos.x:.3f}, y={goal_pos.y:.3f}"
+                " / 現在位置未取得のため距離・角度不明",
+            )
 
     # -------------------- ユーティリティ --------------------
     @staticmethod
@@ -314,8 +399,16 @@ class RobotNavigator(Node):
         dy = ty - cy
         distance_error = math.hypot(dx, dy)
 
-        yaw_error = self.normalize_angle(target_yaw - current_yaw)
+        # 目標姿勢ではなく、目標位置へのベアリングで方向誤差を求める。
+        # 旧ROS1実装同様、位置到達前に目標姿勢のヨー角を使うと、
+        # ゴールを通過した際に進行方向を維持したまま離脱してしまう。
+        target_bearing = math.atan2(dy, dx)
+        yaw_error = self.normalize_angle(target_bearing - current_yaw)
         angle_diff = abs(yaw_error)
+
+        if distance_error <= self.pos_tol:
+            yaw_error = self.normalize_angle(target_yaw - current_yaw)
+            angle_diff = abs(yaw_error)
 
         # --- 角速度（PID）---
         self.integral_w += yaw_error * self.dt
@@ -345,7 +438,9 @@ class RobotNavigator(Node):
             if self.obstacle_distance <= stopping_distance:
                 # 完全停止（緊急停止領域）
                 v_scaled = 0.0
-                w_desired = 0.0
+                if abs(yaw_error) <= self.ang_tol:
+                    # 目標向きに十分近い場合のみ角速度も停止
+                    w_desired = 0.0
             elif self.obstacle_distance < self.safety_distance:
                 # 安全距離内では線形に減速（min_obst_dist で 0、safety で v_scaled）
                 denom = max(1e-6, (self.safety_distance - self.min_obstacle_distance))

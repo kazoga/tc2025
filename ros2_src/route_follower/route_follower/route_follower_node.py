@@ -16,7 +16,9 @@ from __future__ import annotations
 import time
 import sys
 import math
+import threading
 from pathlib import Path
+from typing import Optional
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
@@ -102,6 +104,11 @@ class RouteFollowerNode(Node):
 
         self.cli_report_stuck = self.create_client(ReportStuck, "/report_stuck")
 
+        self._report_lock = threading.Lock()
+        self._report_stuck_pending: bool = False
+        self._report_stuck_result: Optional[ReportStuck.Response] = None
+        self._report_stuck_result_ready: bool = False
+
         # Timer
         self._last_pub_target_pose = None
         self._last_pub_time = 0.0
@@ -153,6 +160,7 @@ class RouteFollowerNode(Node):
         sample = HintSample(
             t=time.time(),
             front_blocked=bool(msg.front_blocked),
+            front_range=float(msg.front_range),
             left_open=float(msg.left_is_open),
             right_open=float(msg.right_is_open),
         )
@@ -181,9 +189,32 @@ class RouteFollowerNode(Node):
         # follower_state 出力
         self._handle_state_publish(output)
 
+        # /report_stuck応答の反映
+        self._process_report_stuck_result()
+
         # stuck報告判定
         if self.core.status == self.core.status.WAITING_REROUTE:
             self._handle_stuck_report()
+
+    def _process_report_stuck_result(self) -> None:
+        with self._report_lock:
+            if not self._report_stuck_result_ready:
+                return
+            res = self._report_stuck_result
+            self._report_stuck_result = None
+            self._report_stuck_result_ready = False
+
+        if res is None:
+            self.get_logger().warn("report_stuck call returned no response.")
+            return
+
+        self.get_logger().info(
+            f"report_stuck result: decision={res.decision}, note='{res.note}', offset_hint={res.offset_hint:.2f}"
+        )
+
+        if res.decision == 3:
+            note = res.note or "avoidance_failed"
+            self.core.notify_reroute_failed(note)
 
     def _handle_target_publish(self, output):
         """active_targetのデバウンス付きpublish"""
@@ -236,23 +267,37 @@ class RouteFollowerNode(Node):
             self.get_logger().warn("/report_stuck not ready.")
             return
 
+        with self._report_lock:
+            if self._report_stuck_pending:
+                return
+            self._report_stuck_pending = True
+
         req = ReportStuck.Request()
         req.route_version = int(self.core.route_version)
         req.current_index = int(self.core.index)
+        req.current_wp_label = str(self.core.get_current_waypoint_label())
+        pose = self.core.get_current_pose()
+        if pose is not None:
+            req.current_pose_map = self._pose_to_msg(pose)
         req.reason = str(self.core.last_stagnation_reason)
         req.avoid_trial_count = int(self.core.avoid_attempt_count)
+        req.last_hint_blocked = bool(self.core.get_hint_front_blocked())
         req.last_applied_offset_m = float(self.core.last_applied_offset_m)
 
         future = self.cli_report_stuck.call_async(req)
 
         def _cb_done(fut):
-            if fut.cancelled() or not fut.done():
-                self.get_logger().warn("report_stuck timeout or cancelled.")
-                return
-            res: ReportStuck.Response = fut.result()
-            self.get_logger().info(
-                f"report_stuck result: decision={res.decision}, note='{res.note}', offset_hint={res.offset_hint:.2f}"
-            )
+            try:
+                if fut.cancelled() or not fut.done():
+                    raise RuntimeError("report_stuck timeout or cancelled")
+                res: ReportStuck.Response = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f"report_stuck call failed: {exc}")
+                res = None
+            with self._report_lock:
+                self._report_stuck_pending = False
+                self._report_stuck_result = res
+                self._report_stuck_result_ready = True
 
         future.add_done_callback(_cb_done)
 

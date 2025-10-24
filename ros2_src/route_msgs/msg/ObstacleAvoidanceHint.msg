@@ -4,5 +4,6 @@
 std_msgs/Header header
 
 bool front_blocked
+float32 front_range
 float32 left_is_open
 float32 right_is_open

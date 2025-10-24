@@ -223,12 +223,14 @@ class MockDataProvider:
             "camera": now,
         }
         self.node_status: Dict[str, NodeLaunchStatus] = {
+            "route_planner": NodeLaunchStatus(False, "default.yaml", False, None),
             "route_manager": NodeLaunchStatus(False, "default.yaml", False, None),
             "route_follower": NodeLaunchStatus(False, "default.yaml", False, None),
             "obstacle_monitor": NodeLaunchStatus(False, "default.yaml", False, None),
             "robot_navigator": NodeLaunchStatus(False, "default.yaml", False, None),
         }
         self.pending_logs: Dict[str, List[str]] = {
+            "route_planner": [],
             "route_manager": [],
             "route_follower": [],
             "obstacle_monitor": [],
@@ -837,10 +839,11 @@ class MockDashboardApp(tk.Tk):
     """robot_consoleダッシュボードのモックアプリ."""
 
     LOG_PACKAGES = [
+        "route_planner",
         "route_manager",
         "route_follower",
-        "obstacle_monitor",
         "robot_navigator",
+        "obstacle_monitor",
     ]
 
     def __init__(self) -> None:
@@ -917,7 +920,7 @@ class MockDashboardApp(tk.Tk):
         dashboard_body = ttk.Frame(main_area)
         dashboard_body.grid(row=1, column=0, sticky="nsew")
         dashboard_body.columnconfigure(0, weight=1)
-        dashboard_body.rowconfigure(2, weight=1)
+        dashboard_body.rowconfigure(1, weight=1)
 
         self._build_state_summary(dashboard_body)
         self._build_images(dashboard_body)
@@ -1044,6 +1047,14 @@ class MockDashboardApp(tk.Tk):
         ttk.Label(route_frame, textvariable=self.route_version_var, justify="left").grid(
             row=3, column=1, sticky="w"
         )
+        ttk.Label(route_frame, text="遷移要因").grid(row=4, column=0, sticky="nw")
+        self.route_manager_detail_var = tk.StringVar()
+        ttk.Label(
+            route_frame,
+            textvariable=self.route_manager_detail_var,
+            justify="left",
+            wraplength=220,
+        ).grid(row=4, column=1, sticky="w")
 
         # follower_stateカード
         follower_frame = ttk.LabelFrame(
@@ -1085,39 +1096,18 @@ class MockDashboardApp(tk.Tk):
             row=5, column=1, sticky="w"
         )
 
-        # manager_statusカード
-        manager_frame = ttk.LabelFrame(
-            summary_container,
-            text="マネージャ状態 (manager_status)",
-            style="Card.TLabelframe",
-        )
-        manager_frame.grid(row=0, column=2, sticky="nsew")
-        manager_frame.columnconfigure(1, weight=1)
-        ttk.Label(manager_frame, text="状態").grid(row=0, column=0, sticky="w")
-        self.manager_state_var = tk.StringVar()
-        ttk.Label(manager_frame, textvariable=self.manager_state_var).grid(
-            row=0, column=1, sticky="w"
-        )
-        ttk.Label(manager_frame, text="最終要因").grid(row=1, column=0, sticky="w")
-        self.manager_cause_var = tk.StringVar()
-        ttk.Label(manager_frame, textvariable=self.manager_cause_var, wraplength=220).grid(
-            row=1, column=1, sticky="w"
-        )
-        ttk.Label(manager_frame, text="遷移時刻").grid(row=2, column=0, sticky="w")
-        self.manager_transition_var = tk.StringVar()
-        ttk.Label(manager_frame, textvariable=self.manager_transition_var).grid(
-            row=2, column=1, sticky="w"
-        )
-
-        metrics_container = ttk.Frame(parent)
-        metrics_container.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        metrics_container.columnconfigure(0, weight=1, uniform="metrics")
-        metrics_container.columnconfigure(1, weight=1, uniform="metrics")
+        metrics_column = ttk.Frame(summary_container)
+        metrics_column.grid(row=0, column=2, sticky="nsew")
+        metrics_column.columnconfigure(0, weight=1)
+        metrics_column.rowconfigure(0, weight=1)
+        metrics_column.rowconfigure(1, weight=1)
 
         velocity_frame = ttk.LabelFrame(
-            metrics_container, text="ロボット速度 (cmd_vel)", style="Card.TLabelframe"
+            metrics_column,
+            text="ロボット速度 (cmd_vel)",
+            style="Card.TLabelframe",
         )
-        velocity_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        velocity_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
         velocity_frame.columnconfigure(1, weight=1)
         ttk.Label(velocity_frame, text="並進速度").grid(row=0, column=0, sticky="w")
         self.velocity_linear_var = tk.StringVar(value="0.00 m/s")
@@ -1131,9 +1121,11 @@ class MockDashboardApp(tk.Tk):
         )
 
         target_frame = ttk.LabelFrame(
-            metrics_container, text="目標までの距離", style="Card.TLabelframe"
+            metrics_column,
+            text="目標までの距離",
+            style="Card.TLabelframe",
         )
-        target_frame.grid(row=0, column=1, sticky="nsew")
+        target_frame.grid(row=1, column=0, sticky="nsew")
         target_frame.columnconfigure(0, weight=1)
         self.target_distance_var = tk.StringVar()
         ttk.Label(target_frame, textvariable=self.target_distance_var).grid(
@@ -1148,7 +1140,7 @@ class MockDashboardApp(tk.Tk):
     # ------------------------------------------------------------------
     def _build_images(self, parent: ttk.Frame) -> None:
             image_frame = ttk.Frame(parent)
-            image_frame.grid(row=2, column=0, sticky="nsew")
+            image_frame.grid(row=1, column=0, sticky="nsew")
             image_frame.columnconfigure(0, weight=1)
             image_frame.columnconfigure(1, weight=1)
             image_frame.columnconfigure(2, weight=1)
@@ -1179,7 +1171,7 @@ class MockDashboardApp(tk.Tk):
 
     def _build_control_panel(self, parent: ttk.Frame) -> None:
         container = ttk.Frame(parent)
-        container.grid(row=3, column=0, sticky="ew", pady=(8, 8))
+        container.grid(row=2, column=0, sticky="ew", pady=(8, 8))
         container.columnconfigure(0, weight=1)
         container.columnconfigure(1, weight=3)
 
@@ -1206,26 +1198,27 @@ class MockDashboardApp(tk.Tk):
         )
         self.banner_label.grid(row=0, column=0, sticky="nsew")
 
-        control_frame = ttk.LabelFrame(container, text="制御コマンド", padding=8)
+        control_frame = ttk.LabelFrame(container, text="制御コマンド", padding=6)
         control_frame.grid(row=0, column=1, sticky="nsew")
-        for col in range(2):
-            control_frame.columnconfigure(col, weight=1)
+        control_frame.columnconfigure(0, weight=1)
+        control_frame.columnconfigure(1, weight=1)
 
         ttk.Button(
             control_frame,
             text="manual_start 送信",
             command=self._handle_manual_start,
-        ).grid(row=0, column=0, padx=4, pady=4, sticky="ew")
+        ).grid(row=0, column=0, padx=4, pady=(2, 2), sticky="ew")
 
         ttk.Button(
             control_frame,
             text="road_blocked 切替",
             command=self._handle_road_blocked,
-        ).grid(row=0, column=1, padx=4, pady=4, sticky="ew")
+        ).grid(row=0, column=1, padx=4, pady=(2, 2), sticky="ew")
 
         self.sig_value = tk.IntVar(value=1)
         sig_frame = ttk.Frame(control_frame)
-        sig_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=(4, 0))
+        sig_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=(2, 2))
+        sig_frame.columnconfigure(1, weight=1)
         ttk.Label(sig_frame, text="sig_recog").grid(row=0, column=0, sticky="w")
         sig_combo = ttk.Combobox(
             sig_frame,
@@ -1234,40 +1227,44 @@ class MockDashboardApp(tk.Tk):
             state="readonly",
             width=5,
         )
-        sig_combo.grid(row=0, column=1, padx=2)
+        sig_combo.grid(row=0, column=1, padx=2, sticky="w")
         ttk.Button(sig_frame, text="送信", command=self._handle_sig_recog).grid(
             row=0, column=2, padx=2
         )
 
         override_frame = ttk.LabelFrame(
-            control_frame, text="障害物ヒント固定値", padding=8
+            control_frame, text="障害物ヒント固定値", padding=6
         )
-        override_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        override_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 2))
         override_frame.columnconfigure(0, weight=1)
         override_frame.columnconfigure(1, weight=1)
         override_frame.columnconfigure(2, weight=1)
+        override_frame.columnconfigure(3, weight=1)
 
         ttk.Checkbutton(
             override_frame,
             text="固定値送出を有効化",
             variable=self.obstacle_override_active,
             command=self._handle_obstacle_override,
-        ).grid(row=0, column=0, columnspan=3, sticky="w")
+        ).grid(row=0, column=0, columnspan=4, sticky="w")
 
         self.obstacle_block_var = tk.BooleanVar(value=False)
+        block_frame = ttk.Frame(override_frame)
+        block_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 2))
+        block_frame.columnconfigure(1, weight=1)
         ttk.Checkbutton(
-            override_frame,
+            block_frame,
             text="front_blocked",
             variable=self.obstacle_block_var,
             command=self._handle_obstacle_params_changed,
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ).grid(row=0, column=0, sticky="w")
 
         self.obstacle_clearance_var = tk.DoubleVar(value=3.0)
-        ttk.Label(override_frame, text="余裕距離[m]").grid(
-            row=1, column=1, sticky="e", padx=(8, 2)
+        ttk.Label(block_frame, text="余裕距離[m]").grid(
+            row=0, column=1, sticky="e", padx=(8, 2)
         )
         self.obstacle_clearance_spin = ttk.Spinbox(
-            override_frame,
+            block_frame,
             textvariable=self.obstacle_clearance_var,
             from_=0.1,
             to=10.0,
@@ -1275,14 +1272,17 @@ class MockDashboardApp(tk.Tk):
             width=6,
             command=self._handle_obstacle_params_changed,
         )
-        self.obstacle_clearance_spin.grid(row=1, column=2, sticky="w")
+        self.obstacle_clearance_spin.grid(row=0, column=2, sticky="w")
+
+        offset_frame = ttk.Frame(override_frame)
+        offset_frame.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        offset_frame.columnconfigure(1, weight=1)
+        offset_frame.columnconfigure(3, weight=1)
 
         self.obstacle_left_offset_var = tk.DoubleVar(value=0.0)
-        ttk.Label(override_frame, text="左オフセット[m]").grid(
-            row=2, column=1, sticky="e", padx=(8, 2)
-        )
+        ttk.Label(offset_frame, text="左[m]").grid(row=0, column=0, sticky="e", padx=(0, 2))
         self.obstacle_left_spin = ttk.Spinbox(
-            override_frame,
+            offset_frame,
             textvariable=self.obstacle_left_offset_var,
             from_=-2.0,
             to=2.0,
@@ -1290,14 +1290,12 @@ class MockDashboardApp(tk.Tk):
             width=6,
             command=self._handle_obstacle_params_changed,
         )
-        self.obstacle_left_spin.grid(row=2, column=2, sticky="w")
+        self.obstacle_left_spin.grid(row=0, column=1, sticky="w")
 
         self.obstacle_right_offset_var = tk.DoubleVar(value=0.0)
-        ttk.Label(override_frame, text="右オフセット[m]").grid(
-            row=3, column=1, sticky="e", padx=(8, 2)
-        )
+        ttk.Label(offset_frame, text="右[m]").grid(row=0, column=2, sticky="e", padx=(8, 2))
         self.obstacle_right_spin = ttk.Spinbox(
-            override_frame,
+            offset_frame,
             textvariable=self.obstacle_right_offset_var,
             from_=-2.0,
             to=2.0,
@@ -1305,7 +1303,7 @@ class MockDashboardApp(tk.Tk):
             width=6,
             command=self._handle_obstacle_params_changed,
         )
-        self.obstacle_right_spin.grid(row=3, column=2, sticky="w")
+        self.obstacle_right_spin.grid(row=0, column=3, sticky="w")
 
         for widget in (
             self.obstacle_clearance_spin,
@@ -1317,14 +1315,21 @@ class MockDashboardApp(tk.Tk):
     # ------------------------------------------------------------------
 
     def _build_log_tab(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(0, weight=1)
-        for row in range(len(self.LOG_PACKAGES)):
+        columns = 2
+        for col in range(columns):
+            parent.columnconfigure(col, weight=1)
+
+        rows = (len(self.LOG_PACKAGES) + columns - 1) // columns
+        for row in range(rows):
             parent.rowconfigure(row, weight=1)
 
-        for row, package in enumerate(self.LOG_PACKAGES):
+        for index, package in enumerate(self.LOG_PACKAGES):
+            row = index // columns
+            column = index % columns
             frame = ttk.LabelFrame(parent, text=package, padding=6)
+            padx = 8
             pady = (8, 4) if row == 0 else (4, 4)
-            frame.grid(row=row, column=0, sticky="nsew", padx=8, pady=pady)
+            frame.grid(row=row, column=column, sticky="nsew", padx=padx, pady=pady)
             frame.columnconfigure(0, weight=1)
             frame.rowconfigure(0, weight=1)
             text_widget = tk.Text(frame, state="disabled", wrap="none")
@@ -1368,6 +1373,11 @@ class MockDashboardApp(tk.Tk):
             )
             history_text = "\n".join(route_state.version_history)
             self.route_version_var.set(history_text)
+            manager_detail = (
+                f"{manager_status.last_cause} @ "
+                f"{manager_status.last_transition.strftime('%H:%M:%S')}"
+            )
+            self.route_manager_detail_var.set(manager_detail)
 
             # follower_state
             self.follower_state_var.set(
@@ -1391,13 +1401,6 @@ class MockDashboardApp(tk.Tk):
                 f"{follower_state.next_waypoint_label}"
             )
             self.follower_waypoint_var.set(waypoints)
-
-            # manager_status
-            self.manager_state_var.set(manager_status.state)
-            self.manager_cause_var.set(manager_status.last_cause)
-            self.manager_transition_var.set(
-                manager_status.last_transition.strftime("%H:%M:%S")
-            )
 
             # manual / signal / road banner
             now = _now()

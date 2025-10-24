@@ -375,8 +375,10 @@ class MockDataProvider:
             f"[{now.strftime('%H:%M:%S')}] road_blocked={state} を送信しました"
         )
 
-    def toggle_obstacle_hint_override(self, enable: bool) -> None:
+    def set_obstacle_hint_override(self, enable: bool) -> None:
         now = _now()
+        if self.obstacle_override_active == enable:
+            return
         self.obstacle_override_active = enable
         verb = "開始" if enable else "停止"
         self.pending_logs["obstacle_monitor"].append(
@@ -570,9 +572,10 @@ class ImagePane(ttk.LabelFrame):
         self.content_id = self.canvas.create_rectangle(
             0, 0, width, height, fill="#2c3e50", outline=""
         )
+        letterbox_color = self.canvas.cget("bg")
         self.letterbox_ids = (
-            self.canvas.create_rectangle(0, 0, 0, 0, fill="#000000", outline=""),
-            self.canvas.create_rectangle(0, 0, 0, 0, fill="#000000", outline=""),
+            self.canvas.create_rectangle(0, 0, 0, 0, fill=letterbox_color, outline=""),
+            self.canvas.create_rectangle(0, 0, 0, 0, fill=letterbox_color, outline=""),
         )
         self.caption_id = self.canvas.create_text(
             width - 8,
@@ -1163,7 +1166,7 @@ class MockDashboardApp(tk.Tk):
                 "外部カメラ",
                 width=360,
                 height=240,
-                content_ratio=4 / 3,
+                content_ratio=16 / 9,
             )
             self.camera_image.grid(row=0, column=2, sticky="nsew")
 
@@ -1198,73 +1201,86 @@ class MockDashboardApp(tk.Tk):
         )
         self.banner_label.grid(row=0, column=0, sticky="nsew")
 
-        control_frame = ttk.LabelFrame(container, text="制御コマンド", padding=6)
+        control_frame = ttk.LabelFrame(container, text="制御コマンド", padding=4)
         control_frame.grid(row=0, column=1, sticky="nsew")
         control_frame.columnconfigure(0, weight=1)
-        control_frame.columnconfigure(1, weight=1)
 
+        control_notebook = ttk.Notebook(control_frame)
+        control_notebook.grid(row=0, column=0, sticky="nsew")
+
+        manual_tab = ttk.Frame(control_notebook, padding=6)
+        manual_tab.columnconfigure(0, weight=1)
         ttk.Button(
-            control_frame,
-            text="manual_start 送信",
+            manual_tab,
+            text="manual_start を送信",
             command=self._handle_manual_start,
-        ).grid(row=0, column=0, padx=4, pady=(2, 2), sticky="ew")
+        ).grid(row=0, column=0, sticky="ew")
+        self.manual_status_var = tk.StringVar(value="最終送信: --:--:--")
+        ttk.Label(manual_tab, textvariable=self.manual_status_var).grid(
+            row=1, column=0, sticky="w", pady=(4, 0)
+        )
+        control_notebook.add(manual_tab, text="manual_start")
 
-        ttk.Button(
-            control_frame,
-            text="road_blocked 切替",
-            command=self._handle_road_blocked,
-        ).grid(row=0, column=1, padx=4, pady=(2, 2), sticky="ew")
-
+        sig_tab = ttk.Frame(control_notebook, padding=6)
+        sig_tab.columnconfigure(0, weight=1)
+        sig_options = ttk.Frame(sig_tab)
+        sig_options.grid(row=0, column=0, sticky="ew")
         self.sig_value = tk.IntVar(value=1)
-        sig_frame = ttk.Frame(control_frame)
-        sig_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=(2, 2))
-        sig_frame.columnconfigure(1, weight=1)
-        ttk.Label(sig_frame, text="sig_recog").grid(row=0, column=0, sticky="w")
-        sig_combo = ttk.Combobox(
-            sig_frame,
-            textvariable=self.sig_value,
-            values=[0, 1, 2],
-            state="readonly",
-            width=5,
+        ttk.Radiobutton(sig_options, text="GO", value=1, variable=self.sig_value).grid(
+            row=0, column=0, sticky="w"
         )
-        sig_combo.grid(row=0, column=1, padx=2, sticky="w")
-        ttk.Button(sig_frame, text="送信", command=self._handle_sig_recog).grid(
-            row=0, column=2, padx=2
+        ttk.Radiobutton(sig_options, text="STOP", value=2, variable=self.sig_value).grid(
+            row=0, column=1, sticky="w", padx=(8, 0)
         )
-
-        override_frame = ttk.LabelFrame(
-            control_frame, text="障害物ヒント固定値", padding=6
+        ttk.Radiobutton(sig_options, text="未定義", value=0, variable=self.sig_value).grid(
+            row=0, column=2, sticky="w", padx=(8, 0)
         )
-        override_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 2))
-        override_frame.columnconfigure(0, weight=1)
-        override_frame.columnconfigure(1, weight=1)
-        override_frame.columnconfigure(2, weight=1)
-        override_frame.columnconfigure(3, weight=1)
+        ttk.Button(
+            sig_tab,
+            text="sig_recog を送信",
+            command=self._handle_sig_recog,
+        ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.sig_status_var = tk.StringVar(value="最終送信: --:--:--")
+        ttk.Label(sig_tab, textvariable=self.sig_status_var).grid(
+            row=2, column=0, sticky="w", pady=(4, 0)
+        )
+        control_notebook.add(sig_tab, text="sig_recog")
 
-        ttk.Checkbutton(
-            override_frame,
-            text="固定値送出を有効化",
-            variable=self.obstacle_override_active,
-            command=self._handle_obstacle_override,
-        ).grid(row=0, column=0, columnspan=4, sticky="w")
-
+        obstacle_tab = ttk.Frame(control_notebook, padding=6)
+        obstacle_tab.columnconfigure(0, weight=1)
         self.obstacle_block_var = tk.BooleanVar(value=False)
-        block_frame = ttk.Frame(override_frame)
-        block_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 2))
-        block_frame.columnconfigure(1, weight=1)
+        obstacle_row = ttk.Frame(obstacle_tab)
+        obstacle_row.grid(row=0, column=0, sticky="ew")
         ttk.Checkbutton(
-            block_frame,
+            obstacle_row,
             text="front_blocked",
             variable=self.obstacle_block_var,
             command=self._handle_obstacle_params_changed,
         ).grid(row=0, column=0, sticky="w")
-
-        self.obstacle_clearance_var = tk.DoubleVar(value=3.0)
-        ttk.Label(block_frame, text="余裕距離[m]").grid(
-            row=0, column=1, sticky="e", padx=(8, 2)
+        ttk.Button(
+            obstacle_row,
+            text="送出開始",
+            command=self._handle_obstacle_override_start,
+            width=10,
+        ).grid(row=0, column=1, padx=(12, 0))
+        ttk.Button(
+            obstacle_row,
+            text="送出停止",
+            command=self._handle_obstacle_override_stop,
+            width=10,
+        ).grid(row=0, column=2, padx=(8, 0))
+        self.obstacle_override_state_var = tk.StringVar(value="状態: 停止中")
+        ttk.Label(obstacle_row, textvariable=self.obstacle_override_state_var).grid(
+            row=0, column=3, sticky="w", padx=(12, 0)
         )
+
+        value_row = ttk.Frame(obstacle_tab)
+        value_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        value_row.columnconfigure(5, weight=1)
+        self.obstacle_clearance_var = tk.DoubleVar(value=3.0)
+        ttk.Label(value_row, text="余裕距離[m]").grid(row=0, column=0, sticky="e")
         self.obstacle_clearance_spin = ttk.Spinbox(
-            block_frame,
+            value_row,
             textvariable=self.obstacle_clearance_var,
             from_=0.1,
             to=10.0,
@@ -1272,17 +1288,11 @@ class MockDashboardApp(tk.Tk):
             width=6,
             command=self._handle_obstacle_params_changed,
         )
-        self.obstacle_clearance_spin.grid(row=0, column=2, sticky="w")
-
-        offset_frame = ttk.Frame(override_frame)
-        offset_frame.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(2, 0))
-        offset_frame.columnconfigure(1, weight=1)
-        offset_frame.columnconfigure(3, weight=1)
-
+        self.obstacle_clearance_spin.grid(row=0, column=1, sticky="w", padx=(4, 12))
         self.obstacle_left_offset_var = tk.DoubleVar(value=0.0)
-        ttk.Label(offset_frame, text="左[m]").grid(row=0, column=0, sticky="e", padx=(0, 2))
+        ttk.Label(value_row, text="左[m]").grid(row=0, column=2, sticky="e")
         self.obstacle_left_spin = ttk.Spinbox(
-            offset_frame,
+            value_row,
             textvariable=self.obstacle_left_offset_var,
             from_=-2.0,
             to=2.0,
@@ -1290,12 +1300,11 @@ class MockDashboardApp(tk.Tk):
             width=6,
             command=self._handle_obstacle_params_changed,
         )
-        self.obstacle_left_spin.grid(row=0, column=1, sticky="w")
-
+        self.obstacle_left_spin.grid(row=0, column=3, sticky="w", padx=(4, 12))
         self.obstacle_right_offset_var = tk.DoubleVar(value=0.0)
-        ttk.Label(offset_frame, text="右[m]").grid(row=0, column=2, sticky="e", padx=(8, 2))
+        ttk.Label(value_row, text="右[m]").grid(row=0, column=4, sticky="e")
         self.obstacle_right_spin = ttk.Spinbox(
-            offset_frame,
+            value_row,
             textvariable=self.obstacle_right_offset_var,
             from_=-2.0,
             to=2.0,
@@ -1303,7 +1312,7 @@ class MockDashboardApp(tk.Tk):
             width=6,
             command=self._handle_obstacle_params_changed,
         )
-        self.obstacle_right_spin.grid(row=0, column=3, sticky="w")
+        self.obstacle_right_spin.grid(row=0, column=5, sticky="w", padx=(4, 0))
 
         for widget in (
             self.obstacle_clearance_spin,
@@ -1312,6 +1321,20 @@ class MockDashboardApp(tk.Tk):
         ):
             widget.bind("<FocusOut>", self._handle_obstacle_params_changed)
             widget.bind("<Return>", self._handle_obstacle_params_changed)
+        control_notebook.add(obstacle_tab, text="obstacle_hint")
+
+        road_tab = ttk.Frame(control_notebook, padding=6)
+        road_tab.columnconfigure(0, weight=1)
+        ttk.Button(
+            road_tab,
+            text="road_blocked を送信",
+            command=self._handle_road_blocked,
+        ).grid(row=0, column=0, sticky="ew")
+        self.road_status_var = tk.StringVar(value="現在値: False / 最終送信: --:--:--")
+        ttk.Label(road_tab, textvariable=self.road_status_var).grid(
+            row=1, column=0, sticky="w", pady=(4, 0)
+        )
+        control_notebook.add(road_tab, text="road_blocked")
     # ------------------------------------------------------------------
 
     def _build_log_tab(self, parent: ttk.Frame) -> None:
@@ -1443,6 +1466,32 @@ class MockDashboardApp(tk.Tk):
                     banner_fg = "#ffffff"
             self.banner_label.configure(text=banner_text, bg=banner_bg, fg=banner_fg)
 
+            manual_ts = (
+                manual_signal.manual_sent_at.strftime("%H:%M:%S")
+                if manual_signal.manual_sent_at
+                else "--:--:--"
+            )
+            manual_suffix = " (ラッチ中)" if manual_signal.manual_start else ""
+            self.manual_status_var.set(f"最終送信: {manual_ts}{manual_suffix}")
+
+            status_map = {0: "未定義", 1: "GO", 2: "STOP"}
+            sig_label = status_map.get(manual_signal.sig_recog, str(manual_signal.sig_recog))
+            sig_ts = (
+                manual_signal.sig_sent_at.strftime("%H:%M:%S")
+                if manual_signal.sig_sent_at
+                else "--:--:--"
+            )
+            self.sig_status_var.set(f"最終送信: {sig_label} @{sig_ts}")
+
+            road_ts = (
+                manual_signal.road_sent_at.strftime("%H:%M:%S")
+                if manual_signal.road_sent_at
+                else "--:--:--"
+            )
+            self.road_status_var.set(
+                f"現在値: {manual_signal.road_blocked} / 最終送信: {road_ts}"
+            )
+
             # active_target距離
             self.target_distance_var.set(
                 f"現在距離: {active_target.current_distance_m:5.2f} m"
@@ -1486,7 +1535,7 @@ class MockDashboardApp(tk.Tk):
             if camera_mode == "signal":
                 self.camera_image.set_content_ratio(4 / 3)
             else:
-                self.camera_image.set_content_ratio(16 / 3)
+                self.camera_image.set_content_ratio(16 / 9)
             self.camera_image.update_content(camera_caption, camera_color)
 
             # ノード起動ステータス
@@ -1496,8 +1545,11 @@ class MockDashboardApp(tk.Tk):
                     frame.update_status(status)
 
             # 障害物ヒント固定値の同期
-            if self.obstacle_override_active.get() != override_info["active"]:
-                self.obstacle_override_active.set(bool(override_info["active"]))
+            override_active = bool(override_info["active"])
+            if self.obstacle_override_active.get() != override_active:
+                self.obstacle_override_active.set(override_active)
+            state_label = "状態: 送出中" if override_active else "状態: 停止中"
+            self.obstacle_override_state_var.set(state_label)
             self.obstacle_block_var.set(bool(override_info["front_blocked"]))
             self.obstacle_clearance_var.set(float(override_info["clearance_m"]))
             self.obstacle_left_offset_var.set(float(override_info["left_offset_m"]))
@@ -1535,11 +1587,12 @@ class MockDashboardApp(tk.Tk):
             right_offset_m=right,
         )
 
-    def _handle_obstacle_override(self) -> None:
-        self.provider.toggle_obstacle_hint_override(
-            self.obstacle_override_active.get()
-        )
+    def _handle_obstacle_override_start(self) -> None:
+        self.provider.set_obstacle_hint_override(True)
         self._handle_obstacle_params_changed()
+
+    def _handle_obstacle_override_stop(self) -> None:
+        self.provider.set_obstacle_hint_override(False)
 
     def _handle_road_blocked(self) -> None:
         self.provider.toggle_road_blocked()

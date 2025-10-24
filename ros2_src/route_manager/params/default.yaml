@@ -10,4 +10,4 @@ route_manager:
     state_publish_rate_hz: 1.0
     image_encoding_check: false
     report_stuck_timeout_sec: 5.0
-    offset_step_m_max: 1.0
+    offset_step_max_m: 1.0

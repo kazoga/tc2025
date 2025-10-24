@@ -57,7 +57,7 @@ ros2 launch route_manager route_manager.launch.py start_label:=A1 goal_label:=B5
 | 名称 | 型 | 説明 |
 |------|----|------|
 | `/active_route` | `ActiveRoute` | 現在の経路情報（画像含む） |
-| `/route_state` | `RouteState` | 経路状態（status, current_label, message） |
+| `/route_state` | `RouteState` | 経路状態（status※, current_label, message） |
 | `/mission_info` | `MissionInfo` | 経路構成情報（start, goal, checkpoints, description任意） |
 
 ### サービス呼出
@@ -79,18 +79,22 @@ ros2 launch route_manager route_manager.launch.py start_label:=A1 goal_label:=B5
 | `planner_retry_count` | int | 3 | 再試行回数 |
 | `publish_rate_hz` | float | 1.0 | 状態更新周期 |
 | `auto_request_on_startup` | bool | True | 起動直後に経路要求を自動実行するか |
+| `offset_step_max_m` | float | 1.0 | 滞留時の再計画で許容する横オフセット最大値[m] |
 
 ---
+
+※ `status` は `RouteState.STATUS_*` 列挙値で通知され、`STATUS_IDLE` / `STATUS_RUNNING` / `STATUS_UPDATING_ROUTE` / `STATUS_HOLDING` / `STATUS_COMPLETED` / `STATUS_ERROR` などを利用する。
 
 ## 状態遷移
 | 状態 | 概要 |
 |------|------|
-| UNSET | 初期状態 |
+| IDLE | 初期状態（STATUS_IDLE） |
 | REQUESTING | 経路要求中（内部状態） |
-| ACTIVE | 経路有効 |
-| UPDATING | 更新要求中（phase2以降で使用） |
-| COMPLETED | 更新完了（phase2以降で使用） |
-| ERROR | エラー発生時 |
+| RUNNING | 経路有効（STATUS_RUNNING） |
+| UPDATING_ROUTE | 更新要求中（STATUS_UPDATING_ROUTE） |
+| HOLDING | 再計画待機中（STATUS_HOLDING） |
+| COMPLETED | 更新完了（STATUS_COMPLETED） |
+| ERROR | エラー発生時（STATUS_ERROR） |
 
 ---
 

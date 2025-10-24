@@ -334,10 +334,6 @@ class MockDataProvider:
         self.cmd_vel.linear_x = round(random.uniform(-0.2, 1.4), 2)
         self.cmd_vel.angular_z = round(random.uniform(-1.2, 1.2), 2)
 
-        # manual_startはワンショットでFalseへ戻す
-        if self.manual_signal.manual_start:
-            self.manual_signal.manual_start = False
-
         # カメラモード切替
         self.camera_mode = "signal" if self.follower_state.signal_stop_active else "normal"
 
@@ -350,12 +346,13 @@ class MockDataProvider:
     # ------------------------------------------------------------------
     # 操作メソッド
     # ------------------------------------------------------------------
-    def send_manual_start(self) -> None:
+    def set_manual_start(self, value: bool) -> None:
         now = _now()
-        self.manual_signal.manual_start = True
+        self.manual_signal.manual_start = value
         self.manual_signal.manual_sent_at = now
+        state = "True" if value else "False"
         self.pending_logs["route_follower"].append(
-            f"[{now.strftime('%H:%M:%S')}] manual_start=True を送信しました"
+            f"[{now.strftime('%H:%M:%S')}] manual_start={state} を送信しました"
         )
 
     def send_sig_recog(self, value: int) -> None:
@@ -366,9 +363,9 @@ class MockDataProvider:
             f"[{now.strftime('%H:%M:%S')}] sig_recog={value} を送信しました"
         )
 
-    def toggle_road_blocked(self) -> None:
+    def set_road_blocked(self, value: bool) -> None:
         now = _now()
-        self.manual_signal.road_blocked = not self.manual_signal.road_blocked
+        self.manual_signal.road_blocked = value
         self.manual_signal.road_sent_at = now
         state = "True" if self.manual_signal.road_blocked else "False"
         self.pending_logs["route_manager"].append(
@@ -1175,11 +1172,14 @@ class MockDashboardApp(tk.Tk):
     def _build_control_panel(self, parent: ttk.Frame) -> None:
         container = ttk.Frame(parent)
         container.grid(row=2, column=0, sticky="ew", pady=(8, 8))
-        container.columnconfigure(0, weight=1)
-        container.columnconfigure(1, weight=3)
+        container.columnconfigure(0, weight=1, uniform="control")
+        container.columnconfigure(1, weight=3, uniform="control")
 
         banner_frame = ttk.LabelFrame(
-            container, text="信号・手動・封鎖", style="Card.TLabelframe", padding=8
+            container,
+            text="手動・信号・封鎖イベント",
+            style="Card.TLabelframe",
+            padding=8,
         )
         banner_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         banner_frame.columnconfigure(0, weight=1)
@@ -1210,14 +1210,31 @@ class MockDashboardApp(tk.Tk):
 
         manual_tab = ttk.Frame(control_notebook, padding=6)
         manual_tab.columnconfigure(0, weight=1)
+        manual_choice = ttk.Frame(manual_tab)
+        manual_choice.grid(row=0, column=0, sticky="w")
+        self.manual_value = tk.BooleanVar(value=False)
+        ttk.Radiobutton(
+            manual_choice,
+            text="True",
+            value=True,
+            variable=self.manual_value,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(
+            manual_choice,
+            text="False",
+            value=False,
+            variable=self.manual_value,
+        ).grid(row=0, column=1, sticky="w", padx=(12, 0))
         ttk.Button(
             manual_tab,
             text="manual_start を送信",
             command=self._handle_manual_start,
-        ).grid(row=0, column=0, sticky="ew")
-        self.manual_status_var = tk.StringVar(value="最終送信: --:--:--")
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.manual_status_var = tk.StringVar(
+            value="現在値: False / 最終送信: --:--:--"
+        )
         ttk.Label(manual_tab, textvariable=self.manual_status_var).grid(
-            row=1, column=0, sticky="w", pady=(4, 0)
+            row=2, column=0, sticky="w", pady=(6, 0)
         )
         control_notebook.add(manual_tab, text="manual_start")
 
@@ -1230,10 +1247,7 @@ class MockDashboardApp(tk.Tk):
             row=0, column=0, sticky="w"
         )
         ttk.Radiobutton(sig_options, text="STOP", value=2, variable=self.sig_value).grid(
-            row=0, column=1, sticky="w", padx=(8, 0)
-        )
-        ttk.Radiobutton(sig_options, text="未定義", value=0, variable=self.sig_value).grid(
-            row=0, column=2, sticky="w", padx=(8, 0)
+            row=0, column=1, sticky="w", padx=(12, 0)
         )
         ttk.Button(
             sig_tab,
@@ -1248,34 +1262,8 @@ class MockDashboardApp(tk.Tk):
 
         obstacle_tab = ttk.Frame(control_notebook, padding=6)
         obstacle_tab.columnconfigure(0, weight=1)
-        self.obstacle_block_var = tk.BooleanVar(value=False)
-        obstacle_row = ttk.Frame(obstacle_tab)
-        obstacle_row.grid(row=0, column=0, sticky="ew")
-        ttk.Checkbutton(
-            obstacle_row,
-            text="front_blocked",
-            variable=self.obstacle_block_var,
-            command=self._handle_obstacle_params_changed,
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Button(
-            obstacle_row,
-            text="送出開始",
-            command=self._handle_obstacle_override_start,
-            width=10,
-        ).grid(row=0, column=1, padx=(12, 0))
-        ttk.Button(
-            obstacle_row,
-            text="送出停止",
-            command=self._handle_obstacle_override_stop,
-            width=10,
-        ).grid(row=0, column=2, padx=(8, 0))
-        self.obstacle_override_state_var = tk.StringVar(value="状態: 停止中")
-        ttk.Label(obstacle_row, textvariable=self.obstacle_override_state_var).grid(
-            row=0, column=3, sticky="w", padx=(12, 0)
-        )
-
         value_row = ttk.Frame(obstacle_tab)
-        value_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        value_row.grid(row=0, column=0, sticky="ew")
         value_row.columnconfigure(5, weight=1)
         self.obstacle_clearance_var = tk.DoubleVar(value=3.0)
         ttk.Label(value_row, text="余裕距離[m]").grid(row=0, column=0, sticky="e")
@@ -1314,6 +1302,32 @@ class MockDashboardApp(tk.Tk):
         )
         self.obstacle_right_spin.grid(row=0, column=5, sticky="w", padx=(4, 0))
 
+        controls_row = ttk.Frame(obstacle_tab)
+        controls_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.obstacle_block_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            controls_row,
+            text="front_blocked",
+            variable=self.obstacle_block_var,
+            command=self._handle_obstacle_params_changed,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            controls_row,
+            text="送出開始",
+            command=self._handle_obstacle_override_start,
+            width=10,
+        ).grid(row=0, column=1, padx=(12, 0))
+        ttk.Button(
+            controls_row,
+            text="送出停止",
+            command=self._handle_obstacle_override_stop,
+            width=10,
+        ).grid(row=0, column=2, padx=(8, 0))
+        self.obstacle_override_state_var = tk.StringVar(value="状態: 停止中")
+        ttk.Label(obstacle_tab, textvariable=self.obstacle_override_state_var).grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
+
         for widget in (
             self.obstacle_clearance_spin,
             self.obstacle_left_spin,
@@ -1325,14 +1339,25 @@ class MockDashboardApp(tk.Tk):
 
         road_tab = ttk.Frame(control_notebook, padding=6)
         road_tab.columnconfigure(0, weight=1)
+        road_choice = ttk.Frame(road_tab)
+        road_choice.grid(row=0, column=0, sticky="w")
+        self.road_value = tk.BooleanVar(value=False)
+        ttk.Radiobutton(
+            road_choice, text="True", value=True, variable=self.road_value
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(
+            road_choice, text="False", value=False, variable=self.road_value
+        ).grid(row=0, column=1, sticky="w", padx=(12, 0))
         ttk.Button(
             road_tab,
             text="road_blocked を送信",
             command=self._handle_road_blocked,
-        ).grid(row=0, column=0, sticky="ew")
-        self.road_status_var = tk.StringVar(value="現在値: False / 最終送信: --:--:--")
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.road_status_var = tk.StringVar(
+            value="現在値: False / 最終送信: --:--:--"
+        )
         ttk.Label(road_tab, textvariable=self.road_status_var).grid(
-            row=1, column=0, sticky="w", pady=(4, 0)
+            row=2, column=0, sticky="w", pady=(6, 0)
         )
         control_notebook.add(road_tab, text="road_blocked")
     # ------------------------------------------------------------------
@@ -1471,8 +1496,10 @@ class MockDashboardApp(tk.Tk):
                 if manual_signal.manual_sent_at
                 else "--:--:--"
             )
-            manual_suffix = " (ラッチ中)" if manual_signal.manual_start else ""
-            self.manual_status_var.set(f"最終送信: {manual_ts}{manual_suffix}")
+            self.manual_value.set(manual_signal.manual_start)
+            self.manual_status_var.set(
+                f"現在値: {manual_signal.manual_start} / 最終送信: {manual_ts}"
+            )
 
             status_map = {0: "未定義", 1: "GO", 2: "STOP"}
             sig_label = status_map.get(manual_signal.sig_recog, str(manual_signal.sig_recog))
@@ -1482,12 +1509,15 @@ class MockDashboardApp(tk.Tk):
                 else "--:--:--"
             )
             self.sig_status_var.set(f"最終送信: {sig_label} @{sig_ts}")
+            if manual_signal.sig_recog in (1, 2):
+                self.sig_value.set(manual_signal.sig_recog)
 
             road_ts = (
                 manual_signal.road_sent_at.strftime("%H:%M:%S")
                 if manual_signal.road_sent_at
                 else "--:--:--"
             )
+            self.road_value.set(manual_signal.road_blocked)
             self.road_status_var.set(
                 f"現在値: {manual_signal.road_blocked} / 最終送信: {road_ts}"
             )
@@ -1567,7 +1597,7 @@ class MockDashboardApp(tk.Tk):
             widget.configure(state="disabled")
 
     def _handle_manual_start(self) -> None:
-        self.provider.send_manual_start()
+        self.provider.set_manual_start(bool(self.manual_value.get()))
 
     def _handle_sig_recog(self) -> None:
         self.provider.send_sig_recog(self.sig_value.get())
@@ -1595,7 +1625,7 @@ class MockDashboardApp(tk.Tk):
         self.provider.set_obstacle_hint_override(False)
 
     def _handle_road_blocked(self) -> None:
-        self.provider.toggle_road_blocked()
+        self.provider.set_road_blocked(bool(self.road_value.get()))
 
     def _handle_start_node(
         self, package: str, parameter_file: str, simulator_enabled: bool

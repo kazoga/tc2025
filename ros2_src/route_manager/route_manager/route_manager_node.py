@@ -100,13 +100,25 @@ def ros_route_to_core(route: Route) -> RouteModel:
             left_open=float(getattr(wp, "left_open", 0.0) or 0.0),
         )
         rm_wps.append(w)
+    start_index = int(getattr(route, "start_index", 0))
+    if rm_wps and 0 <= start_index < len(rm_wps):
+        current_index = start_index
+        current_label = rm_wps[start_index].label
+    else:
+        current_index = 0 if rm_wps else -1
+        current_label = rm_wps[0].label if rm_wps else ""
+    start_label = str(
+        getattr(route, "start_waypoint_label", getattr(route, "start_label", current_label))
+    )
+    if start_label:
+        current_label = start_label
     return RouteModel(
         waypoints=rm_wps,
         version=VersionMM(major=version_int, minor=0),
         frame_id=frame_id,
         has_image=has_image,
-        current_index=0 if rm_wps else -1,
-        current_label=(rm_wps[0].label if rm_wps else ""),
+        current_index=current_index,
+        current_label=current_label,
     )
 
 
@@ -117,7 +129,7 @@ def core_route_to_ros(route: RouteModel) -> Route:
     msg.header.frame_id = route.frame_id or "map"
     msg.version = int(route.version.to_int())
     msg.start_index = route.current_index
-    msg.start_wp_label = route.current_label
+    msg.start_waypoint_label = route.current_label
     # route_image の実体はplanner応答から受領する前提。ここでは有無のみを尊重。
     if route.has_image:
         msg.route_image = Image()  # encodingなどはplanner実装に依存
@@ -168,7 +180,7 @@ class RouteManagerNode(Node):
         self.declare_parameter("state_publish_rate_hz", 1.0)
         self.declare_parameter("image_encoding_check", False)
         self.declare_parameter("report_stuck_timeout_sec", 5.0)
-        self.declare_parameter("offset_step_m_max", 1.0)  # shift 最大横ずれ[m]
+        self.declare_parameter("offset_step_max_m", 1.0)  # shift 最大横ずれ[m]
 
         # ---------------- パラメータ取得 ----------------
         self.start_label: str = self.get_parameter("start_label").get_parameter_value().string_value
@@ -187,8 +199,8 @@ class RouteManagerNode(Node):
         self.report_stuck_timeout_sec: float = float(
             self.get_parameter("report_stuck_timeout_sec").get_parameter_value().double_value
         )
-        self.offset_step_m_max: float = float(
-            self.get_parameter("offset_step_m_max").get_parameter_value().double_value
+        self.offset_step_max_m: float = float(
+            self.get_parameter("offset_step_max_m").get_parameter_value().double_value
         )
         planner_get_service = 'get_route'
         planner_update_service = 'update_route'
@@ -234,7 +246,7 @@ class RouteManagerNode(Node):
             publish_active_route=self._publish_active_route_from_core,
             publish_status=self._publish_status_from_core,
             publish_route_state=self._publish_route_state_from_core,
-            offset_step_m_max=self.offset_step_m_max,
+            offset_step_max_m=self.offset_step_max_m,
         )
 
         # Planner呼び出しの非同期コールバックをCoreへ注入
@@ -291,12 +303,34 @@ class RouteManagerNode(Node):
         )
         self.pub_manager_status.publish(msg)
 
+    @staticmethod
+    def _normalize_route_state_status(status: str) -> int:
+        """RouteState.status に格納する列挙値へ変換する。"""
+        normalized = (status or "").strip().lower()
+        mapping = {
+            "": RouteState.STATUS_UNKNOWN,
+            "unknown": RouteState.STATUS_UNKNOWN,
+            "idle": RouteState.STATUS_IDLE,
+            "running": RouteState.STATUS_RUNNING,
+            "active": RouteState.STATUS_RUNNING,
+            "requesting": RouteState.STATUS_RUNNING,
+            "updating": RouteState.STATUS_UPDATING_ROUTE,
+            "updating_route": RouteState.STATUS_UPDATING_ROUTE,
+            "waiting_reroute": RouteState.STATUS_HOLDING,
+            "holding": RouteState.STATUS_HOLDING,
+            "completed": RouteState.STATUS_COMPLETED,
+            "finished": RouteState.STATUS_COMPLETED,
+            "error": RouteState.STATUS_ERROR,
+            "failed": RouteState.STATUS_ERROR,
+        }
+        return mapping.get(normalized, RouteState.STATUS_UNKNOWN)
+
     def _publish_route_state_from_core(self, idx: int, label: str, ver: int, total: int, status: str) -> None:
         msg = RouteState()
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
-        msg.status = status
+        msg.status = self._normalize_route_state_status(status)
         msg.current_index = int(idx)
         msg.current_label = str(label)
         msg.route_version = int(ver)
@@ -337,17 +371,17 @@ class RouteManagerNode(Node):
         if getattr(result, "success", False):
             # replan/shift/skip の区別は note で示す（元実装のコメントを維持）
             if note == "skipped":
-                res.decision = 2  # DECISION_SKIP
+                res.decision_code = ReportStuck.Response.DECISION_SKIP
             else:
-                res.decision = 1  # DECISION_REPLAN（shift含む）
+                res.decision_code = ReportStuck.Response.DECISION_REPLAN
             res.note = note
             res.waiting_deadline = Duration(sec=0, nanosec=200 * 10**6)
             res.offset_hint = offset_hint
             self.get_logger().info(
-                f"[Node] {self.report_stuck_service_name}: success decision={res.decision} note='{note}'"
+                f"[Node] {self.report_stuck_service_name}: success decision_code={res.decision_code} note='{note}'"
             )
         else:
-            res.decision = 3  # DECISION_FAILED
+            res.decision_code = ReportStuck.Response.DECISION_FAILED
             res.note = note or "avoidance_failed"
             res.waiting_deadline = Duration(sec=0, nanosec=0)
             res.offset_hint = 0.0

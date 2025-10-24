@@ -90,15 +90,15 @@ followerから滞留検知を受けた場合、以下の3層判断ロジック�
 #### 第1層：左右オフセット判定
 - 経路上に左右余地があればオフセット付きで再計画を指示。  
 - 条件：`reason in ("stagnation","avoidance_failed")`, `avoid_trial_count < avoid_max_retry`, `last_hint_blocked=True`
-- 結果：`offset_hint` に ±offset_step を設定し、`decision=REPLAN`。
+- 結果：`offset_hint` に ±min(hint許容量, `offset_step_max_m`) を設定し、`decision_code=REPLAN`。
 
 #### 第2層：スキップ判定
 - 現WPが `skippable=True` かつ `dist_to_next < skip_threshold_m` の場合、短区間を飛ばして更新。
-- 結果：`decision=SKIP`。内部で `active_route` をスライスし再配信。
+- 結果：`decision_code=SKIP`。内部で `active_route` をスライスし再配信。
 
 #### 第3層：再計画／失敗判定
-- planner通信が成功 → `decision=REPLAN`
-- 失敗またはtimeout → `decision=FAILED`（HOLDINGへ遷移）
+- planner通信が成功 → `decision_code=REPLAN`
+- 失敗またはtimeout → `decision_code=FAILED`（HOLDINGへ遷移）
 
 ### 5.3 HOLDING状態
 - planner連続失敗や経路喪失時に遷移。
@@ -133,8 +133,11 @@ followerから滞留検知を受けた場合、以下の3層判断ロジック�
 
 **Request**
 ```
-string reason
+int32 route_version
+int32 current_index
 string current_wp_label
+geometry_msgs/Pose current_pose_map
+string reason
 uint32 avoid_trial_count
 bool last_hint_blocked
 float32 last_applied_offset_m
@@ -142,7 +145,12 @@ float32 last_applied_offset_m
 
 **Response**
 ```
-uint8 decision  # 1=REPLAN,2=SKIP,3=FAILED
+uint8 DECISION_NONE=0
+uint8 DECISION_REPLAN=1
+uint8 DECISION_SKIP=2
+uint8 DECISION_FAILED=3
+
+uint8 decision_code
 builtin_interfaces/Duration waiting_deadline
 float32 offset_hint
 string note
@@ -167,7 +175,7 @@ uint32 route_version
 | `waiting_deadline_sec` | float | 8.0 | followerのWAITING最大待機時間 |
 | `skip_threshold_m` | float | 0.8 | スキップ距離閾値 |
 | `avoid_max_retry` | int | 3 | follower側局所回避上限回数 |
-| `offset_step` | float | 0.5 | オフセットステップ幅[m] |
+| `offset_step_max_m` | float | 1.0 | 再計画指示時に許容する横ずれ最大値[m] |
 
 ---
 
@@ -186,8 +194,8 @@ uint32 route_version
 
 Phase3では、動的経路封鎖（`road_block`）検知に基づき、
 `RUNNING→UPDATING_ROUTE` への自律遷移を許可する。  
-`offset_hint` パラメータをroute_plannerに転送し、  
-左右オフセットを考慮した回避ルート生成を実現予定。
+`offset_hint` パラメータをroute_plannerに転送し、
+左右オフセット（最大 `offset_step_max_m`）を考慮した回避ルート生成を実現予定。
 
 ---
 
@@ -196,7 +204,7 @@ Phase3では、動的経路封鎖（`road_block`）検知に基づき、
 - `/active_route` のQoSは **TRANSIENT_LOCAL** とし、follower再起動時にも受信可能にする。
 - `/manager_status` はVOLATILEで構わないが、周期送信によりGUIが最新状態を把握。
 - 状態は4種類に固定し、内部フラグで細分化しても外部公開しない。
-- `/report_stuck` 応答は同期完了後、即座にdecisionを返す。blocking時間は200ms以下を目標。
+- `/report_stuck` 応答は同期完了後、即座にdecision_codeを返す。blocking時間は200ms以下を目標。
 - route_plannerとの通信は非同期futureを用い、timeout管理を徹底。
 
 ---

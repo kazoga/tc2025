@@ -197,8 +197,12 @@ class RouteFollowerNode(Node):
                 )
             )
 
-        route = CoreRoute(version=int(getattr(msg, "version", -1)), waypoints=wp_list,
-                            start_index=int(getattr(msg, "start_index", 0)), start_label=str(getattr(msg, "start_label", "")))
+        route = CoreRoute(
+            version=int(getattr(msg, "version", -1)),
+            waypoints=wp_list,
+            start_index=int(getattr(msg, "start_index", 0)),
+            start_waypoint_label=str(getattr(msg, "start_waypoint_label", "")),
+        )
         self.core.update_route(route)
         if self.start_immediately:
             self.get_logger().info("start_immediately が有効のため自動開始を指示します。")
@@ -222,9 +226,9 @@ class RouteFollowerNode(Node):
         sample = HintSample(
             t=time.time(),
             front_blocked=bool(msg.front_blocked),
-            front_range=float(msg.front_range),
-            left_open=float(msg.left_is_open),
-            right_open=float(msg.right_is_open),
+            front_clearance=float(msg.front_clearance_m),
+            left_offset=float(msg.left_offset_m),
+            right_offset=float(msg.right_offset_m),
         )
         self.core.update_hint(sample)
 
@@ -271,11 +275,11 @@ class RouteFollowerNode(Node):
             return
 
         self.get_logger().info(
-            f"{self.report_stuck_service_name} result: decision={res.decision}, "
+            f"{self.report_stuck_service_name} result: decision_code={res.decision_code}, "
             f"note='{res.note}', offset_hint={res.offset_hint:.2f}"
         )
 
-        if res.decision == 3:
+        if res.decision_code == ReportStuck.Response.DECISION_FAILED:
             note = res.note or "avoidance_failed"
             self.core.notify_reroute_failed(note)
 
@@ -316,6 +320,9 @@ class RouteFollowerNode(Node):
         msg.route_version = int(state["route_version"])
         msg.state = str(state["status"])
         msg.current_index = int(state["index"])
+        msg.front_blocked_majority = bool(state.get("front_blocked", False))
+        msg.left_offset_m_median = float(state.get("left_offset_m_median", 0.0))
+        msg.right_offset_m_median = float(state.get("right_offset_m_median", 0.0))
         msg.avoidance_attempt_count = int(state["avoid_count"])
         msg.last_stagnation_reason = str(state["reason"])
         self.pub_state.publish(msg)

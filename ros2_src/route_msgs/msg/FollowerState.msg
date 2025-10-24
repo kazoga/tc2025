@@ -15,8 +15,8 @@ int32 avoidance_attempt_count
 string last_stagnation_reason
 
 bool front_blocked_majority
-float32 hint_left_open_m_median
-float32 hint_right_open_m_median
+float32 left_offset_m_median
+float32 right_offset_m_median
 
 string current_waypoint_label
 string next_waypoint_label

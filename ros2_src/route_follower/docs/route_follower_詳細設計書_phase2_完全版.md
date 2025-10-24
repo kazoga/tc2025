@@ -37,7 +37,7 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 |-------------|----|------|
 | /active_route | route_msgs/Route | 経路情報（Waypoint配列、TRANSIENT_LOCAL） |
 | /amcl_pose | geometry_msgs/PoseStamped | 現在推定位置（map座標系） |
-| /obstacle_avoidance_hint | route_msgs/ObstacleAvoidanceHint | 回避ヒント情報（front_blocked / 左右開放度[m]） |
+| /obstacle_avoidance_hint | route_msgs/ObstacleAvoidanceHint | 回避ヒント情報（front_blocked / 左右オフセット提案[m]） |
 | /manual_start | std_msgs/Bool | 手動再開信号（Trueで解除） |
 | /sig_recog | std_msgs/Int32 | 信号認識結果（1=GO, 2=NOGO, 他=未定義） |
 
@@ -88,8 +88,8 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 | pose | geometry_msgs/Pose | 位置・姿勢 |
 | line_stop | bool | 停止ラインフラグ |
 | signal_stop | bool | 信号停止フラグ |
-| left_open | float | 左回避許容量[m] |
-| right_open | float | 右回避許容量[m] |
+| left_offset | float | 左回避許容量[m] |
+| right_offset | float | 右回避許容量[m] |
 
 ### 5.2 FollowerState.msg（Phase2拡張）
 
@@ -103,8 +103,8 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 | avoidance_attempt_count | int32 | 回避試行回数 |
 | last_stagnation_reason | string | 最後の滞留理由 |
 | front_blocked_majority | bool | front_blocked多数決結果 |
-| hint_left_open_m_median | float | Hint左中央値[m] |
-| hint_right_open_m_median | float | Hint右中央値[m] |
+| left_offset_m_median | float | Hint左オフセット中央値[m] |
+| right_offset_m_median | float | Hint右オフセット中央値[m] |
 
 ### 5.3 ReportStuck.srv
 
@@ -118,7 +118,7 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 | Req | avoid_trial_count | uint32 | 当該Waypointでの回避試行回数 |
 | Req | last_hint_blocked | bool | 直近Hintが閉塞を示したか |
 | Req | last_applied_offset_m | float32 | 直前に適用した横オフセット[m] |
-| Res | decision | uint8 | 1=replan, 2=skip, 3=failed |
+| Res | decision_code | uint8 | 1=replan, 2=skip, 3=failed |
 | Res | waiting_deadline | Duration | WAITING_REROUTE継続上限 |
 | Res | offset_hint | float32 | plannerへ提示する左右オフセット提案 |
 | Res | note | string | 任意メモ |
@@ -164,7 +164,7 @@ IDLE → RUNNING → WAITING_STOP → RUNNING/FINISHED
 4. 回避サブゴール切替後2秒間は滞留カウントを無視。
 
 ### 7.2 回避動作
-1. Hintキャッシュ評価により左右開放度中央値を取得。  
+1. Hintキャッシュ評価により左右オフセット中央値を取得。
 2. waypoint上限と比較し、小さい方を採用。  
 3. offset_min=0.35m〜offset_max=5.0mに制限。  
 4. L字回避を2段階サブゴール（横→前進）として `_avoid_queue` に登録。  
@@ -178,7 +178,7 @@ IDLE → RUNNING → WAITING_STOP → RUNNING/FINISHED
 
 ### 7.4 /report_stuck 処理
 - サービスready確認→同期呼び出し。  
-- 応答decision=replan/skip→WAITING_REROUTE、failed→ERROR。  
+- 応答decision_code=replan/skip→WAITING_REROUTE、failed→ERROR。  
 - timeout発生→WAITING_REROUTE + timeout監視。
 
 ### 7.5 WARN出力
@@ -238,7 +238,7 @@ IDLE → RUNNING → WAITING_STOP → RUNNING/FINISHED
 ## 11. Phase3 拡張前提
 
 - L字回避失敗時の反対側リトライ。  
-- report_stuckの拡張decision（replan/skip/failed/retry）。  
+- report_stuckの拡張decision_code（replan/skip/failed/retry）。  
 - 状態遷移追加（RETRYINGなど）。
 
 ---

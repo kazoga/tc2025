@@ -214,7 +214,7 @@ class PlannerUpdateCb(Protocol):
 
 PublishActiveRoute = Callable[[RouteModel], None]
 PublishStatus = Callable[[str, str, str, int], None]
-PublishRouteState = Callable[[int, str, int, int, str], None]  # idx, label, ver, total, status
+PublishRouteState = Callable[[int, str, int, int, str], None]  # idx, label, ver, total, status_name
 
 
 # =============================================================================
@@ -235,7 +235,7 @@ class RouteManagerCore:
         publish_active_route: PublishActiveRoute,
         publish_status: PublishStatus,
         publish_route_state: PublishRouteState,
-        offset_step_m_max: float = 1.5,
+        offset_step_max_m: float = 1.5,
     ) -> None:
         # 依存注入
         self._log = logger
@@ -244,7 +244,7 @@ class RouteManagerCore:
         self._publish_route_state = publish_route_state
 
         # パラメータ
-        self.offset_step_m_max = float(offset_step_m_max)
+        self.offset_step_max_m = float(offset_step_max_m)
 
         # 内部状態
         self.route_model: Optional[RouteModel] = None
@@ -524,7 +524,7 @@ class RouteManagerCore:
             )
 
         open_len = right_open if right_side else left_open
-        shift_d = clamp(open_len, 0.0, float(self.offset_step_m_max))
+        shift_d = clamp(open_len, 0.0, float(self.offset_step_max_m))
         self._log(f"[Core] _try_shift: right_side={right_side}, open_len={open_len}, shift_d={shift_d}")
         if shift_d <= 0.0:
             self._log("[Core] _try_shift: shift_d <= 0 -> abort")

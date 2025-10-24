@@ -4,9 +4,9 @@
 Google Python Style / 型ヒント完備 / 日本語コメント。cv_bridgeはbgr8で出力。
 
 本ノードは単一2D LiDARの `/scan` を購読し、以下を行う:
-  * 前方くさび領域の閉塞判定 (front_blocked)  … legacy: ±front_half_deg 内で x < stop_dist_m の点が存在
+  * 前方くさび領域の閉塞判定 (front_blocked)  … legacy: ±front_cone_half_deg 内で x < stop_dist_m の点が存在
   * 左右の回避オフセット（可用幅）を legacy 方式で算出（ギャップ検出 + 外縁 + 下限0.75m）
-  * 上記ヒントを `route_msgs/ObstacleAvoidanceHint` として publish（front_range / left_is_open / right_is_open を [m] で出力）
+  * 上記ヒントを `route_msgs/ObstacleAvoidanceHint` として publish（front_clearance_m / left_offset_m / right_offset_m を [m] で出力）
   * デバッグ用に LiDAR 点群を画像化し `sensor_msgs/Image` (bgr8) で publish（laserScanViewer 相当の描画仕様）
 
 参考に踏襲した実装: waypoint_manager.py の laserScanCallback / laserScanViewer。
@@ -35,7 +35,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from builtin_interfaces.msg import Time as TimeMsg
 
 # ユーザー指定: route_msgs が正しい
-from route_msgs.msg import ObstacleAvoidanceHint  # stamp, front_blocked: bool, front_range: float32, left_is_open: float32, right_is_open: float32
+from route_msgs.msg import ObstacleAvoidanceHint  # stamp, front_blocked: bool, front_clearance_m: float32, left_offset_m: float32, right_offset_m: float32
 
 from cv_bridge import CvBridge
 
@@ -48,7 +48,7 @@ class ObstacleMonitorNode(Node):
 
         # ---- Parameters (legacy 準拠) ----
         # 前方閉塞判定くさび角（半角）
-        self.declare_parameter('front_half_deg', 10.0)
+        self.declare_parameter('front_cone_half_deg', 10.0)
         # 停止しきい値 [m]（くさび内で x < stop_dist_m なら閉塞）
         self.declare_parameter('stop_dist_m', 1.0)
 
@@ -62,7 +62,7 @@ class ObstacleMonitorNode(Node):
         # ロボット幅 [m]（legacy: 0.8）
         self.declare_parameter('robot_width_m', 0.8)
         # 下限値 [m]（legacy: 0.75）
-        self.declare_parameter('min_offset_lower_bound_m', 0.75)
+        self.declare_parameter('avoid_offset_min_m', 0.75)
 
         # viewer 仕様（legacy 相当: 8m x-range, ±4m y-range, 100 pix/m）
         self.declare_parameter('viewer_map_range_m', 8.0)
@@ -136,7 +136,7 @@ class ObstacleMonitorNode(Node):
 
         # cache: 最新の点群（viewer 用）
         self._last_points_xy: Optional[np.ndarray] = None
-        self._latest_front_range: float = float('inf')
+        self._latest_front_clearance: float = float('inf')
         self._hint_range_m: float = max_obstacle_distance
         self._hint_range_last_warned: Optional[float] = None
         self._amcl_pose_xyyaw: Optional[Tuple[float, float, float]] = None
@@ -164,9 +164,9 @@ class ObstacleMonitorNode(Node):
         1) ±90° の前方のみ残す
         2) x <= max_obstacle_distance_m で抽出
         3) 左右に分割し、|y| 昇順で並べ替え
-        4) ギャップ検出で offset を決定、外縁採用もあり。最終的に min_offset_lower_bound_m を下限に丸め
-        5) front_blocked 判定: ±front_half_deg くさび内に x<stop_dist_m の点があれば True
-        6) ヒント publish（left_is_open/right_is_open に offset[m] を格納）
+        4) ギャップ検出で offset を決定、外縁採用もあり。最終的に avoid_offset_min_m を下限に丸め
+        5) front_blocked 判定: ±front_cone_half_deg くさび内に x<stop_dist_m の点があれば True
+        6) ヒント publish（left_offset_m/right_offset_m に offset[m] を格納）
         7) viewer 画像 publish（laserScanViewer 相当の描画）
         """
         # ---- 角度列の生成 ----
@@ -199,7 +199,7 @@ class ObstacleMonitorNode(Node):
         # ---- オフセット算出（legacy: calcAvoidanceOffset） ----
         robot_width = float(self.get_parameter('robot_width_m').value)
         half_width = robot_width / 2.0
-        min_lower = float(self.get_parameter('min_offset_lower_bound_m').value)
+        min_lower = float(self.get_parameter('avoid_offset_min_m').value)
 
         offset_l = self._calc_avoidance_offset(left, robot_width, half_width)
         offset_r = self._calc_avoidance_offset(right, robot_width, half_width)
@@ -208,34 +208,46 @@ class ObstacleMonitorNode(Node):
         offset_l = max(offset_l, min_lower) if offset_l > 0.0 else 0.0
         offset_r = max(offset_r, min_lower) if offset_r > 0.0 else 0.0
 
-        # ---- 前方閉塞判定（±front_half_deg くさび & x < stop_dist_m） ----
+        # ---- 前方閉塞判定（±front_cone_half_deg くさび & x < stop_dist_m） ----
         stop_dist_m = float(self.get_parameter('stop_dist_m').value)
-        front_blocked, front_range_raw = self._is_front_blocked(xy_extract, robot_width, stop_dist_m, 5.0, 5)
-        if math.isfinite(front_range_raw) and front_range_raw <= hint_range:
-            front_range_hint = float(front_range_raw)
+        front_blocked, front_clearance_raw = self._is_front_blocked(xy_extract, robot_width, stop_dist_m, 5.0, 5)
+        if math.isfinite(front_clearance_raw) and front_clearance_raw <= hint_range:
+            front_clearance_hint = float(front_clearance_raw)
         else:
-            front_range_hint = float('inf')
+            front_clearance_hint = float('inf')
 
-        self._latest_front_range = front_range_hint
+        self._latest_front_clearance = front_clearance_hint
 
         # ---- ヒント publish ----
         def _fmt(val: float) -> str:
             return f"{val:.2f}" if math.isfinite(val) else "inf"
 
         self.get_logger().info(
-            "Publish hint: stop_dist=%.2f, front_blocked=%s, front_range=%s, left_is_open=%.2f, right_is_open=%.2f"
+            "Publish hint: stop_dist=%.2f, front_blocked=%s, front_clearance=%s, left_offset=%.2f, right_offset=%.2f"
             % (
                 stop_dist_m,
                 front_blocked,
-                _fmt(front_range_hint if math.isfinite(front_range_hint) else front_range_raw),
+                _fmt(
+                    front_clearance_hint
+                    if math.isfinite(front_clearance_hint)
+                    else front_clearance_raw
+                ),
                 offset_l,
                 offset_r,
             )
         )
-        self._publish_hint(front_blocked, front_range_hint, offset_l, offset_r)
+        self._publish_hint(front_blocked, front_clearance_hint, offset_l, offset_r)
 
         # ---- 画像 publish（laserScanViewer 相当） ----
-        self._publish_scan_image(xy, offset_l, offset_r, robot_width, half_width, front_range_hint, hint_range)
+        self._publish_scan_image(
+            xy,
+            offset_l,
+            offset_r,
+            robot_width,
+            half_width,
+            front_clearance_hint,
+            hint_range,
+        )
 
     # -------------------------------
     # XY 変換（±90° フィルタ含む）
@@ -344,18 +356,18 @@ class ObstacleMonitorNode(Node):
     def _publish_hint(
         self,
         front_blocked: bool,
-        front_range_m: float,
-        left_open_m: float,
-        right_open_m: float,
+        front_clearance_m: float,
+        left_offset_m: float,
+        right_offset_m: float,
     ) -> None:
         """ObstacleAvoidanceHint を publish."""
         msg = ObstacleAvoidanceHint()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "base_link"
         msg.front_blocked = bool(front_blocked)
-        msg.front_range = float(front_range_m)
-        msg.left_is_open = float(left_open_m)
-        msg.right_is_open = float(right_open_m)
+        msg.front_clearance_m = float(front_clearance_m)
+        msg.left_offset_m = float(left_offset_m)
+        msg.right_offset_m = float(right_offset_m)
 
         self.pub_hint.publish(msg)
 
@@ -413,7 +425,7 @@ class ObstacleMonitorNode(Node):
         offset_r: float,
         robot_width: float,
         half_width: float,
-        front_range_m: float,
+        front_clearance_m: float,
         hint_range_m: float,
     ) -> None:
         """legacy の laserScanViewer と同等の可視化を bgr8 で publish する."""
@@ -452,9 +464,9 @@ class ObstacleMonitorNode(Node):
         if 0 <= hint_py < height:
             cv2.line(grid, (0, hint_py), (width, hint_py), (0, 165, 255), thickness=1, lineType=cv2.LINE_AA)
 
-        # front_range ライン（マゼンタ）
-        if math.isfinite(front_range_m):
-            front_py = height - int(round(front_range_m * pixel_pitch_f))
+        # front_clearance ライン（マゼンタ）
+        if math.isfinite(front_clearance_m):
+            front_py = height - int(round(front_clearance_m * pixel_pitch_f))
             if 0 <= front_py < height:
                 cv2.line(grid, (0, front_py), (width, front_py), (255, 0, 255), thickness=2, lineType=cv2.LINE_AA)
 

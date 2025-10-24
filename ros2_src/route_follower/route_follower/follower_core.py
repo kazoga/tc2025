@@ -63,16 +63,16 @@ class Route:
     version: int
     waypoints: List[Waypoint]
     start_index: int = 0
-    start_label: str = ""
+    start_waypoint_label: str = ""
 
 
 @dataclass
 class HintSample:
     t: float
     front_blocked: bool
-    left_open: float
-    right_open: float
-    front_range: float = math.inf
+    left_offset: float
+    right_offset: float
+    front_clearance: float = math.inf
 
 
 @dataclass
@@ -180,10 +180,10 @@ class FollowerCore:
 
         # 統計結果（update_hintで逐次更新）
         self._hint_front_blocked_majority = False
-        self._hint_left_open_median = 0.0
-        self._hint_right_open_median = 0.0
+        self._hint_left_offset_median = 0.0
+        self._hint_right_offset_median = 0.0
         self._hint_enough = False
-        self._hint_front_range_latest = float('inf')
+        self._hint_front_clearance_latest = float('inf')
 
     # ========================= 受け渡しAPI（非タイマー） =========================
     def update_route(self, route: Route) -> None:
@@ -203,8 +203,8 @@ class FollowerCore:
         """Hint統計の最新値をセット（Node側で統計済み）。"""
         with self._hint_lock:
             self._hint_front_blocked_majority = bool(fb_major)
-            self._hint_left_open_median = float(med_l)
-            self._hint_right_open_median = float(med_r)
+            self._hint_left_offset_median = float(med_l)
+            self._hint_right_offset_median = float(med_r)
             self._hint_enough = bool(enough)
 
     # tick 内で使用するスナップショット取得（ロックは極小）
@@ -212,8 +212,8 @@ class FollowerCore:
         with self._hint_lock:
             return (
                 self._hint_front_blocked_majority,
-                self._hint_left_open_median,
-                self._hint_right_open_median,
+                self._hint_left_offset_median,
+                self._hint_right_offset_median,
                 self._hint_enough,
             )
 
@@ -223,7 +223,7 @@ class FollowerCore:
         with self._hint_lock:
             # 追加
             self._hint_cache.append(hint)
-            self._hint_front_range_latest = float(hint.front_range)
+            self._hint_front_clearance_latest = float(hint.front_clearance)
             # 窓外を削除
             wnd = float(self.hint_cache_window_sec)
             while self._hint_cache and (now - float(self._hint_cache[0].t)) > wnd:
@@ -231,19 +231,19 @@ class FollowerCore:
             n = len(self._hint_cache)
             if n < int(self.hint_min_samples):
                 self._hint_front_blocked_majority = False
-                self._hint_left_open_median = 0.0
-                self._hint_right_open_median = 0.0
+                self._hint_left_offset_median = 0.0
+                self._hint_right_offset_median = 0.0
                 self._hint_enough = False
                 return
             fb_vals = [1 if s.front_blocked else 0 for s in self._hint_cache]
             self._hint_front_blocked_majority = (sum(fb_vals) / n) >= float(self.hint_majority_true_ratio)
             fb_samples = [s for s in self._hint_cache if s.front_blocked]
             if fb_samples:
-                self._hint_left_open_median = float(median(s.left_open for s in fb_samples))
-                self._hint_right_open_median = float(median(s.right_open for s in fb_samples))
+                self._hint_left_offset_median = float(median(s.left_offset for s in fb_samples))
+                self._hint_right_offset_median = float(median(s.right_offset for s in fb_samples))
             else:
-                self._hint_left_open_median = 0.0
-                self._hint_right_open_median = 0.0
+                self._hint_left_offset_median = 0.0
+                self._hint_right_offset_median = 0.0
             self._hint_enough = True
 
     def update_control_inputs(self, manual_start: Optional[bool] = None, sig_recog: Optional[int] = None) -> None:
@@ -633,6 +633,10 @@ class FollowerCore:
             "next_waypoint_label": next_label,
             "avoid_count": int(self.avoid_attempt_count),
             "reason": str(self.last_stagnation_reason),
+            "front_blocked": bool(self._hint_front_blocked_majority),
+            "left_offset_m_median": float(self._hint_left_offset_median),
+            "right_offset_m_median": float(self._hint_right_offset_median),
+            "front_clearance_m": float(self._hint_front_clearance_latest),
         }
 
     def get_current_waypoint_label(self) -> str:

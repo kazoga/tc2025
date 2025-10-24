@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import setup
 
 package_name = 'obstacle_monitor'
@@ -9,8 +12,9 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/obstacle_monitor.launch.py']),
-        ('share/' + package_name + '/params', ['params/default.yaml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'params'), glob('params/*.yaml')),
+        (os.path.join('share', package_name, 'map'), glob('map/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -22,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'obstacle_monitor = obstacle_monitor.obstacle_monitor_node:main',
+            'laser_scan_simulator = obstacle_monitor.laser_scan_simulator_node:main',
         ],
     },
 )

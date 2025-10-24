@@ -1,258 +1,164 @@
+# route_planner_詳細設計書_phase1
 
-# route_planner_詳細設計書_phase1正式版
-
-> 本書は、`route_planner.py`（phase1実装済み）および `graph_solver.py` に**完全整合**する正式版の詳細設計書である。  
-
----
-
-## 第1章 概要
-
-### 1.1 ノードの目的
-`route_planner` は、静的に定義された**固定ブロック**と**可変ブロック**から構成される経路を、要求に応じて生成・返却する**ルート配布サーバ**である。  
-- `/get_route` : 指定された開始ラベル・終了ラベル・チェックポイントをもとに**経路を新規生成**する。  
-- `/update_route` : 現行経路に対して、**可変ブロックの封鎖**（エッジクローズ）等を反映し、**再探索**を行う。  
-- `graph_solver.solve_variable_route()` を呼び出し、**PNG画像**を生成した上で `sensor_msgs/Image(bgr8)` に積み替えて返す。
-
-### 1.2 phase1 での実装範囲
-- サービス：`/get_route`, `/update_route` を実装済み（同期実行）
-- 画像：`graph_solver` が生成した PNG を読み込み `bgr8` で返却
-- 状態保持：現行経路・訪問履歴・封鎖エッジ集合・version をノード内に保持
-- 並行性：`MutuallyExclusiveCallbackGroup` により**サービス実行は直列化**
-- タイムアウト：**phase1では未実装**（呼び出しは同期完了まで待機）
+## 0. 文書目的
+本書は route_planner パッケージの現行実装（`route_planner/route_planner.py` および `graph_solver.py`）に整合する詳細設計を示し、route_manager や route_follower の設計書と横並びで読める章構成で整理する。GetRoute／UpdateRoute サービスサーバとしての責務、データ構造、再計画アルゴリズム、QoS・エラー処理方針を明示し、今後のフェーズ拡張に備えた共通理解を提供する。
 
 ---
 
-## 第2章 責務とスコープ
+## 1. ノード概要
+
+| 項目 | 内容 |
+|------|------|
+| ノード名 | route_planner |
+| 構成 | `RoutePlannerNode`（単一ノード。内部関数と dataclass で処理を分割） |
+| 主機能 | YAML＋CSV からルートを構築して `/get_route` に応答、封鎖情報を受けた再探索で `/update_route` に応答 |
+| 実装言語 | Python3（Google Python Style + 型ヒント） |
+| 対象ROS2ディストリビューション | Foxy |
+
+`RoutePlannerNode` は起動時に YAML 定義と CSV セグメントを読み込みキャッシュする。`/get_route` 呼び出しで固定／可変ブロックを連結して初期 Route を生成し、`/update_route` 呼び出しでは現在走行中ブロックのグラフから封鎖エッジを除外して再探索し、仮想エッジを補って連結した結果を返す。
+
+---
+
+## 2. 責務とスコープ
 
 ### 2.1 責務
-- **経路計画**：固定/可変ブロックを組み合わせた経路生成
-- **再計画**：封鎖情報に応じた可変ブロックの再探索と経路再構成
-- **画像提供**：探索結果の**地図重畳画像**（PNG起点→`bgr8`）を返却
+- YAML で定義されたブロック列に従って Waypoint シーケンスを連結し、Route メッセージを生成する。
+- 可変ブロックに対して `graph_solver.solve_variable_route()` を呼び出し、封鎖情報・チェックポイントを考慮した最短経路を算出する。
+- 現行 Route・由来メタデータ（`WaypointOrigin`）・封鎖エッジ集合・訪問チェックポイント履歴を保持し、UpdateRoute に利用する。
+- PNG 形式のルート画像を読み込み `sensor_msgs/Image(bgr8)` として Route に添付し、取得できない場合はプレースホルダ画像を用意する。
+- サービス呼び出し間で直列性を確保し、入力異常時は失敗レスポンスとログで通知する。
 
-### 2.2 スコープ（phase1）
-- 入力：YAML 構成（blocks 定義）＋ CSV 群（nodes/edges/segment）
-- 出力：`Route` メッセージ（waypoints, image, version など）
-- 例外系：不正入力、固定ブロック封鎖、画像生成失敗時のフォールバック
-
-### 2.3 非スコープ（将来フェーズ）
-- 非同期並列化・サービスレート制御
-- 自動リルート（外部イベント購読）
-- 画像描画のサイズ/表レイアウトのノード内パラメトリック化
+### 2.2 スコープ外
+- サービス以外のトピック通信（現フェーズでは publisher/subscriber を持たない）。
+- planner 側でのルート最適化アルゴリズムの詳細実装。
+- 封鎖イベントの自動検出や複数可変ブロックの並列探索管理。
 
 ---
 
-## 第3章 フェーズ構成
+## 3. 入出力インタフェース
 
-| フェーズ | 実装内容（本ノードに関する要点） |
-|:--|:--|
-| phase1 | `/get_route` と `/update_route` の同期サーバ。現行経路・履歴・封鎖集合の保持。graph_solver 連携で PNG→`bgr8`。 |
-| phase2 | 外部イベント起点の再計画、manager 連携の強化、パラメータ拡張（予定）。 |
-| phase3 | 統合可視化・高度最適化指標など（予定）。 |
+### 3.1 購読トピック
+- なし（サービス要求のみを受け付ける）。
 
----
+### 3.2 公開トピック
+- なし（Route はサービスレスポンスで返却）。
 
-## 第4章 外部I/F仕様
+### 3.3 サービス
 
-### 4.1 サービス
-| 名称 | 型 | 概要 |
-|:--|:--|:--|
-| `/get_route` | `route_msgs/srv/GetRoute` | ブロック構成とラベル情報をもとに**経路生成**を行い、`Route` を返す。 |
-| `/update_route` | `route_msgs/srv/UpdateRoute` | **現行経路**を前提に**可変ブロック**の再探索を行い、`Route` を返す。固定ブロック封鎖は**失敗**を返す。 |
-
-> 備考：どちらも**同期**であり、完了まで呼び出し元は待機する。
-
-### 4.2 メッセージ（要素の意味）
-- `Route`（`route_msgs/msg/Route`）  
-  - `waypoints: Waypoint[]` … 経路順のウェイポイント列  
-    - `Waypoint.index: int` … **その Route 内の順序**（0..N-1）  
-    - `Waypoint.label: string` … ノードの**地物識別**。**再訪**があり得る（indexと無関係）。  
-    - `Waypoint.pose: geometry_msgs/Pose`（x, y, z, qx, qy, qz, qw）  
-    - `Waypoint.reach_tolerance: float` … 到達判定距離  
-  - `image: sensor_msgs/Image` … `bgr8` 形式で 1 枚返す（後述）  
-  - `version: int` … ノード内で単調増加（phase1実装準拠）  
-  - `meta: 任意の補助情報`（phase1は必要最小限のみ設定）
-
-> **重要**：`label` は地物同一性、`index` は**同一Route内の通過順**を表す。再訪時は `label` が同じで `index` は異なる。
-
-### 4.3 画像（`sensor_msgs/Image`）
-- エンコーディング：**`bgr8` 固定**
-- 生成方法：`graph_solver` が出力した PNG を**読み込み**、`bgr8` に変換して格納
-- 失敗時：**ダミー画像**（テキストPNG）を生成して返却
+| 名称 | 型 | 方向 | 説明 |
+|------|----|------|------|
+| `/get_route` | `route_msgs/srv/GetRoute` | Server | start／goal／checkpoint 指定に従い固定・可変ブロックを連結した Route を生成して返す。 |
+| `/update_route` | `route_msgs/srv/UpdateRoute` | Server | 現行 Route と封鎖エッジ情報を基に可変ブロックを再探索し、新たな Route を返す。固定ブロック封鎖時は失敗を返す。 |
 
 ---
 
-## 第5章 パラメータ
+## 4. パラメータ
 
 | 名称 | 型 | 既定値 | 説明 |
-|:--|:--|:--|:--|
-| `config_yaml_path` | `string` | `""` | ルート構成 YAML（blocks 定義）への絶対/相対パス |
-| `csv_base_dir` | `string` | `""` | CSV（nodes/edges/segment）基準ディレクトリ |
-
-> **運用**：いずれも起動時に `declare_parameter()` で宣言。空値の場合はエラーログを出す。
+|-------------|----|---------|------|
+| `config_yaml_path` | string | `routes/config.yaml` | ブロック構成 YAML のパス。パッケージ共有ディレクトリを起点に解決。 |
+| `csv_base_dir` | string | `routes` | セグメント CSV の基準ディレクトリ。空文字なら YAML 所在ディレクトリを使用。 |
 
 ---
 
-## 第6章 QoS と並行性
-
-- 本ノードは**サービスのみ**（phase1）で、トピックの publish/subscribe はしない。  
-- コールバックグループ：`MutuallyExclusiveCallbackGroup`（**直列実行**）
-
----
-
-## 第7章 内部状態（保持データ）
-
-| 名称 | 型 | 初期値 | 概要/更新契機 |
-|:--|:--|:--|:--|
-| `blocks` | `List[Dict[str, Any]]` | `[]` | YAML からロードした**ブロック配列**。固定/可変を含む。 `/get_route` 受信時などに更新。 |
-| `current_route` | `List[Dict[str, Any]]` | `[]` | 直近で配布した**経路のウェイポイント列**（辞書構造）。 `/get_route` 成功時に更新。 |
-| `current_route_origins` | `List[str]` | `[]` | 各 waypoint の**由来（ブロック名/エッジなど）**を並走管理。 |
-| `visited_checkpoints_hist` | `Set[str]` | `set()` | **訪問済みチェックポイント**の永続化。再訪回避に使用。 |
-| `closed_edges` | `Set[Tuple[str,str]]` | `set()` | **封鎖中エッジ集合**（`(U,V)` 形式）。`/update_route` で追加。 |
-| `route_version` | `int` | `0` | 応答 `Route.version` に設定する **単調増加**値。`/get_route` でリセット→加算。 |
+## 5. データ構造
+- `SegmentCacheEntry(segment_id: str, waypoints: List[Waypoint])`: CSV から読み込んだ waypoint 配列のキャッシュ。逆方向連結時も利用する。
+- `WaypointOrigin`: 各 waypoint が所属するブロック名／エッジ情報／ローカルインデックス／向きを保持し、UpdateRoute 時に prev/next の検証と仮想エッジ生成へ利用する。
+- `_blocks`: YAML を正規化した辞書配列。`type=fixed|variable`、`segment_id`、`nodes`／`edges` 等を含む。
+- `_closed_edges: Set[frozenset[str]]`: 現在封鎖済みの可変エッジ集合。同一ブロック内で累積する。
+- `_visited_checkpoints_hist: Dict[str, Set[str]]`: ブロック毎の訪問済みチェックポイント履歴。複数回の UpdateRoute を跨いで保持する。
+- `_current_route: Route` と `_current_route_origins: List[WaypointOrigin]`: 最新 Route と各 waypoint の由来メタ。UpdateRoute の整合性検証に使用。
 
 ---
 
-## 第8章 入力ファイル仕様（YAML/CSV）
+## 6. 状態遷移仕様
 
-### 8.1 YAML（`config_yaml_path`）
-- 取得順序：  
-  1) ルート直下 `blocks`  /  2) `route_planner.ros__parameters.blocks` の**いずれか**を読み込む  
-- `blocks[i]` は**固定**または**可変**。最小要素は以下：  
-  - `type`: `"fixed"` または `"variable"`  
-  - `nodes_csv`: ノードCSVへのパス（`csv_base_dir` からの相対または絶対）  
-  - `edges_csv`: エッジCSVへのパス  
-  - `segments`: セグメント（Waypoint CSV）群の定義（可変ブロックで使用）  
-  - `start_label` / `goal_label` / `checkpoints`（必要に応じて記載）
+本ノードは明示的な FSM を持たないが、以下の状態フラグで動作を管理する。
 
-> 実装は**存在/型チェック**とパス解決（相対→`csv_base_dir` 基準）を行う。
+| 状態 | 概要 | 遷移契機 |
+|------|------|----------|
+| `UNINITIALIZED` | `_current_route` 未設定状態。起動直後または GetRoute 失敗時。 | 起動、GetRoute 失敗 |
+| `INITIALIZED` | `_current_route` を保持し、UpdateRoute が有効。 | GetRoute 成功 |
 
-### 8.2 CSV
-- `nodes.csv` : `id, lat, lon` または `id, x, y`（いずれも**数値**）  
-- `edges.csv` : `source, target, segment_id, reversible`  
-  - `reversible` は `0/1`, `true/false`, `yes/no` を受理  
-- **Waypoint CSV（segment）**：`(x,y)` または `(lat,lon)` 形式のいずれかを許容
+`UpdateRoute` リクエストでは `INITIALIZED` 状態を前提とし、`route_version` 不一致や prev/next 不整合時は失敗レスポンスを返して `INITIALIZED` 状態を保持する。
 
 ---
 
-## 第9章 主要処理（関数仕様）
+## 7. 主処理仕様
 
-> 本章は**関数単位**に「目的／引数／戻り値／主要ロジック／例外」を示す。関数名・責務は実装に一致させる。
+### 7.1 起動時初期化
+- `config_yaml_path`／`csv_base_dir` を解決しログに出力する。取得できない場合は警告を出しつつ空文字扱いで継続する。
+- `_load_blocks_from_yaml()` で YAML を読み込み、`fixed`／`variable` ブロックを正規化して `_blocks` に格納する。`csv_base_dir` が未指定なら YAML 所在ディレクトリを設定する。
+- `_load_csv_segments()` で `_blocks` から参照される CSV を走査し、`SegmentCacheEntry` としてキャッシュする。可変ブロックの nodes／edges ファイルもここで読み込む。
 
-### 9.1 `load_config()`（ノード内メソッド）
-- **目的**：`config_yaml_path` を読み取り、`blocks` を構築する。  
-- **引数/戻り値**：なし／なし（副作用で `self.blocks` を更新）  
-- **主要ロジック**：
-  1. YAML を `safe_load()` で読込  
-  2. `blocks` の探索：`route_planner.ros__parameters.blocks` → ルート直下 `blocks`  
-  3. 各ブロックのファイルパスを `csv_base_dir` 基準に解決し `self.blocks` へ設定  
-- **例外/エラー**：読込失敗時はエラーログを出し `self.blocks=[]` にする。
+### 7.2 `/get_route`
+1. リクエストの `start_label`／`goal_label`／`checkpoint_labels` を取得しログに出力する。
+2. `_blocks` を先頭から走査し、`fixed` ブロックはキャッシュ済みセグメントを連結、`variable` ブロックは `solve_variable_route()` を呼び出して可変エッジ列を得る。
+3. 可変エッジを連結する際に向き情報を保持し、`WaypointOrigin` を生成して由来を記録、逆走区間は姿勢再計算対象として控える。
+4. リクエスト start／goal でスライスしインデックスを再採番、距離を再計算する。逆走区間とブロック末尾に対して `adjust_orientations()` で姿勢を補正する。
+5. 可変ブロックが存在し画像が取得できた場合は solver 生成画像を採用、失敗時はプレースホルダを添付する。
+6. `route_version` を 1 に設定し、Route メッセージと内部状態を更新して成功レスポンスを返す。例外時はエラーログと失敗レスポンスを返す。
 
-### 9.2 `slice_by_labels(wps, start_label, goal_label)`（モジュール関数）
-- **目的**：ウェイポイント列から**開始/終了ラベルでサブ配列を抽出**する。  
-- **引数**：`wps: List[Waypoint]`, `start_label: Optional[str]`, `goal_label: Optional[str]`  
-- **戻り値**：`(sliced_list, start_offset: int)`  
-- **仕様**：
-  - `start_label` 未指定→**先頭**、`goal_label` 未指定→**末尾**を採用  
-  - `start_idx > goal_idx` は**エラー**  
-  - 戻り値の `start_offset` は**元配列に対する切り出し開始位置**
+### 7.3 `/update_route`
+1. 現行 Route の存在と `route_version` 一致を検証する。不一致時は現行 Route を添えて失敗応答。
+2. `prev_index`／`next_index` が隣接し、ラベルが一致するか `WaypointOrigin` メタで検証する。固定ブロックの場合は警告を出して失敗応答。
+3. 同一ブロック内で封鎖エッジ集合を更新し、`_build_graph_with_closures()` で封鎖除外済みグラフを構築する。訪問済みチェックポイント履歴を更新して未訪問集合を求める。
+4. 現在位置から封鎖点までの仮想エッジ waypoint 群を `_make_virtual_edge_waypoints()` で生成し、`WaypointOrigin` に `__virtual__` として記録する。
+5. solver へ封鎖エッジを除外したグラフと未訪問チェックポイントを渡して可変エッジ列を取得する。固定ブロック後続も含めて連結し、`concat_with_dedup()` と `stamp_edge_end_labels()` で整形する。
+6. 連結後に距離・姿勢を補正し、`route_version` を `current_route.version + 1` に更新する。新 Route を内部状態とレスポンスに反映する。
+7. 例外が発生した場合は詳細をログに出し、現行 Route を添えて失敗レスポンスを返す。
 
-### 9.3 `indexing(wps)`（モジュール関数）
-- **目的**：`Waypoint.index` を **0..N-1** で**再採番**する。  
-- **引数/戻り値**：`wps: List[Waypoint]`／（戻り値なし、**副作用**で `index` を更新）
-
-### 9.4 `adjust_orientations(wps)`（モジュール関数）
-- **目的**：各 `Waypoint.pose.orientation` を**隣接点の方位**に基づいて補正する。  
-- **引数/戻り値**：`wps: List[Waypoint]`／（副作用で更新）  
-- **仕様**：`yaw_to_quaternion(yaw)` を用い、2点間の `atan2(dy, dx)` を yaw として反映。
-
-### 9.5 `pack_route_msg(wps, image_png_path)`（モジュール関数）
-- **目的**：`Route` メッセージを**構築**する。  
-- **引数**：`wps: List[Waypoint]`, `image_png_path: Optional[str]`  
-- **戻り値**：`Route`  
-- **仕様**：PNG を読み込めた場合は `bgr8` に変換し `Image` を設定。失敗時は**テキストPNG**を生成して代入。
-
-### 9.6 `solve_variable_route()`（外部：graph_solver.py）
-- **目的**：無向グラフ上で `start`→`checkpoints群`→`goal` の最短経路（順序最適化）を解く。  
-- **引数**：`nodes`, `edges`, `start`, `goal`, `checkpoints`  
-- **戻り値**：`Dict[str, Any]`  
-  - `edge_sequence: List[Dict]` … `segment_id` を含む区間列  
-  - `node_sequence: List[str]` … ノード通過列  
-  - `visit_order: List[str]` … 端点訪問順  
-  - `stats: Dict` … JSON直列化可能な統計（行列は文字列キー化済み）  
-  - `route_image_path: str` … 生成 PNG の実パス（`/tmp/route_solver_<pid>.png` など）
+### 7.4 画像処理ユーティリティ
+- `_load_png_as_image()` で PNG を読み込み `bgr8` Image を生成する。OpenCV エラー時は `FileNotFoundError` を送出。
+- `make_text_png_image()` は画像が無い場合の 1x1 プレースホルダを生成する。
 
 ---
 
-## 第10章 サービス処理フロー
+## 8. クラス構成
 
-### 10.1 `/get_route`
-1. **設定読込**：`load_config()` で `blocks` を準備
-2. **ブロック順の展開**：固定ブロックは**CSV の順**を採用。可変ブロックは `graph_solver` で探索
-3. **チェックポイント統合**：YAML 定義＋リクエストを**和集合**化し、**当該ブロックに存在するもの**へ限定。履歴から**訪問済みは除外**
-4. **ウェイポイント連結**：重複端点は `concat_with_dedup()` で**重複除去結合**（位置がほぼ等しい場合に 1 点化）
-5. **ラベルスライス**：`slice_by_labels()` により start/goal 範囲で切出し
-6. **採番/姿勢補正**：`indexing()` → `adjust_orientations()`
-7. **画像**：可変ブロック探索結果の `route_image_path` を**優先**して読み込み、`bgr8` で格納
-8. **状態更新**：`current_route`, `current_route_origins`, `visited_checkpoints_hist` を更新。`route_version` を**加算**
-9. **応答**：`Route` を返却
+### 8.1 RoutePlannerNode
+- Node 初期化、パラメータ宣言、YAML／CSV ロード、サービス登録、内部状態の保持を担当する。
+- `_resolve_service_name()` でリマップ後名称を取得しログに利用する。
 
-### 10.2 `/update_route`
-1. **前提確認**：`current_route` が空なら**失敗**（再探索の対象なし）
-2. **封鎖適用**：リクエストの封鎖エッジ `(U,V)` を `closed_edges` に追加。**固定ブロックにかかる封鎖**は**失敗**
-3. **境界接続**：現在位置 `current_pose` を**先頭**に置いた**仮想エッジ**（`current → prev → U`）で**可変ブロック**の探索入力を構成
-4. **再探索**：閉塞を除いた **可変ブロック**のみ `graph_solver` で再計算
-5. **連結/補正**：元ルートの非対象区間＋再探索区間を**連結**し、`indexing()` と `adjust_orientations()` を適用
-6. **画像**：`route_image_path` を読み込み（不可時はテキストPNG）
-7. **状態更新/応答**：`current_route` 等を更新し、`Route` を返却（`version` 加算）
+### 8.2 補助 dataclass・関数
+- `SegmentCacheEntry`、`WaypointOrigin` が Route の由来管理を担う。
+- `parse_waypoint_csv()`、`concat_with_dedup()`、`adjust_orientations()` などのユーティリティはノード外に定義し、テストや再利用を容易にしている。
+- `graph_solver.solve_variable_route()` は別モジュールに実装され、ノードは結果の整形に集中する。
 
 ---
 
-## 第11章 エラー処理とログ
-
-| 事象 | 動作（失敗応答 or フォールバック） |
-|:--|:--|
-| YAML 読込失敗 / blocks 不正 | エラーログ出力。`/get_route` は失敗応答。 |
-| start/goal 未検出 | エラーログ出力。失敗応答。 |
-| 固定ブロック上の封鎖 | `/update_route` は**失敗**（可変のみ対応） |
-| 画像読込失敗 | **テキストPNG**を生成して `image` に格納 |
-| 入力 CSV 異常 | エラーログ出力。失敗応答。 |
+## 9. QoS設計
+- サービスは ROS2 既定 QoS（リクエスト／レスポンス型）を使用する。並列呼び出しを避けるため、`MutuallyExclusiveCallbackGroup` を適用し逐次処理とする。
+- トピック通信を行わないため QoS 設定は不要。
 
 ---
 
-## 第12章 動作シーケンス（テキスト）
-
-- **通常（/get_route）**：  
-  `load_config → 各ブロック処理（固定=直結, 可変=solver） → 重複結合 → ラベルスライス → 採番 → 姿勢補正 → 画像読込 → 状態更新 → 応答`
-
-- **再計画（/update_route）**：  
-  `前提確認 → 封鎖適用（可変のみ） → 仮想エッジを含む再探索入力生成 → solver 再計算 → ルート連結 → 採番/補正 → 画像読込 → 状態更新 → 応答`
+## 10. エラー処理・ログ方針
+- 起動時に YAML／CSV の読み込み失敗を `self.get_logger().error()` で出力しつつ例外を捕捉し、サービス実行時に失敗レスポンスへ反映する。
+- `handle_get_route()`／`handle_update_route()` では try-except で例外を捕捉し、トレースを含めてエラーログへ出力する。
+- 入力検証失敗（ラベル不一致、prev/next 不整合など）は `RuntimeError` を送出して失敗レスポンスに理由文字列を格納する。
 
 ---
 
-## 第13章 テスト観点（phase1）
-
-| 観点 | 代表テスト |
-|:--|:--|
-| 経路生成 | 正常系：固定+可変ブロックを含む構成で `/get_route` が成功し、`index` が 0..N-1 連番である。 |
-| 画像 | `route_image_path` による PNG 読込が成功し、`bgr8` で返却される。失敗時はテキストPNG。 |
-| 再訪/ラベル | 同一ラベルの再訪時に `index` は別値になる。 |
-| スライス | start/goal 未指定時のデフォルト（先頭/末尾）が適用される。 |
-| 再計画 | 可変ブロック封鎖時に `/update_route` が成功し、固定ブロック封鎖では失敗する。 |
-| 直列性 | 並列複数呼び出しを行っても排他により競合しない。 |
+## 11. Phase3 拡張想定
+- ブロック単位でのタイムアウト制御や優先度付き再探索、複数 planner 連携による候補経路提示。
+- サービス以外の状態配信（現在の封鎖情報やチェックポイント進捗のトピック化）。
+- Route 画像生成のカスタマイズ（サイズ／配色／凡例）とキャッシュ。
 
 ---
 
-## 第14章 保守・拡張の留意事項
+## 12. テスト観点
 
-- `graph_solver` の**入力/出力I/F**（特に `route_image_path`）の**互換維持**  
-- `Waypoint` の**index再採番**は**副作用関数**であり、戻り値を用いない前提で実装すること  
-- データ互換：`edges.csv` の `reversible` は複数表記（0/1, true/false, yes/no）を許容  
-- 画像ファイル名は `graph_solver` に依存（`/tmp/route_solver_<pid>.png` など）。同一プロセスは上書き、別プロセスは別名。
+| テスト種別 | 目的 | 検証項目 |
+|-------------|------|----------|
+| ユニットテスト | ユーティリティ関数検証 | `parse_waypoint_csv()` の列解釈、`concat_with_dedup()` の重複排除、仮想エッジ生成のラベル刻印 |
+| コンポーネントテスト | サービス呼び出し検証 | `/get_route` 正常応答、固定ブロック欠落時のエラー、`/update_route` の封鎖累積挙動 |
+| 結合テスト | manager/follower 連携 | Route 生成→配信→封鎖→再探索のハッピーパスと失敗系、画像添付の有無 |
+| シナリオテスト | 実機走行 | 可変ブロックでの封鎖連続発生時の挙動、チェックポイント再訪問時の履歴管理 |
 
 ---
 
-## 第15章 まとめ
-
-本書は phase1 実装に**完全整合**し、API・データ定義・アルゴリズム・例外系・状態管理までを**関数粒度**で明記した。  
-この記述のみで**同一機能を再実装可能**である。
-
+## 13. まとめ
+- `RoutePlannerNode` は YAML／CSV をキャッシュして即応性を確保しつつ、封鎖情報を蓄積して再探索するサービスサーバである。
+- dataclass で waypoint の由来情報を保持し、UpdateRoute 時の検証・仮想エッジ生成・画像添付まで一貫して扱う。
+- route_manager／route_follower と同一章構成で設計情報を整理し、パッケージ横断で整合の取れたドキュメント体系を維持する。

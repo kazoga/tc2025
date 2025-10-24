@@ -85,38 +85,51 @@ class ObstacleMonitorNode(Node):
         )
 
         # ---- Pub/Sub ----
+        scan_topic = 'scan'
+        hint_topic = 'obstacle_avoidance_hint'
+        viewer_topic = 'sensor_viewer'
+        amcl_pose_topic = 'amcl_pose'
+        active_target_topic = 'active_target'
+
         self.sub_scan = self.create_subscription(
             LaserScan,
-            '/scan',
+            scan_topic,
             self.laser_scan_callback,
             qos_profile_sensor_data,  # SensorDataQoS
         )
 
         self.pub_hint = self.create_publisher(
             ObstacleAvoidanceHint,
-            '/obstacle_avoidance_hint',
+            hint_topic,
             qos_be_volatile,
         )
 
         self.pub_img = self.create_publisher(
             Image,
-            '/sensor_viewer',
+            viewer_topic,
             qos_be_volatile,
         )
 
         self.sub_amcl = self.create_subscription(
             PoseWithCovarianceStamped,
-            '/amcl_pose',
+            amcl_pose_topic,
             self._on_amcl_pose,
             qos_rel_volatile,
         )
 
         self.sub_active_target = self.create_subscription(
             PoseStamped,
-            '/active_target',
+            active_target_topic,
             self._on_active_target,
             qos_rel_volatile,
         )
+
+        # 解決済みの名前をログ用に保持
+        self.scan_topic: str = self._resolve_topic_name(scan_topic)
+        self.hint_topic: str = self._resolve_topic_name(hint_topic)
+        self.viewer_topic: str = self._resolve_topic_name(viewer_topic)
+        self.amcl_pose_topic: str = self._resolve_topic_name(amcl_pose_topic)
+        self.active_target_topic: str = self._resolve_topic_name(active_target_topic)
 
         # ---- Misc ----
         self.bridge = CvBridge()
@@ -133,6 +146,14 @@ class ObstacleMonitorNode(Node):
         self._ensure_hint_range(max_obstacle_distance)
 
         self.get_logger().info('obstacle_monitor (legacy-following) started.')
+
+    def _resolve_topic_name(self, name: str) -> str:
+        """リマップ適用後のトピック名を取得するユーティリティ."""
+        try:
+            return self.resolve_topic_name(name)
+        except AttributeError:
+            # テスト環境などで rclpy の内部APIが無い場合は素の名前を返す。
+            return name
 
     # ===============================
     # Legacy: laserScanCallback

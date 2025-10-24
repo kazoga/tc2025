@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 import rclpy
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
@@ -390,16 +391,29 @@ class RoutePlannerNode(Node):
         super().__init__("route_planner")
 
         # --- 起動時パラメータ ---
-        self.declare_parameter("config_yaml_path", "")
-        self.declare_parameter("csv_base_dir", "")
+        self.declare_parameter("config_yaml_path", "routes/config.yaml")
+        self.declare_parameter("csv_base_dir", "routes")
 
-        self.config_yaml_path: str = self.get_parameter("config_yaml_path").get_parameter_value().string_value
-        self.csv_base_dir: str = self.get_parameter("csv_base_dir").get_parameter_value().string_value
+        try:
+            pkg_share = get_package_share_directory("route_planner")
+        except PackageNotFoundError:
+            pkg_share = None
+            self.get_logger().warn("パッケージ共有ディレクトリが取得できませんでした。相対パスはそのまま扱います。")
+
+        config_yaml_raw = str(self.get_parameter("config_yaml_path").value)
+        csv_base_dir_raw = str(self.get_parameter("csv_base_dir").value)
+        get_service_name = 'get_route'
+        update_service_name = 'update_route'
+
+        self.config_yaml_path: str = resolve_path(pkg_share, config_yaml_raw) if config_yaml_raw else ""
+        self.csv_base_dir: str = resolve_path(pkg_share, csv_base_dir_raw) if csv_base_dir_raw else ""
 
         if not self.config_yaml_path:
             self.get_logger().error("config_yaml_path is required.")
         else:
             self.get_logger().info(f"Using config_yaml_path: {self.config_yaml_path}")
+        if self.csv_base_dir:
+            self.get_logger().info(f"Using csv_base_dir: {self.csv_base_dir}")
 
         # --- メンバ（状態） ---
         self.blocks: List[Dict[str, Any]] = []                  # YAMLのブロック原義（固定/可変）
@@ -419,13 +433,23 @@ class RoutePlannerNode(Node):
         # --- サービス登録（逐次処理: MutuallyExclusive） ---
         cb_group = MutuallyExclusiveCallbackGroup()
         self._srv_get = self.create_service(
-            GetRoute, "/get_route", self.handle_get_route, callback_group=cb_group
+            GetRoute, get_service_name, self.handle_get_route, callback_group=cb_group
         )
         self._srv_update = self.create_service(
-            UpdateRoute, "/update_route", self.handle_update_route, callback_group=cb_group
+            UpdateRoute, update_service_name, self.handle_update_route, callback_group=cb_group
         )
 
+        self.get_service_name = self._resolve_service_name(get_service_name)
+        self.update_service_name = self._resolve_service_name(update_service_name)
+
         self.get_logger().info("route_planner is ready.")
+
+    def _resolve_service_name(self, name: str) -> str:
+        """リマップ後のサービス名を取得する。"""
+        try:
+            return self.resolve_service_name(name)
+        except AttributeError:
+            return name
 
     # ===== YAML/CSV ロード ============================================================
 

@@ -22,7 +22,7 @@ data_files = [
     ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
     ('share/' + package_name, ['package.xml']),
 ]
-for subdir in ['routes', 'launch']:
+for subdir in ['routes', 'launch', 'params']:
     if os.path.isdir(subdir):
         data_files.extend(list_data_files(subdir))
 

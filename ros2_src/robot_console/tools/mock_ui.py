@@ -98,6 +98,14 @@ class ActiveTargetSnapshot:
 
 
 @dataclass
+class CmdVelSnapshot:
+    """cmd_velに相当する並進・角速度の疑似値."""
+
+    linear_x: float
+    angular_z: float
+
+
+@dataclass
 class ManagerStatusSnapshot:
     """manager_statusと関連イベントの抜粋."""
 
@@ -150,6 +158,11 @@ class MockDataProvider:
         "dense_city.yaml",
     ]
 
+    SIMULATOR_MAP: Dict[str, str] = {
+        "obstacle_monitor": "laser_scan_simulator",
+        "robot_navigator": "robot_simulator",
+    }
+
     def __init__(self) -> None:
         now = _now()
         self.route_state = RouteStateSnapshot(
@@ -194,6 +207,7 @@ class MockDataProvider:
             current_distance_m=18.0,
             reference_distance_m=22.0,
         )
+        self.cmd_vel = CmdVelSnapshot(linear_x=0.0, angular_z=0.0)
         self.camera_mode = "normal"
         self.image_timestamps: Dict[str, datetime] = {
             "route_map": now,
@@ -290,6 +304,10 @@ class MockDataProvider:
             self.active_target.reference_distance_m = random.uniform(10.0, 25.0)
             self.active_target.current_distance_m = self.active_target.reference_distance_m
 
+        # cmd_velの疑似値
+        self.cmd_vel.linear_x = round(random.uniform(-0.2, 1.4), 2)
+        self.cmd_vel.angular_z = round(random.uniform(-1.2, 1.2), 2)
+
         # manual_startはワンショットでFalseへ戻す
         if self.manual_signal.manual_start:
             self.manual_signal.manual_start = False
@@ -345,9 +363,11 @@ class MockDataProvider:
         status = self.node_status[package]
         status.running = True
         status.parameter_file = parameter_file
-        status.simulator_enabled = simulator_enabled
+        sim_name = self.SIMULATOR_MAP.get(package)
+        simulator_flag = simulator_enabled and sim_name is not None
+        status.simulator_enabled = simulator_flag
         status.last_action = now
-        sim_text = " with simulator" if simulator_enabled else ""
+        sim_text = f" with {sim_name}" if simulator_flag and sim_name else ""
         self.pending_logs[package].append(
             f"[{now.strftime('%H:%M:%S')}] 起動 {parameter_file}{sim_text}"
         )
@@ -356,6 +376,7 @@ class MockDataProvider:
         now = _now()
         status = self.node_status[package]
         status.running = False
+        status.simulator_enabled = False
         status.last_action = now
         self.pending_logs[package].append(
             f"[{now.strftime('%H:%M:%S')}] 停止要求を受理しました"
@@ -410,6 +431,10 @@ class MockDataProvider:
                 current_distance_m=self.active_target.current_distance_m,
                 reference_distance_m=self.active_target.reference_distance_m,
             ),
+            "cmd_vel": CmdVelSnapshot(
+                linear_x=self.cmd_vel.linear_x,
+                angular_z=self.cmd_vel.angular_z,
+            ),
             "camera_mode": self.camera_mode,
             "image_timestamps": dict(self.image_timestamps),
             "node_status": {
@@ -436,18 +461,36 @@ class MockDataProvider:
 # UI部品クラス
 # ----------------------------------------------------------------------
 class ImagePane(ttk.LabelFrame):
-    """シンプルな画像プレースホルダーを表示するパネル."""
+    """アスペクト比とレターボックスを考慮した画像プレースホルダー."""
 
-    def __init__(self, master: tk.Widget, title: str, **kwargs) -> None:
+    def __init__(
+        self,
+        master: tk.Widget,
+        title: str,
+        *,
+        width: int = 320,
+        height: int = 220,
+        content_ratio: Optional[float] = None,
+    ) -> None:
         super().__init__(master, text=title, padding=(8, 6))
-        width = kwargs.get("width", 320)
-        height = kwargs.get("height", 220)
+        self.content_ratio = content_ratio
         self.canvas = tk.Canvas(
-            self, width=width, height=height, highlightthickness=0, bg="#1f1f1f"
+            self,
+            width=width,
+            height=height,
+            highlightthickness=0,
+            bg="#1f1f1f",
         )
-        self.canvas.grid(row=0, column=0)
-        self.rect_id = self.canvas.create_rectangle(
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.background_id = self.canvas.create_rectangle(
+            0, 0, width, height, fill="#1f1f1f", outline=""
+        )
+        self.content_id = self.canvas.create_rectangle(
             0, 0, width, height, fill="#2c3e50", outline=""
+        )
+        self.letterbox_ids = (
+            self.canvas.create_rectangle(0, 0, 0, 0, fill="#000000", outline=""),
+            self.canvas.create_rectangle(0, 0, 0, 0, fill="#000000", outline=""),
         )
         self.caption_id = self.canvas.create_text(
             width - 8,
@@ -457,25 +500,91 @@ class ImagePane(ttk.LabelFrame):
             fill="#f0f0f0",
             font=("Helvetica", 10, "bold"),
         )
+        self.canvas.bind("<Configure>", self._on_resize)
+
+    def set_content_ratio(self, ratio: Optional[float]) -> None:
+        """コンテンツのアスペクト比を更新する."""
+
+        self.content_ratio = ratio
+        self._layout_content(
+            self.canvas.winfo_width() or int(self.canvas.cget("width")),
+            self.canvas.winfo_height() or int(self.canvas.cget("height")),
+        )
 
     def update_content(self, caption: str, color: str) -> None:
         """矩形色とキャプションを更新する."""
 
-        self.canvas.itemconfigure(self.rect_id, fill=color)
+        self.canvas.itemconfigure(self.content_id, fill=color)
         self.canvas.itemconfigure(self.caption_id, text=caption)
+        self._layout_content(
+            self.canvas.winfo_width() or int(self.canvas.cget("width")),
+            self.canvas.winfo_height() or int(self.canvas.cget("height")),
+        )
+
+    def _on_resize(self, event: tk.Event) -> None:  # type: ignore[override]
+        self._layout_content(event.width, event.height)
+
+    def _layout_content(self, width: int, height: int) -> None:
+        self.canvas.coords(self.background_id, 0, 0, width, height)
+        if self.content_ratio and self.content_ratio > 0:
+            target_width = width
+            target_height = int(round(target_width / self.content_ratio))
+            if target_height > height:
+                target_height = height
+                target_width = int(round(target_height * self.content_ratio))
+            x0 = (width - target_width) / 2
+            y0 = (height - target_height) / 2
+        else:
+            target_width = width
+            target_height = height
+            x0 = 0
+            y0 = 0
+
+        self.canvas.coords(
+            self.content_id, x0, y0, x0 + target_width, y0 + target_height
+        )
+        self.canvas.coords(self.caption_id, width - 8, height - 8)
+
+        if self.content_ratio and self.content_ratio > 0:
+            if target_height < height:
+                # 上下レターボックス
+                self.canvas.coords(self.letterbox_ids[0], 0, 0, width, y0)
+                self.canvas.coords(
+                    self.letterbox_ids[1], 0, y0 + target_height, width, height
+                )
+            else:
+                # 左右レターボックス
+                self.canvas.coords(self.letterbox_ids[0], 0, 0, x0, height)
+                self.canvas.coords(
+                    self.letterbox_ids[1], x0 + target_width, 0, width, height
+                )
+            for rect in self.letterbox_ids:
+                self.canvas.itemconfigure(rect, state="normal")
+        else:
+            for rect in self.letterbox_ids:
+                self.canvas.itemconfigure(rect, state="hidden")
+
+        self._post_layout(x0, y0, target_width, target_height)
+
+    def _post_layout(
+        self, x0: float, y0: float, width: float, height: float
+    ) -> None:
+        """派生クラスがレイアウト後処理を行うためのフック."""
+
+        del x0, y0, width, height
 
 
 class SensorImagePane(ImagePane):
     """障害物情報のオーバレイを備えた画像パネル."""
 
     def __init__(self, master: tk.Widget, title: str) -> None:
-        super().__init__(master, title)
+        super().__init__(master, title, width=260, height=260, content_ratio=1.0)
         self.overlay_rect = self.canvas.create_rectangle(
-            10, 10, 210, 90, fill="#000000", outline="", stipple="gray50"
+            0, 0, 0, 0, fill="#000000", outline="", stipple="gray50"
         )
         self.overlay_text_id = self.canvas.create_text(
-            18,
-            18,
+            0,
+            0,
             anchor="nw",
             text="",
             fill="#ffffff",
@@ -487,6 +596,29 @@ class SensorImagePane(ImagePane):
 
         text = "\n".join(lines)
         self.canvas.itemconfigure(self.overlay_text_id, text=text)
+        self._layout_content(
+            self.canvas.winfo_width() or int(self.canvas.cget("width")),
+            self.canvas.winfo_height() or int(self.canvas.cget("height")),
+        )
+
+    def _post_layout(
+        self, x0: float, y0: float, width: float, height: float
+    ) -> None:
+        padding = 12
+        overlay_width = width * 0.85
+        overlay_height = 42
+        self.canvas.coords(
+            self.overlay_rect,
+            x0 + padding,
+            y0 + padding,
+            x0 + padding + overlay_width,
+            y0 + padding + overlay_height,
+        )
+        self.canvas.coords(
+            self.overlay_text_id,
+            x0 + padding + 6,
+            y0 + padding + 4,
+        )
 
 
 class PackageControlFrame(ttk.LabelFrame):
@@ -497,12 +629,15 @@ class PackageControlFrame(ttk.LabelFrame):
         master: tk.Widget,
         package: str,
         parameter_options: List[str],
+        simulator_label: Optional[str],
         on_start,
         on_stop,
     ) -> None:
         super().__init__(master, text=package, padding=(8, 6))
         self.package = package
         self.parameter_var = tk.StringVar(value=parameter_options[0])
+        self.simulator_supported = simulator_label is not None
+        self.simulator_label = simulator_label or ""
         self.simulator_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="停止中")
         self.on_start = on_start
@@ -518,11 +653,17 @@ class PackageControlFrame(ttk.LabelFrame):
         )
         self.param_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
 
-        ttk.Checkbutton(
-            self,
-            text="Simulator 同時起動",
-            variable=self.simulator_var,
-        ).grid(row=2, column=0, columnspan=2, sticky="w")
+        next_row = 2
+        if self.simulator_supported:
+            self.sim_checkbox = ttk.Checkbutton(
+                self,
+                text=f"{self.simulator_label} 同時起動",
+                variable=self.simulator_var,
+            )
+            self.sim_checkbox.grid(row=next_row, column=0, columnspan=2, sticky="w")
+            next_row += 1
+        else:
+            self.sim_checkbox = None
 
         start_btn = ttk.Button(
             self,
@@ -536,11 +677,12 @@ class PackageControlFrame(ttk.LabelFrame):
             command=self._handle_stop,
             width=8,
         )
-        start_btn.grid(row=3, column=0, pady=4, sticky="ew")
-        stop_btn.grid(row=3, column=1, pady=4, sticky="ew")
+        start_btn.grid(row=next_row, column=0, pady=4, sticky="ew")
+        stop_btn.grid(row=next_row, column=1, pady=4, sticky="ew")
+        next_row += 1
 
         ttk.Label(self, textvariable=self.status_var, foreground="#2c3e50").grid(
-            row=4, column=0, columnspan=2, sticky="w"
+            row=next_row, column=0, columnspan=2, sticky="w"
         )
         for col in range(2):
             self.columnconfigure(col, weight=1)
@@ -566,7 +708,17 @@ class PackageControlFrame(ttk.LabelFrame):
             text += f" @ {status.last_action.strftime('%H:%M:%S')}"
         self.status_var.set(text)
         self.parameter_var.set(status.parameter_file)
-        self.simulator_var.set(status.simulator_enabled)
+        if self.simulator_supported:
+            self.simulator_var.set(status.simulator_enabled)
+        else:
+            self.simulator_var.set(False)
+
+    def get_settings(self) -> tuple[str, bool]:
+        """現在選択されているパラメータとシミュレータ設定を返す."""
+
+        return self.parameter_var.get(), (
+            self.simulator_var.get() if self.simulator_supported else False
+        )
 
 
 # ----------------------------------------------------------------------
@@ -585,10 +737,16 @@ class MockDashboardApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("robot_console dashboard mock")
-        self.geometry("1360x840")
+        self.geometry("1280x720")
+        self.minsize(960, 540)
+        self._aspect_ratio = 1280 / 720
+        self._resizing = False
+        self._last_size = (1280, 720)
+        self.bind("<Configure>", self._handle_root_configure)
         self.provider = MockDataProvider()
         self.log_widgets: Dict[str, tk.Text] = {}
         self.obstacle_override_active = tk.BooleanVar(value=False)
+        self.sidebar_visible = True
 
         self._configure_style()
         self._build_layout()
@@ -608,37 +766,133 @@ class MockDashboardApp(tk.Tk):
 
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
-        self.columnconfigure(0, weight=3)
-        self.columnconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        main_area = ttk.Frame(self, padding=10)
+        notebook = ttk.Notebook(self)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        self.dashboard_tab = ttk.Frame(notebook)
+        self.log_tab = ttk.Frame(notebook)
+        notebook.add(self.dashboard_tab, text="ダッシュボード")
+        notebook.add(self.log_tab, text="コンソールログ")
+
+        self._build_dashboard(self.dashboard_tab)
+        self._build_log_tab(self.log_tab)
+
+    def _build_dashboard(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        wrapper = ttk.Frame(parent)
+        wrapper.grid(row=0, column=0, sticky="nsew")
+        wrapper.columnconfigure(0, weight=1)
+        wrapper.columnconfigure(1, weight=0)
+        wrapper.rowconfigure(0, weight=1)
+
+        main_area = ttk.Frame(wrapper, padding=10)
         main_area.grid(row=0, column=0, sticky="nsew")
         main_area.columnconfigure(0, weight=1)
-        main_area.rowconfigure(3, weight=1)
+        main_area.rowconfigure(1, weight=1)
 
-        self._build_state_summary(main_area)
-        self._build_images(main_area)
-        self._build_control_panel(main_area)
-        self._build_log_panel(main_area)
-
-        side_panel = ttk.Frame(self, padding=(6, 10))
-        side_panel.grid(row=0, column=1, sticky="ns")
-        side_panel.columnconfigure(0, weight=1)
-        ttk.Label(side_panel, text="ノード起動パネル", font=("Helvetica", 13, "bold")).grid(
-            row=0, column=0, sticky="w", pady=(0, 6)
+        top_bar = ttk.Frame(main_area)
+        top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        top_bar.columnconfigure(0, weight=1)
+        self.sidebar_toggle_btn = ttk.Button(
+            top_bar,
+            text="◀ ノード起動パネル",
+            command=self._toggle_sidebar,
+            width=20,
         )
-        self.package_frames: Dict[str, PackageControlFrame] = {}
-        for idx, package in enumerate(self.LOG_PACKAGES, start=1):
+        self.sidebar_toggle_btn.grid(row=0, column=1, sticky="e")
+
+        dashboard_body = ttk.Frame(main_area)
+        dashboard_body.grid(row=1, column=0, sticky="nsew")
+        dashboard_body.columnconfigure(0, weight=1)
+        dashboard_body.rowconfigure(2, weight=1)
+
+        self._build_state_summary(dashboard_body)
+        self._build_images(dashboard_body)
+        self._build_control_panel(dashboard_body)
+
+        self.sidebar_frame = ttk.Frame(wrapper, padding=(6, 10))
+        self.sidebar_frame.grid(row=0, column=1, sticky="ns")
+        self.sidebar_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.sidebar_frame,
+            text="ノード起動パネル",
+            font=("Helvetica", 13, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+        button_row = ttk.Frame(self.sidebar_frame)
+        button_row.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        button_row.columnconfigure(0, weight=1)
+        button_row.columnconfigure(1, weight=1)
+        ttk.Button(button_row, text="全起動", command=self._handle_start_all).grid(
+            row=0, column=0, sticky="ew", padx=(0, 4)
+        )
+        ttk.Button(button_row, text="全停止", command=self._handle_stop_all).grid(
+            row=0, column=1, sticky="ew"
+        )
+
+        self.package_frames = {}
+        for idx, package in enumerate(self.LOG_PACKAGES, start=2):
             frame = PackageControlFrame(
-                side_panel,
+                self.sidebar_frame,
                 package,
                 MockDataProvider.PARAMETER_CANDIDATES,
+                MockDataProvider.SIMULATOR_MAP.get(package),
                 self._handle_start_node,
                 self._handle_stop_node,
             )
             frame.grid(row=idx, column=0, sticky="ew", pady=4)
             self.package_frames[package] = frame
+
+    def _toggle_sidebar(self) -> None:
+        self.sidebar_visible = not self.sidebar_visible
+        if self.sidebar_visible:
+            self.sidebar_frame.grid()
+            self.sidebar_toggle_btn.configure(text="◀ ノード起動パネル")
+        else:
+            self.sidebar_frame.grid_remove()
+            self.sidebar_toggle_btn.configure(text="▶ ノード起動パネル")
+
+    def _handle_start_all(self) -> None:
+        for package, frame in self.package_frames.items():
+            parameter, simulator = frame.get_settings()
+            self._handle_start_node(package, parameter, simulator)
+
+    def _handle_stop_all(self) -> None:
+        for package in self.package_frames:
+            self._handle_stop_node(package)
+
+    def _handle_root_configure(self, event: tk.Event) -> None:  # type: ignore[override]
+        if event.widget is not self or self._resizing:
+            return
+        width, height = event.width, event.height
+        if width <= 0 or height <= 0:
+            return
+        current = (width, height)
+        if current == self._last_size:
+            return
+
+        target_height = int(round(width / self._aspect_ratio))
+        target_width = int(round(height * self._aspect_ratio))
+
+        if abs(width - self._last_size[0]) >= abs(height - self._last_size[1]):
+            adjusted_width = width
+            adjusted_height = target_height
+        else:
+            adjusted_width = target_width
+            adjusted_height = height
+
+        if adjusted_width == width and adjusted_height == height:
+            self._last_size = current
+            return
+
+        self._resizing = True
+        self.geometry(f"{adjusted_width}x{adjusted_height}")
+        self._resizing = False
+        self._last_size = (adjusted_width, adjusted_height)
 
     # ------------------------------------------------------------------
     def _build_state_summary(self, parent: ttk.Frame) -> None:
@@ -647,6 +901,7 @@ class MockDashboardApp(tk.Tk):
         container.columnconfigure(0, weight=2)
         container.columnconfigure(1, weight=2)
         container.columnconfigure(2, weight=1)
+        container.rowconfigure(0, weight=1)
 
         # route_stateカード
         route_frame = ttk.LabelFrame(
@@ -741,6 +996,24 @@ class MockDashboardApp(tk.Tk):
             anchor="center",
         )
 
+        velocity_frame = ttk.LabelFrame(
+            container, text="ロボット速度 (cmd_vel)", style="Card.TLabelframe"
+        )
+        velocity_frame.grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
+        velocity_frame.columnconfigure(1, weight=1)
+        ttk.Label(velocity_frame, text="並進速度").grid(row=0, column=0, sticky="w")
+        self.velocity_linear_var = tk.StringVar(value="0.00 m/s")
+        ttk.Label(velocity_frame, textvariable=self.velocity_linear_var).grid(
+            row=0, column=1, sticky="w"
+        )
+        ttk.Label(velocity_frame, text="角速度").grid(row=1, column=0, sticky="w")
+        self.velocity_angular_var = tk.StringVar(value="0.00 rad/s")
+        ttk.Label(velocity_frame, textvariable=self.velocity_angular_var).grid(
+            row=1, column=1, sticky="w"
+        )
+
         # active_targetゲージ
         target_frame = ttk.LabelFrame(
             parent, text="目標までの距離", style="Card.TLabelframe"
@@ -761,17 +1034,31 @@ class MockDashboardApp(tk.Tk):
     # ------------------------------------------------------------------
     def _build_images(self, parent: ttk.Frame) -> None:
         image_frame = ttk.Frame(parent)
-        image_frame.grid(row=2, column=0, sticky="ew")
-        for col in range(3):
-            image_frame.columnconfigure(col, weight=1)
+        image_frame.grid(row=2, column=0, sticky="nsew")
+        image_frame.columnconfigure(0, weight=1)
+        image_frame.columnconfigure(1, weight=1)
+        image_frame.columnconfigure(2, weight=1)
+        image_frame.rowconfigure(0, weight=1)
 
-        self.route_image = ImagePane(image_frame, "ルート地図")
+        self.route_image = ImagePane(
+            image_frame,
+            "ルート地図",
+            width=420,
+            height=240,
+            content_ratio=2100 / 1200,
+        )
         self.route_image.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
         self.sensor_image = SensorImagePane(image_frame, "障害物ビュー")
         self.sensor_image.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
 
-        self.camera_image = ImagePane(image_frame, "外部カメラ")
+        self.camera_image = ImagePane(
+            image_frame,
+            "外部カメラ",
+            width=360,
+            height=240,
+            content_ratio=4 / 3,
+        )
         self.camera_image.grid(row=0, column=2, sticky="nsew")
 
     # ------------------------------------------------------------------
@@ -816,23 +1103,23 @@ class MockDashboardApp(tk.Tk):
         ).grid(row=0, column=3, padx=4, pady=4, sticky="ew")
 
     # ------------------------------------------------------------------
-    def _build_log_panel(self, parent: ttk.Frame) -> None:
-        notebook = ttk.Notebook(parent)
-        notebook.grid(row=4, column=0, sticky="nsew")
-        parent.rowconfigure(4, weight=1)
+    def _build_log_tab(self, parent: ttk.Frame) -> None:
+        for col in range(4):
+            parent.columnconfigure(col, weight=1)
+        parent.rowconfigure(0, weight=1)
 
-        for package in self.LOG_PACKAGES:
-            frame = ttk.Frame(notebook)
+        for col, package in enumerate(self.LOG_PACKAGES):
+            frame = ttk.LabelFrame(parent, text=package, padding=6)
+            frame.grid(row=0, column=col, sticky="nsew", padx=4, pady=8)
             frame.columnconfigure(0, weight=1)
             frame.rowconfigure(0, weight=1)
-            text = tk.Text(frame, height=10, state="disabled", wrap="none")
+            text = tk.Text(frame, state="disabled", wrap="none")
             text.grid(row=0, column=0, sticky="nsew")
             scrollbar = ttk.Scrollbar(
                 frame, orient="vertical", command=text.yview
             )
             scrollbar.grid(row=0, column=1, sticky="ns")
             text.configure(yscrollcommand=scrollbar.set)
-            notebook.add(frame, text=package)
             self.log_widgets[package] = text
 
     # ------------------------------------------------------------------
@@ -851,6 +1138,7 @@ class MockDashboardApp(tk.Tk):
         obstacle_hint: ObstacleHintSnapshot = snapshot["obstacle_hint"]
         manual_signal: ManualSignalSnapshot = snapshot["manual_signal"]
         active_target: ActiveTargetSnapshot = snapshot["active_target"]
+        cmd_vel: CmdVelSnapshot = snapshot["cmd_vel"]
         manager_status: ManagerStatusSnapshot = snapshot["manager_status"]
         image_timestamps: Dict[str, datetime] = snapshot["image_timestamps"]
         node_status: Dict[str, NodeLaunchStatus] = snapshot["node_status"]
@@ -930,6 +1218,10 @@ class MockDashboardApp(tk.Tk):
             f"基準距離 {active_target.reference_distance_m:5.2f} m"
         )
 
+        # cmd_vel
+        self.velocity_linear_var.set(f"{cmd_vel.linear_x:+.2f} m/s")
+        self.velocity_angular_var.set(f"{cmd_vel.angular_z:+.2f} rad/s")
+
         # 画像更新
         route_caption = f"route_map @ {image_timestamps['route_map'].strftime('%H:%M:%S')}"
         self.route_image.update_content(route_caption, "#2980b9")
@@ -940,11 +1232,14 @@ class MockDashboardApp(tk.Tk):
         sensor_color = "#27ae60" if not follower_state.front_blocked_majority else "#c0392b"
         self.sensor_image.update_content(sensor_caption, sensor_color)
         overlay_lines = [
-            f"前方遮蔽: {'YES' if follower_state.front_blocked_majority else 'NO'}",
-            f"前方余裕: {obstacle_hint.front_clearance_m:4.2f} m",
-            f"左中央値: {follower_state.left_offset_m_median:+.2f} m",
-            f"右中央値: {follower_state.right_offset_m_median:+.2f} m",
-            f"更新: {obstacle_hint.last_updated.strftime('%H:%M:%S')}",
+            (
+                f"遮蔽:{'YES' if follower_state.front_blocked_majority else 'NO'}  "
+                f"余裕:{obstacle_hint.front_clearance_m:4.2f}m"
+            ),
+            (
+                f"左:{follower_state.left_offset_m_median:+.2f}m  "
+                f"右:{follower_state.right_offset_m_median:+.2f}m"
+            ),
         ]
         self.sensor_image.update_overlay(overlay_lines)
 
@@ -952,6 +1247,10 @@ class MockDashboardApp(tk.Tk):
             f"camera[{camera_mode}] @ {image_timestamps['camera'].strftime('%H:%M:%S')}"
         )
         camera_color = "#8e44ad" if camera_mode == "signal" else "#34495e"
+        if camera_mode == "signal":
+            self.camera_image.set_content_ratio(4 / 3)
+        else:
+            self.camera_image.set_content_ratio(16 / 3)
         self.camera_image.update_content(camera_caption, camera_color)
 
         # ノード起動ステータス

@@ -61,7 +61,7 @@
    - 各カードの下部に最新送信結果とトピック名を1行で表示し、連続操作時の確認コストを削減する。
 
 8. **コンソールログパネル（タブ切替）**
-   - 画面下部にタブ付きログビューを追加し、`route_manager`・`route_follower`・`obstacle_monitor`・`robot_navigator` ごとに stdout/stderr を分離して表示する。
+   - ダッシュボードとは別タブのログ画面を用意し、同一タブ内を横方向に4分割して `route_manager`・`route_follower`・`obstacle_monitor`・`robot_navigator` の stdout/stderr を個別のスクロールパネルで閲覧する。
    - ノード起動パネルから立ち上げたプロセスを監視し、出力が発生したタブに未読バッジを付与する。
    - タブは任意で切替可能としつつ、ショートカットでダッシュボードへ即時復帰できるようにする。
 

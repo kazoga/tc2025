@@ -8,15 +8,8 @@ robot_navigator:
     ang_tol: 0.25
     control_rate_hz: 20.0
     robot_width: 0.6
-    scan_topic: "/scan"
-    odom_topic: "/odom"
-    amcl_pose_topic: "/amcl_pose"
-    goal_topic: "/active_target"
-    cmd_vel_topic: "/cmd_vel"
-    marker_topic: "/direction_marker"
     marker_frame: "map"
     obstacle_distance_mode: "hint"
-    hint_topic: "/obstacle_avoidance_hint"
     obst_fov_deg: 120.0
     obst_max_dist: 5.0
     safety_distance: 0.8

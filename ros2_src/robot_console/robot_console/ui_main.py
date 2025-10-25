@@ -660,6 +660,8 @@ class UiMain:
         )
         notebook.add(road_tab, text='road_blocked')
 
+        self._apply_imagetk_warning_if_needed()
+
     def _build_launch_sidebar(self, parent: ttk.Frame) -> None:
         for child in parent.winfo_children():
             child.destroy()

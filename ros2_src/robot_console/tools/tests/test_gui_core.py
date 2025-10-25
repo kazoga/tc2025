@@ -1,5 +1,6 @@
 """GuiCore の単体テスト。"""
 
+import math
 import sys
 import types
 from pathlib import Path
@@ -39,7 +40,26 @@ def _install_geometry_stubs() -> None:
 
             self.pose = _Pose()
 
+    class PoseWithCovarianceStamped:  # pragma: no cover - スタブのみ
+        def __init__(self) -> None:
+            class _PoseWithCovariance:
+                def __init__(self) -> None:
+                    class _Pose:
+                        def __init__(self) -> None:
+                            class _Point:
+                                def __init__(self) -> None:
+                                    self.x = 0.0
+                                    self.y = 0.0
+                                    self.z = 0.0
+
+                            self.position = _Point()
+
+                    self.pose = _Pose()
+
+            self.pose = _PoseWithCovariance()
+
     msg_module.PoseStamped = PoseStamped
+    msg_module.PoseWithCovarianceStamped = PoseWithCovarianceStamped
     geometry_msgs.msg = msg_module
     sys.modules['geometry_msgs'] = geometry_msgs
     sys.modules['geometry_msgs.msg'] = msg_module
@@ -66,6 +86,8 @@ if 'geometry_msgs' not in sys.modules:
 
 if 'sensor_msgs' not in sys.modules:
     _install_sensor_stubs()
+
+import geometry_msgs.msg
 
 if 'numpy' not in sys.modules:
     numpy_stub = types.ModuleType('numpy')
@@ -122,6 +144,27 @@ from robot_console.gui_core import GuiCore
 from robot_console.utils import ConsoleLogBuffer, GuiCommandType
 
 
+def _make_follower_state(**overrides):
+    """GuiCore.update_follower_state へ渡すテスト用メッセージを生成する。"""
+
+    defaults = {
+        'state': 'RUNNING',
+        'current_index': 0,
+        'current_waypoint_label': '',
+        'next_waypoint_label': '',
+        'front_blocked_majority': False,
+        'left_offset_m_median': 0.0,
+        'right_offset_m_median': 0.0,
+        'last_stagnation_reason': '',
+        'avoidance_attempt_count': 0,
+        'distance_to_target': 0.0,
+        'signal_stop_active': False,
+        'line_stop_active': False,
+    }
+    defaults.update(overrides)
+    return types.SimpleNamespace(**defaults)
+
+
 def test_console_log_buffer_capacity() -> None:
     buffer = ConsoleLogBuffer(capacity=3)
     buffer.append('line1')
@@ -153,3 +196,35 @@ def test_snapshot_is_copy() -> None:
     snapshot.route_state.state = 'modified'
     new_snapshot = core.snapshot()
     assert new_snapshot.route_state.state != 'modified'
+
+
+def test_compute_distance_with_pose_with_covariance() -> None:
+    core = GuiCore(launch_profiles=[])
+    target = geometry_msgs.msg.PoseStamped()
+    target.pose.position.x = 2.0  # type: ignore[attr-defined]
+    pose_cov = geometry_msgs.msg.PoseWithCovarianceStamped()
+    pose_cov.pose.pose.position.x = 1.0  # type: ignore[attr-defined]
+    distance = core._compute_distance(target, pose_cov)
+    assert math.isclose(distance, 1.0)
+
+
+def test_target_distance_falls_back_to_follower_state_value() -> None:
+    core = GuiCore(launch_profiles=[])
+    follower_msg = _make_follower_state(distance_to_target=7.5)
+    core.update_follower_state(follower_msg)
+    snapshot = core.snapshot()
+    assert math.isclose(snapshot.target_distance.current_distance_m, 7.5)
+
+
+def test_target_distance_prefers_pose_when_available() -> None:
+    core = GuiCore(launch_profiles=[])
+    target = geometry_msgs.msg.PoseStamped()
+    target.pose.position.x = 10.0  # type: ignore[attr-defined]
+    core.update_active_target(target)
+    pose_cov = geometry_msgs.msg.PoseWithCovarianceStamped()
+    pose_cov.pose.pose.position.x = 4.0  # type: ignore[attr-defined]
+    core.update_amcl_pose(pose_cov)
+    follower_msg = _make_follower_state(distance_to_target=123.0)
+    core.update_follower_state(follower_msg)
+    snapshot = core.snapshot()
+    assert math.isclose(snapshot.target_distance.current_distance_m, 6.0)

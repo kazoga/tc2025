@@ -58,8 +58,8 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 | ルート進捗カード | 上段左 | `route_state` (1Hz) + `manager_status.state`（イベント駆動） | 状態ラベル、進捗バー (`current_index/total_waypoints`)、ルートバージョン履歴、再計画要因と時刻。 |
 | フォロワ状態カード | 上段中央 | `follower_state` (20Hz) | `state`、`current_index`、`current_waypoint_label`、`next_waypoint_label`、滞留理由、左右中央値、回避試行回数。高速更新だが GUI では 5Hz に間引き表示。 |
 | ロボット速度カード | 上段右 (上段) | `cmd_vel` (20Hz) | 並進速度 [m/s]、角速度 [deg/s]、閾値超過時の色変化。 |
-| 目標距離カード | 上段右 (下段) | `active_target` + `amcl_pose` (5Hz) | 現在距離、基準距離、距離比ゲージ。到達閾値 1.0m 以下で警告色。 |
-| 手動・信号・封鎖イベント | 中央左 | `manual_start`・`sig_recog`・`road_blocked` (イベント) | 3種のうち優先度順 (road_blocked > manual_start > sig_recog) で1件をバナー表示。未発生時は無地を維持しレイアウト幅を固定。 |
+| 目標距離カード | 上段右 (下段) | `active_target` + `amcl_pose` (5Hz)。いずれか未取得時は `follower_state.distance_to_target` を使用する。 | 現在距離、基準距離、距離比ゲージ。到達閾値 1.0m 以下で警告色。 |
+| 手動・信号・封鎖イベント | 中央左 | `manual_start`・`sig_recog`・`road_blocked` (イベント) | 3種のうち優先度順 (road_blocked > manual_start > sig_recog) で1件をバナー表示。manual_start・sig_recog・road_blocked の各通知は受信後60秒が経過すると自動的にクリアし、未発生時は無地を維持してレイアウト幅を固定する。 |
 | 制御コマンドタブ | 中央右 | GUI操作 | Notebook で manual_start / sig_recog / obstacle_hint / road_blocked を切替。各タブは1～2行構成で縦幅を最小化。 |
 | 画像パネル3面 | 下段 | `route_image` (更新時), `sensor_viewer` (5Hz), 外部カメラ (信号監視:4:3, 走行:16:9 / 5Hz) | それぞれ専用キャンバスに描画。アスペクト比を維持し、余白は背景色と同色でレターボックス処理。障害物ビュー左上に2行オーバレイ (遮蔽/余裕、左/右オフセット)。 |
 
@@ -67,15 +67,15 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 - **manual_start**: True/False ラジオボタン、送信ボタン、現在ラッチ値と最終送信時刻を1行表示。
 - **sig_recog**: GO/STOP ラジオボタン、送信ボタン、最終送信値と時刻を表示。送信時に `std_msgs/Int32` で 1=GO, 2=STOP を送信。
 - **obstacle_avoidance_hint**: 1段目に余裕距離・左右オフセットの `Spinbox`。2段目に `front_blocked` トグルボタン + 送出開始/停止ボタン。3段目に現在送出状態（自動／固定値／停止中）と最終更新時刻。
-- **road_blocked**: True/False ラジオボタンと送信ボタン。現在値と最終送信時刻を1行表示。
+- **road_blocked**: True/False ラジオボタンと送信ボタン。現在値と最終送信時刻に加えて入力元（GUI/外部）を1行で表示する。
 
 ### 3.4 ノード起動サイドバー
-- 右端に折り畳み式の `PanedWindow`。開閉ボタンで幅を 320px（開）／40px（閉）に切替。
+- 右端に折り畳み式のサイドカラムを設け、`Canvas` の論理幅を 288px（従来の 320px から約 10% 縮小）に固定してメインパネルの表示領域を拡張する。開閉ボタンでサイドバーの表示・非表示を切り替える。
 - 項目順：`route_planner`、`route_manager`、`route_follower`、`robot_navigator`、`obstacle_monitor`。
 - サイドバー上部に「全起動」「全停止」ボタンを常設し、現在の Combobox 選択値とシミュレータ設定を尊重しながら、`NodeLaunchProfile` の優先順位順に逐次処理する。
 - 各カードに含める要素：
   - 状態インジケータ（停止／起動中／エラー）。
-  - パラメータファイル `Combobox`（既定は `params/default.yaml`）。
+  - パラメータファイル `Combobox`（既定は `params/default.yaml`。表示はファイル名のみで、内部では実パスへマッピングする）。
   - `robot_navigator` と `obstacle_monitor` のみ「Simulator 同時起動」チェックボックス (`robot_simulator` / `laser_scan_simulator`)。
   - 起動／停止ボタン。アクション時刻をツールチップに表示。
 - パネル全体を `Canvas` + `Scrollbar` で包み、縦スクロールに対応。
@@ -96,12 +96,12 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 | フォロワ状態カード | 状態・インデックス・ラベル・オフセット | `/follower_state` | `current_waypoint_label` は Route メッセージのラベル辞書を参照。 |
 | ロボット速度カード | 並進・角速度 | `/cmd_vel` | 角速度は GUI 側で deg/s に変換。 |
 | 目標距離カード | 現在距離・基準距離 | `/active_target`, `/amcl_pose` | ターゲット切替時に基準距離を更新。 |
-| 手動・信号・封鎖バナー | 優先度付きイベント表示 | `/manual_start`, `/sig_recog`, `/road_blocked` | 各トピックを購読し、未受信時はデフォルト状態を維持する。 |
-| manual_start タブ | True/False 選択と送信 | `/manual_start` | 送信値は `Bool.data`。現在値は購読結果（未受信時は既定False）を表示。 |
+| 手動・信号・封鎖バナー | 優先度付きイベント表示 | `/manual_start`, `/sig_recog`, `/road_blocked` | 各トピックを購読し、未受信時はデフォルト状態を維持する。詳細な項目対応は `docs/dashboard_topic_mapping.csv` に整理する。 |
+| manual_start タブ | True/False 選択と送信 | `/manual_start` | 送信値は `Bool.data`。現在値は購読結果（未受信時は既定False）をステータスラベルに表示し、トグルは操作者の送信意図を保持する。 |
 | sig_recog タブ | GO/STOP 送信 | `/sig_recog` | 1=GO, 2=STOP を送信。現在値は購読結果（未受信時は未定義表示）を表示。 |
 | obstacle_hint タブ | 余裕距離・左右オフセット・front_blocked・送出制御 | `/obstacle_avoidance_hint` | 固定値送出中は同一トピックへ上書き送信し、停止後は購読値へ復帰。 |
 | road_blocked タブ | True/False 送信 | `/road_blocked` | トピックを購読し、外部ノードからの受信値を常に優先表示する。未接続の場合は直近送信値を明示する。 |
-| 画像パネル（ルート地図） | 2100×1200 のアスペクト比を維持して縮小 | `/active_route` 内に含まれる `route_image` | 受信できない場合は「No Image」プレースホルダを表示する。 |
+| 画像パネル（ルート地図） | 640×360 へレターボックス付きで縮小 | `/active_route` 内に含まれる `route_image` | 受信できない場合は「No Image」プレースホルダを表示する。 |
 | 画像パネル（障害物ビュー） | 1:1 画像 + 数値オーバレイ | `/sensor_viewer`, `/obstacle_avoidance_hint` | オーバレイ文字列は GuiCore で整形。 |
 | 画像パネル（外部カメラ） | 16:9 / 4:3 レターボックス描画 | `/usb_cam/image_raw`, `/sig_det_imgs` | `sig_recog` が STOP の間は `/sig_det_imgs` を表示し、未取得時は「No Image」プレースホルダを描画。 |
 | ノード起動カード各種 | 起動/停止、パラメータ選択、Simulator チェック | `ros2 launch` 経由で `route_planner` などを起動 | パラメータファイルは自動抽出リストを利用。 |
@@ -185,8 +185,8 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 ## 6. 更新・同期設計
 - **GUI更新**：`UiMain` が 200ms ごとに `GuiCore.snapshot()` を呼び出す。スナップショットはディープコピーされた dataclass 群で、GUI 側での加工によりスレッド安全性を確保する。
 - **画像処理**：ROS コールバックで `sensor_msgs/Image` を受信後、`cv_bridge` で OpenCV 画像へ変換し、`PIL.Image` に変換。アスペクト比計算を `GuiCore` 側で行い、Tkinter では `PhotoImage` を生成する。画像の描画サイズは各パネルのピクセル数から算出し、背景色 (`#1f1f1f`) と同色のレターボックスを描く。
-- **距離計算**：`active_target` と `amcl_pose` の距離は `tf_transformations` を用いず、単純なユークリッド距離で算出。新しいターゲット受信時に `reference_distance_m` を更新し、到達割合をリセットする。
-- **イベントバナー**：`ManualSignalView` を参照し、`road_blocked` → `manual_start=True` → `sig_recog` の順に優先。`road_blocked` は外部ノードからの受信値を GUI 操作よりも優先して表示する。`manual_start=False` 送信時は5秒でバナーをクリアする。
+- **距離計算**：`active_target` と `amcl_pose` の距離は `tf_transformations` を用いず、単純なユークリッド距離で算出。新しいターゲット受信時に `reference_distance_m` を更新し、到達割合をリセットする。どちらかが未取得の場合のみ `follower_state.distance_to_target` を暫定値として用いる。
+- **イベントバナー**：`ManualSignalView` を参照し、`road_blocked` → `manual_start=True` → `sig_recog` の順に優先。`road_blocked` は外部ノードからの受信値を GUI 操作よりも優先して表示する。`manual_start`・`sig_recog`・`road_blocked` に起因するバナーは受信後60秒を経過すると自動的に非表示とし、`WAITING_STOP` 状態に基づく信号／停止線表示は状態が解除されるまで維持する。
 - **障害物固定送出**：送出開始時に内部状態 `override_active=True` を設定し、0.5Hz のタイマーで上書きメッセージを送信する。停止ボタンでタイマーを解除し、通常の受信値表示に復帰する。
 
 ## 7. ノード起動管理

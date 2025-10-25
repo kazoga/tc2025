@@ -24,7 +24,8 @@ class NodeLaunchStatus(Enum):
 class RouteStateView:
     """route_state と manager_status を統合した表示用データ。"""
 
-    state: str = "unknown"
+    manager_state: str = "unknown"
+    route_status: str = "unknown"
     current_index: int = 0
     total_waypoints: int = 0
     progress: float = 0.0

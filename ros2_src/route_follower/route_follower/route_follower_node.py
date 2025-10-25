@@ -324,11 +324,13 @@ class RouteFollowerNode(Node):
         msg.route_version = int(state["route_version"])
         msg.state = str(state["status"])
         msg.current_index = int(state["index"])
+        msg.current_label = str(state.get("current_label", ""))
         msg.front_blocked_majority = bool(state.get("front_blocked", False))
         msg.left_offset_m_median = float(state.get("left_offset_m_median", 0.0))
         msg.right_offset_m_median = float(state.get("right_offset_m_median", 0.0))
         msg.avoidance_attempt_count = int(state["avoid_count"])
         msg.last_stagnation_reason = str(state["reason"])
+        msg.segment_distance_m = float(state.get("segment_distance_m", 0.0))
         self.pub_state.publish(msg)
 
         now_sec = time.monotonic()

@@ -185,6 +185,31 @@ class UiMain:
             'progress': tk.DoubleVar(value=0.0),
         }
 
+        self._route_state_vars = {
+            'status': tk.StringVar(value='unknown'),
+            'progress': tk.DoubleVar(value=0.0),
+            'progress_text': tk.StringVar(value='0 / 0'),
+            'version': tk.StringVar(value='バージョン: 0'),
+            'detail': tk.StringVar(value=''),
+        }
+        self._follower_vars = {
+            'state': tk.StringVar(value='unknown'),
+            'index': tk.StringVar(value='Index: 0'),
+            'label': tk.StringVar(value='現在: -'),
+            'next': tk.StringVar(value='次: -'),
+            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
+            'stagnation': tk.StringVar(value='滞留要因: -'),
+        }
+        self._velocity_vars = {
+            'linear': tk.StringVar(value='0.00 m/s'),
+            'angular': tk.StringVar(value='0.0 deg/s'),
+        }
+        self._target_vars = {
+            'distance': tk.StringVar(value='現在距離: 0.0 m'),
+            'baseline': tk.StringVar(value='基準距離: 0.0 m'),
+            'progress': tk.DoubleVar(value=0.0),
+        }
+
         self._launch_widgets: Dict[str, Dict[str, object]] = {}
         self._log_texts: Dict[str, tk.Text] = {}
 

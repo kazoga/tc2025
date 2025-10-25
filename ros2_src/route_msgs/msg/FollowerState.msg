@@ -7,9 +7,11 @@ std_msgs/Header header
 int32 route_version
 string state
 int32 current_index
+string current_label
 
 geometry_msgs/Pose current_pose
 float32 distance_to_target
+float32 segment_distance_m
 
 int32 avoidance_attempt_count
 string last_stagnation_reason

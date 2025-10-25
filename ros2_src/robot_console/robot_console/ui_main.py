@@ -109,6 +109,17 @@ class ImagePanel(ttk.LabelFrame):
 
         return self._target_size
 
+    def get_display_size(self) -> Tuple[int, int]:
+        """現在のキャンバスサイズを取得し、未配置時はターゲットサイズを返す。"""
+
+        width = self._canvas.winfo_width()
+        height = self._canvas.winfo_height()
+        if width <= 1:
+            width = self._target_size[0]
+        if height <= 1:
+            height = self._target_size[1]
+        return width, height
+
     def update_image(self, photo: Optional[tk.PhotoImage], *, alt_text: str = "画像未取得") -> None:
         """画像と代替テキストを設定する。"""
 
@@ -120,6 +131,7 @@ class ImagePanel(ttk.LabelFrame):
             self._text_item = None
 
         self._photo = photo
+        display_width, _ = self.get_display_size()
         if photo is None:
             self._text_item = self._canvas.create_text(
                 0,
@@ -129,7 +141,7 @@ class ImagePanel(ttk.LabelFrame):
                 font=("Helvetica", 12, "bold"),
                 justify="center",
                 anchor="center",
-                width=max(self._target_size[0] - 20, 50),
+                width=max(display_width - 20, 50),
             )
         else:
             self._image_item = self._canvas.create_image(0, 0, image=photo, anchor="center")
@@ -154,8 +166,7 @@ class ImagePanel(ttk.LabelFrame):
     def _relayout(self) -> None:
         """キャンバス中心に画像もしくはテキストを配置し直す。"""
 
-        width = max(self._canvas.winfo_width(), self._target_size[0])
-        height = max(self._canvas.winfo_height(), self._target_size[1])
+        width, height = self.get_display_size()
         center_x = width / 2
         center_y = height / 2
         if self._image_item is not None:
@@ -204,7 +215,8 @@ class UiMain:
         self._image_warning_parent: Optional[ttk.Frame] = None
 
         self._route_state_vars = {
-            'status': tk.StringVar(value='unknown'),
+            'manager': tk.StringVar(value='unknown'),
+            'route_status': tk.StringVar(value='unknown'),
             'progress': tk.DoubleVar(value=0.0),
             'progress_text': tk.StringVar(value='0 / 0'),
             'version': tk.StringVar(value='バージョン: 0'),
@@ -216,7 +228,7 @@ class UiMain:
             'label': tk.StringVar(value='現在: -'),
             'next': tk.StringVar(value='次: -'),
             'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
-            'stagnation': tk.StringVar(value='滞留要因: -'),
+            'stagnation': tk.StringVar(value='滞留なし'),
         }
         self._velocity_vars = {
             'linear': tk.StringVar(value='0.00 m/s'),
@@ -367,35 +379,41 @@ class UiMain:
         )
         route_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         route_frame.columnconfigure(1, weight=1)
-        ttk.Label(route_frame, text='状態').grid(row=0, column=0, sticky='w')
-        ttk.Label(route_frame, textvariable=self._route_state_vars['status']).grid(
+        ttk.Label(route_frame, text='マネージャ状態').grid(row=0, column=0, sticky='w')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['manager']).grid(
             row=0,
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, text='進捗').grid(row=1, column=0, sticky='w')
+        ttk.Label(route_frame, text='ルート状態').grid(row=1, column=0, sticky='w')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['route_status']).grid(
+            row=1,
+            column=1,
+            sticky='w',
+        )
+        ttk.Label(route_frame, text='進捗').grid(row=2, column=0, sticky='w')
         ttk.Progressbar(
             route_frame,
             maximum=100,
             variable=self._route_state_vars['progress'],
-        ).grid(row=1, column=1, sticky='ew', pady=2)
+        ).grid(row=2, column=1, sticky='ew', pady=2)
         ttk.Label(route_frame, textvariable=self._route_state_vars['progress_text']).grid(
-            row=2,
-            column=1,
-            sticky='w',
-        )
-        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
             row=3,
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, text='最終イベント').grid(row=4, column=0, sticky='nw')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
+            row=4,
+            column=1,
+            sticky='w',
+        )
+        ttk.Label(route_frame, text='最終イベント').grid(row=5, column=0, sticky='nw')
         ttk.Label(
             route_frame,
             textvariable=self._route_state_vars['detail'],
             justify='left',
             wraplength=220,
-        ).grid(row=4, column=1, sticky='w')
+        ).grid(row=5, column=1, sticky='w')
 
         follower_frame = ttk.LabelFrame(
             summary,
@@ -886,7 +904,9 @@ class UiMain:
 
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
-        self._route_state_vars['status'].set(route.state)
+        follower = snapshot.follower_state
+        self._route_state_vars['manager'].set(route.manager_state)
+        self._route_state_vars['route_status'].set(route.route_status)
         total_waypoints = max(route.total_waypoints, 0)
         progress_ratio = 0.0
         if total_waypoints > 0:
@@ -894,7 +914,8 @@ class UiMain:
         self._route_state_vars['progress'].set(progress_ratio * 100.0)
         display_index = 0
         if total_waypoints > 0:
-            display_index = min(max(route.current_index + 1, 1), total_waypoints)
+            follower_index = max(follower.current_index, 0)
+            display_index = min(max(follower_index + 1, 1), total_waypoints)
         self._route_state_vars['progress_text'].set(f"{display_index} / {route.total_waypoints}")
         self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
         detail_parts = []
@@ -903,15 +924,15 @@ class UiMain:
         if route.last_replan_time:
             detail_parts.append(f"@ {_format_time(route.last_replan_time)}")
         self._route_state_vars['detail'].set(' '.join(detail_parts) or '最新イベントなし')
-        follower = snapshot.follower_state
         self._follower_vars['state'].set(follower.state)
         self._follower_vars['index'].set(f"Index: {follower.current_index}")
         current_label = follower.current_label or route.current_label or '-'
         self._follower_vars['label'].set(f"現在: {current_label}")
         self._follower_vars['next'].set(f"次: {follower.next_label or '-'}")
-        stagnation = follower.stagnation_reason or '滞留要因: なし'
-        if not stagnation.startswith('滞留要因:'):
-            stagnation = f"滞留要因: {stagnation}"
+        if follower.stagnation_reason:
+            stagnation = follower.stagnation_reason
+        else:
+            stagnation = '滞留なし'
         self._follower_vars['stagnation'].set(stagnation)
         offsets = (
             f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
@@ -1102,19 +1123,20 @@ class UiMain:
 
         def _build_photo(
             source: Optional[Image.Image],
-            target_size: Tuple[int, int],
+            panel: ImagePanel,
         ) -> Optional[tk.PhotoImage]:
             if source is None:
                 return None
             working = source.copy() if hasattr(source, 'copy') else source
             try:
+                target_size = panel.get_display_size()
                 if hasattr(working, 'size') and working.size != target_size:
                     working = resize_with_letter_box(working, target_size)
             except Exception:  # pragma: no cover - サイズ調整失敗時は元画像を使用
                 pass
             return self._create_photo_image(working)
 
-        route_photo = _build_photo(snapshot.images.route_map, self._route_panel.target_size)
+        route_photo = _build_photo(snapshot.images.route_map, self._route_panel)
         self._route_panel.update_image(route_photo, alt_text='画像未取得')
         self._route_panel.update_caption(
             'ルート地図: 表示中' if route_photo else 'ルート地図: 画像未取得'
@@ -1123,7 +1145,7 @@ class UiMain:
         obstacle_source = snapshot.images.obstacle_view
         if obstacle_source is not None and snapshot.images.obstacle_overlay:
             obstacle_source = self._draw_overlay(obstacle_source.copy(), snapshot.images.obstacle_overlay)
-        obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel.target_size)
+        obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel)
         self._obstacle_panel.update_image(obstacle_photo, alt_text='画像未取得')
         overlay_lines = [
             f"遮蔽:{'YES' if snapshot.obstacle_hint.front_blocked else 'NO'}",
@@ -1135,7 +1157,7 @@ class UiMain:
             '障害物ビュー: 表示中' if obstacle_photo else '障害物ビュー: 画像未取得'
         )
 
-        camera_photo = _build_photo(snapshot.images.external_camera, self._camera_panel.target_size)
+        camera_photo = _build_photo(snapshot.images.external_camera, self._camera_panel)
         self._camera_panel.update_image(camera_photo, alt_text='画像未取得')
         camera_mode = snapshot.images.camera_mode or 'unknown'
         caption = f"外部カメラ: {camera_mode}"

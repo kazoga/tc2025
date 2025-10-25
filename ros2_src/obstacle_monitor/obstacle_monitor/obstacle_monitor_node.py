@@ -83,6 +83,12 @@ class ObstacleMonitorNode(Node):
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=10,
         )
+        # rqt_image_view などの可視化ツールは Reliable を要求するため、画像配信は信頼型QoSを用いる。
+        qos_rel_volatile_shallow = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=1,
+        )
 
         # ---- Pub/Sub ----
         scan_topic = 'scan'
@@ -107,7 +113,7 @@ class ObstacleMonitorNode(Node):
         self.pub_img = self.create_publisher(
             Image,
             viewer_topic,
-            qos_be_volatile,
+            qos_rel_volatile_shallow,
         )
 
         self.sub_amcl = self.create_subscription(

@@ -6,7 +6,7 @@ import threading
 from typing import Optional
 
 import rclpy
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int32
@@ -47,7 +47,12 @@ class RobotConsoleNode(Node):
         self.create_subscription(ImageMsg, '/usb_cam/image_raw', lambda msg: self._core.update_camera_image(msg, 'drive'), 10)
         self.create_subscription(ImageMsg, '/sig_det_imgs', lambda msg: self._core.update_camera_image(msg, 'signal'), 10)
         self.create_subscription(PoseStamped, '/active_target', self._core.update_active_target, 10)
-        self.create_subscription(PoseStamped, '/amcl_pose', self._core.update_amcl_pose, 10)
+        self.create_subscription(
+            PoseWithCovarianceStamped,
+            '/amcl_pose',
+            self._core.update_amcl_pose,
+            10,
+        )
         self.create_subscription(Twist, '/cmd_vel', self._core.update_cmd_vel, 10)
         self.create_subscription(Bool, '/manual_start', self._core.update_manual_start, 10)
         self.create_subscription(Int32, '/sig_recog', self._core.update_sig_recog, 10)

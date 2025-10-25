@@ -70,12 +70,12 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 - **road_blocked**: True/False ラジオボタンと送信ボタン。現在値と最終送信時刻を1行表示。
 
 ### 3.4 ノード起動サイドバー
-- 右端に折り畳み式の `PanedWindow`。開閉ボタンで幅を 320px（開）／40px（閉）に切替。
+- 右端に折り畳み式のサイドカラムを設け、`Canvas` の論理幅を 288px（従来の 320px から約 10% 縮小）に固定してメインパネルの表示領域を拡張する。開閉ボタンでサイドバーの表示・非表示を切り替える。
 - 項目順：`route_planner`、`route_manager`、`route_follower`、`robot_navigator`、`obstacle_monitor`。
 - サイドバー上部に「全起動」「全停止」ボタンを常設し、現在の Combobox 選択値とシミュレータ設定を尊重しながら、`NodeLaunchProfile` の優先順位順に逐次処理する。
 - 各カードに含める要素：
   - 状態インジケータ（停止／起動中／エラー）。
-  - パラメータファイル `Combobox`（既定は `params/default.yaml`）。
+  - パラメータファイル `Combobox`（既定は `params/default.yaml`。表示はファイル名のみで、内部では実パスへマッピングする）。
   - `robot_navigator` と `obstacle_monitor` のみ「Simulator 同時起動」チェックボックス (`robot_simulator` / `laser_scan_simulator`)。
   - 起動／停止ボタン。アクション時刻をツールチップに表示。
 - パネル全体を `Canvas` + `Scrollbar` で包み、縦スクロールに対応。
@@ -97,7 +97,7 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 | ロボット速度カード | 並進・角速度 | `/cmd_vel` | 角速度は GUI 側で deg/s に変換。 |
 | 目標距離カード | 現在距離・基準距離 | `/active_target`, `/amcl_pose` | ターゲット切替時に基準距離を更新。 |
 | 手動・信号・封鎖バナー | 優先度付きイベント表示 | `/manual_start`, `/sig_recog`, `/road_blocked` | 各トピックを購読し、未受信時はデフォルト状態を維持する。 |
-| manual_start タブ | True/False 選択と送信 | `/manual_start` | 送信値は `Bool.data`。現在値は購読結果（未受信時は既定False）を表示。 |
+| manual_start タブ | True/False 選択と送信 | `/manual_start` | 送信値は `Bool.data`。現在値は購読結果（未受信時は既定False）をステータスラベルに表示し、トグルは操作者の送信意図を保持する。 |
 | sig_recog タブ | GO/STOP 送信 | `/sig_recog` | 1=GO, 2=STOP を送信。現在値は購読結果（未受信時は未定義表示）を表示。 |
 | obstacle_hint タブ | 余裕距離・左右オフセット・front_blocked・送出制御 | `/obstacle_avoidance_hint` | 固定値送出中は同一トピックへ上書き送信し、停止後は購読値へ復帰。 |
 | road_blocked タブ | True/False 送信 | `/road_blocked` | トピックを購読し、外部ノードからの受信値を常に優先表示する。未接続の場合は直近送信値を明示する。 |

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 try:
     from PIL import Image, ImageTk  # type: ignore
@@ -35,9 +36,13 @@ else:  # pragma: no cover - OpenCV 無し環境では未使用
 from .gui_core import GuiCore
 from .utils import GuiSnapshot, NodeLaunchStatus
 
+LOGGER = logging.getLogger(__name__)
+
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 REFRESH_INTERVAL_MS = 200
+SIDEBAR_WIDTH = 288
+JST = timezone(timedelta(hours=9))
 
 
 def _format_time(value: Optional[datetime]) -> str:
@@ -45,7 +50,9 @@ def _format_time(value: Optional[datetime]) -> str:
 
     if value is None:
         return "--:--:--"
-    return value.strftime("%H:%M:%S")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(JST).strftime("%H:%M:%S")
 
 
 class ImagePanel(ttk.LabelFrame):
@@ -288,6 +295,7 @@ class UiMain:
 
         self._sidebar_canvas = tk.Canvas(self._sidebar_container, highlightthickness=0)
         self._sidebar_canvas.grid(row=0, column=0, sticky='nsew')
+        self._sidebar_canvas.configure(width=SIDEBAR_WIDTH)
         scrollbar = ttk.Scrollbar(
             self._sidebar_container,
             orient=tk.VERTICAL,
@@ -727,7 +735,7 @@ class UiMain:
             status_var = tk.StringVar(value=self._format_launch_status(state.status))
             ttk.Label(card, textvariable=status_var).grid(row=0, column=0, sticky='w')
 
-            param_var = tk.StringVar(value=state.selected_param or '')
+            param_var = tk.StringVar(value=state.selected_param_display or '')
             combo = ttk.Combobox(
                 card,
                 textvariable=param_var,
@@ -774,6 +782,7 @@ class UiMain:
                 'status': status_var,
                 'param': param_var,
                 'sim': simulator_var,
+                'combo': combo,
             }
 
     def _build_logs(self, parent: ttk.Frame) -> None:
@@ -809,9 +818,11 @@ class UiMain:
             frame.rowconfigure(0, weight=1)
             text = tk.Text(frame, wrap='none', state='disabled')
             text.grid(row=0, column=0, sticky='nsew')
-            scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
-            scrollbar.grid(row=0, column=1, sticky='ns')
-            text.configure(yscrollcommand=scrollbar.set)
+            v_scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
+            v_scrollbar.grid(row=0, column=1, sticky='ns')
+            h_scrollbar = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
+            h_scrollbar.grid(row=1, column=0, sticky='ew')
+            text.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
             self._log_texts[profile_id] = text
 
     # ---------- コマンドハンドラ ----------
@@ -854,18 +865,24 @@ class UiMain:
         self._root.after(REFRESH_INTERVAL_MS, self._refresh)
 
     def _refresh(self) -> None:
-        snapshot = self._core.snapshot()
-        self._apply_snapshot(snapshot)
-        self._schedule_update()
+        try:
+            snapshot = self._core.snapshot()
+            self._apply_snapshot(snapshot)
+        except Exception as exc:  # pylint: disable=broad-except
+            LOGGER.exception("スナップショット更新処理で例外が発生しました: %s", exc)
+        finally:
+            self._schedule_update()
 
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
         progress_pct = max(min(route.progress * 100.0, 100.0), 0.0)
         self._route_state_vars['status'].set(route.state)
         self._route_state_vars['progress'].set(progress_pct)
-        self._route_state_vars['progress_text'].set(
-            f"{route.current_index} / {route.total_waypoints}"
-        )
+        total_waypoints = max(route.total_waypoints, 0)
+        display_index = 0
+        if total_waypoints > 0:
+            display_index = min(max(route.current_index + 1, 1), total_waypoints)
+        self._route_state_vars['progress_text'].set(f"{display_index} / {route.total_waypoints}")
         self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
         detail_parts = []
         if route.last_replan_reason:
@@ -873,11 +890,16 @@ class UiMain:
         if route.last_replan_time:
             detail_parts.append(f"@ {_format_time(route.last_replan_time)}")
         self._route_state_vars['detail'].set(' '.join(detail_parts) or '最新イベントなし')
+        progress_pct = 0.0
+        if total_waypoints > 0:
+            progress_pct = max(min((display_index / total_waypoints) * 100.0, 100.0), 0.0)
+        self._route_state_vars['progress'].set(progress_pct)
 
         follower = snapshot.follower_state
         self._follower_vars['state'].set(follower.state)
         self._follower_vars['index'].set(f"Index: {follower.current_index}")
-        self._follower_vars['label'].set(f"現在: {follower.current_label or '-'}")
+        current_label = follower.current_label or route.current_label or '-'
+        self._follower_vars['label'].set(f"現在: {current_label}")
         self._follower_vars['next'].set(f"次: {follower.next_label or '-'}")
         stagnation = follower.stagnation_reason or '滞留要因: なし'
         if not stagnation.startswith('滞留要因:'):
@@ -903,7 +925,6 @@ class UiMain:
         self._banner_label.configure(bg=banner_bg, fg=banner_fg)
 
         manual = snapshot.manual_signal
-        self._manual_value.set(manual.manual_start)
         self._manual_status_var.set(
             f"現在値: {manual.manual_start} / 最終送信: {_format_time(manual.manual_timestamp)}"
         )
@@ -916,7 +937,6 @@ class UiMain:
             self._sig_status_var.set(
                 f"最終送信: {sig_label} @{_format_time(manual.sig_timestamp)}"
             )
-        self._road_value.set(manual.road_blocked)
         self._road_status_var.set(
             f"現在値: {manual.road_blocked} / 最終送信: {_format_time(manual.road_blocked_timestamp)}"
         )
@@ -939,14 +959,49 @@ class UiMain:
         self._update_launch_states(snapshot)
         self._update_logs(snapshot)
 
+    def _resolve_banner(self, snapshot: GuiSnapshot) -> Tuple[str, str, str]:
+        """ダッシュボードのイベントバナー表示内容と配色を決定する。"""
+
+        base_text = self._build_banner(snapshot)
+        if not base_text:
+            return base_text, self._banner_default_bg, self._banner_default_fg
+
+        detail = ''
+        background = self._banner_default_bg
+        foreground = self._banner_default_fg
+
+        if base_text.startswith('道路封鎖'):
+            detail = self._format_road(snapshot)
+            background = '#c0392b'
+            foreground = '#ffffff'
+        elif base_text.startswith('信号: GO'):
+            detail = self._format_sig(snapshot)
+            background = '#2980b9'
+            foreground = '#ffffff'
+        elif base_text.startswith('信号: STOP'):
+            detail = self._format_sig(snapshot)
+            background = '#d35400'
+            foreground = '#ffffff'
+        elif base_text.startswith('停止線: STOP'):
+            detail = self._format_sig(snapshot)
+            background = '#8e44ad'
+            foreground = '#ffffff'
+        elif base_text.startswith('manual_start'):
+            detail = self._format_manual(snapshot)
+            background = '#16a085'
+            foreground = '#ffffff'
+
+        text = base_text if not detail else f"{base_text}\n{detail}"
+        return text, background, foreground
+
     def _build_banner(self, snapshot: GuiSnapshot) -> str:
         if snapshot.manual_signal.road_blocked:
             return '道路封鎖アラート'
-        if (
-            snapshot.follower_state.state == 'WAITING_STOP'
-            and snapshot.follower_state.signal_stop_active
-        ):
-            return '信号: STOP'
+        if snapshot.follower_state.state == 'WAITING_STOP':
+            if snapshot.follower_state.signal_stop_active:
+                return '信号: STOP'
+            if snapshot.follower_state.line_stop_active:
+                return '停止線: STOP'
         sig = snapshot.manual_signal.sig_recog
         if sig == 1:
             return '信号: GO'
@@ -958,17 +1013,34 @@ class UiMain:
 
     def _format_manual(self, snapshot: GuiSnapshot) -> str:
         ts = snapshot.manual_signal.manual_timestamp
-        return f"現在:{snapshot.manual_signal.manual_start} 時刻:{ts}" if ts else '受信なし'
+        return (
+            f"現在:{snapshot.manual_signal.manual_start} 時刻:{_format_time(ts)}"
+            if ts
+            else '受信なし'
+        )
 
     def _format_sig(self, snapshot: GuiSnapshot) -> str:
+        if snapshot.follower_state.state == 'WAITING_STOP':
+            if snapshot.follower_state.signal_stop_active:
+                return '信号：STOP'
+            if snapshot.follower_state.line_stop_active:
+                return '停止線：STOP'
         ts = snapshot.manual_signal.sig_timestamp
         value = snapshot.manual_signal.sig_recog
         label = {1: 'GO', 2: 'STOP'}.get(value, '未定義')
-        return f"現在:{label} 時刻:{ts}" if ts else '受信なし'
+        if ts:
+            return f"現在:{label} 時刻:{_format_time(ts)}"
+        if value is not None:
+            return f"現在:{label}"
+        return '受信なし'
 
     def _format_road(self, snapshot: GuiSnapshot) -> str:
         ts = snapshot.manual_signal.road_blocked_timestamp
-        return f"現在:{snapshot.manual_signal.road_blocked} 時刻:{ts}" if ts else '受信なし'
+        return (
+            f"現在:{snapshot.manual_signal.road_blocked} 時刻:{_format_time(ts)}"
+            if ts
+            else '受信なし'
+        )
 
     def _update_images(self, snapshot: GuiSnapshot) -> None:
         if not self._image_render_available:
@@ -1061,11 +1133,17 @@ class UiMain:
             if isinstance(status_var, tk.StringVar):
                 status_var.set(self._format_launch_status(state.status))
             param_var = widgets['param']  # type: ignore[assignment]
-            if isinstance(param_var, tk.StringVar) and state.selected_param != param_var.get():
-                param_var.set(state.selected_param or '')
+            if isinstance(param_var, tk.StringVar) and state.selected_param_display != param_var.get():
+                param_var.set(state.selected_param_display or '')
             sim_var = widgets['sim']  # type: ignore[assignment]
             if isinstance(sim_var, tk.BooleanVar):
                 sim_var.set(state.simulator_enabled)
+            combo_widget = widgets.get('combo')  # type: ignore[index]
+            if isinstance(combo_widget, ttk.Combobox):
+                current_values = tuple(combo_widget['values'])
+                desired_values = tuple(state.available_params)
+                if current_values != desired_values:
+                    combo_widget['values'] = state.available_params
 
     def _update_logs(self, snapshot: GuiSnapshot) -> None:
         for profile_id, text_widget in self._log_texts.items():

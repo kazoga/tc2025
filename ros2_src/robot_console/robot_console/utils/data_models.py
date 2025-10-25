@@ -28,6 +28,7 @@ class RouteStateView:
     current_index: int = 0
     total_waypoints: int = 0
     progress: float = 0.0
+    current_label: str = ""
     last_replan_reason: str = ""
     last_replan_time: Optional[datetime] = None
     route_version: int = 0
@@ -47,6 +48,7 @@ class FollowerStateView:
     stagnation_reason: str = ""
     retry_count: int = 0
     signal_stop_active: bool = False
+    line_stop_active: bool = False
 
 
 @dataclass
@@ -113,6 +115,8 @@ class NodeLaunchState:
     param_argument: Optional[str] = None
     available_params: List[str] = field(default_factory=list)
     selected_param: Optional[str] = None
+    param_display_map: Dict[str, str] = field(default_factory=dict)
+    selected_param_display: Optional[str] = None
     simulator_launch_file: Optional[str] = None
     simulator_enabled: bool = False
     status: NodeLaunchStatus = NodeLaunchStatus.STOPPED
@@ -205,6 +209,8 @@ def clone_launch_state(state: NodeLaunchState) -> NodeLaunchState:
         param_argument=state.param_argument,
         available_params=list(state.available_params),
         selected_param=state.selected_param,
+        param_display_map=dict(state.param_display_map),
+        selected_param_display=state.selected_param_display,
         simulator_launch_file=state.simulator_launch_file,
         simulator_enabled=state.simulator_enabled,
         status=state.status,

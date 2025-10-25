@@ -157,6 +157,33 @@ class UiMain:
         self._latest_obstacle_state_text = '受信値: 未取得'
         self._obstacle_preview_text = ''
         self._event_banner = tk.StringVar(value='')
+        self._image_warning_label: Optional[ttk.Label] = None
+        self._image_warning_parent: Optional[ttk.Frame] = None
+
+        self._route_state_vars = {
+            'status': tk.StringVar(value='unknown'),
+            'progress': tk.DoubleVar(value=0.0),
+            'progress_text': tk.StringVar(value='0 / 0'),
+            'version': tk.StringVar(value='バージョン: 0'),
+            'detail': tk.StringVar(value=''),
+        }
+        self._follower_vars = {
+            'state': tk.StringVar(value='unknown'),
+            'index': tk.StringVar(value='Index: 0'),
+            'label': tk.StringVar(value='現在: -'),
+            'next': tk.StringVar(value='次: -'),
+            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
+            'stagnation': tk.StringVar(value='滞留要因: -'),
+        }
+        self._velocity_vars = {
+            'linear': tk.StringVar(value='0.00 m/s'),
+            'angular': tk.StringVar(value='0.0 deg/s'),
+        }
+        self._target_vars = {
+            'distance': tk.StringVar(value='現在距離: 0.0 m'),
+            'baseline': tk.StringVar(value='基準距離: 0.0 m'),
+            'progress': tk.DoubleVar(value=0.0),
+        }
 
         self._route_state_vars = {
             'status': tk.StringVar(value='unknown'),
@@ -660,7 +687,7 @@ class UiMain:
         )
         notebook.add(road_tab, text='road_blocked')
 
-        self._apply_imagetk_warning_if_needed()
+        self._apply_imagetk_warning_if_needed(control_frame)
 
     def _build_launch_sidebar(self, parent: ttk.Frame) -> None:
         for child in parent.winfo_children():
@@ -1039,6 +1066,34 @@ class UiMain:
             text_widget.insert(tk.END, ''.join(logs))
             text_widget.see(tk.END)
             text_widget.configure(state='disabled')
+
+    def _apply_imagetk_warning_if_needed(self, parent: Optional[ttk.Frame] = None) -> None:
+        """画像描画に必要な依存が無い場合に警告ラベルを表示する。"""
+
+        if parent is not None:
+            self._image_warning_parent = parent
+
+        parent_frame = self._image_warning_parent
+        if parent_frame is None:
+            return
+
+        if self._image_render_available:
+            if self._image_warning_label is not None:
+                self._image_warning_label.destroy()
+                self._image_warning_label = None
+            return
+
+        if self._image_warning_label is None:
+            self._image_warning_label = ttk.Label(
+                parent_frame,
+                text=self._image_warning_message,
+                foreground='#c0392b',
+                wraplength=360,
+                justify='left',
+            )
+            self._image_warning_label.grid(row=1, column=0, sticky='ew', pady=(8, 0))
+        else:
+            self._image_warning_label.configure(text=self._image_warning_message)
 
     def _format_launch_status(self, status: NodeLaunchStatus) -> str:
         mapping = {

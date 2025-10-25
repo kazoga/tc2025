@@ -939,25 +939,36 @@ class UiMain:
         self._update_launch_states(snapshot)
         self._update_logs(snapshot)
 
-    def _resolve_banner(self, snapshot: GuiSnapshot) -> tuple[str, str, str]:
-        manual = snapshot.manual_signal
-        text = ''
-        bg = self._banner_default_bg
-        fg = self._banner_default_fg
-        if manual.road_blocked:
-            text = f"道路封鎖 @{_format_time(manual.road_blocked_timestamp)}"
-            bg = '#c0392b'
-            fg = '#ffffff'
-        elif manual.manual_start:
-            text = f"manual_start True @{_format_time(manual.manual_timestamp)}"
-            bg = '#16a085'
-            fg = '#ffffff'
-        elif manual.sig_recog in (1, 2):
-            label = {1: 'GO', 2: 'STOP'}[manual.sig_recog]
-            text = f"信号 {label} @{_format_time(manual.sig_timestamp)}"
-            bg = '#2980b9' if manual.sig_recog == 1 else '#d35400'
-            fg = '#ffffff'
-        return text, bg, fg
+    def _build_banner(self, snapshot: GuiSnapshot) -> str:
+        if snapshot.manual_signal.road_blocked:
+            return '道路封鎖アラート'
+        if (
+            snapshot.follower_state.state == 'WAITING_STOP'
+            and snapshot.follower_state.signal_stop_active
+        ):
+            return '信号: STOP'
+        sig = snapshot.manual_signal.sig_recog
+        if sig == 1:
+            return '信号: GO'
+        if sig == 2:
+            return '信号: STOP'
+        if snapshot.manual_signal.manual_start:
+            return 'manual_start: True'
+        return ''
+
+    def _format_manual(self, snapshot: GuiSnapshot) -> str:
+        ts = snapshot.manual_signal.manual_timestamp
+        return f"現在:{snapshot.manual_signal.manual_start} 時刻:{ts}" if ts else '受信なし'
+
+    def _format_sig(self, snapshot: GuiSnapshot) -> str:
+        ts = snapshot.manual_signal.sig_timestamp
+        value = snapshot.manual_signal.sig_recog
+        label = {1: 'GO', 2: 'STOP'}.get(value, '未定義')
+        return f"現在:{label} 時刻:{ts}" if ts else '受信なし'
+
+    def _format_road(self, snapshot: GuiSnapshot) -> str:
+        ts = snapshot.manual_signal.road_blocked_timestamp
+        return f"現在:{snapshot.manual_signal.road_blocked} 時刻:{ts}" if ts else '受信なし'
 
     def _update_images(self, snapshot: GuiSnapshot) -> None:
         if not self._image_render_available:

@@ -264,6 +264,8 @@ class GuiCore:
         self._current_pose: Optional[PoseStamped] = None
         self._drive_camera_frame = self._placeholders['camera_drive']
         self._signal_camera_frame = self._placeholders['camera_signal']
+        self._camera_signal_forced = False
+        self._route_signal_stop_flags: List[bool] = []
         self._launch_manager = NodeLaunchManager(self._on_launch_status, self._on_log_received)
         self._profiles = launch_profiles or default_launch_profiles()
         self._initialize_launch_states()
@@ -356,12 +358,16 @@ class GuiCore:
 
     def update_route(self, msg) -> None:
         image = convert_image_message(msg.route_image)
+        signal_stop_flags = [
+            bool(getattr(wp, 'signal_stop', False)) for wp in getattr(msg, 'waypoints', [])
+        ]
         with self._lock:
-            if image is not None:
+            if image is not None and (image.width > 10 and image.height > 10):
                 self._images.route_map = resize_with_letter_box(image, (640, 360))
             else:
                 self._images.route_map = self._placeholders['route']
             self._route_state.route_version = msg.version
+            self._route_signal_stop_flags = signal_stop_flags
 
     def update_follower_state(self, msg) -> None:
         with self._lock:
@@ -376,6 +382,15 @@ class GuiCore:
             self._follower_state.retry_count = msg.avoidance_attempt_count
             self._target_distance.current_distance_m = msg.distance_to_target
             self._target_distance.updated_at = now()
+            signal_stop_active = bool(getattr(msg, 'signal_stop_active', False))
+            if not signal_stop_active and msg.state == 'WAITING_STOP':
+                index = msg.current_index
+                if 0 <= index < len(self._route_signal_stop_flags):
+                    signal_stop_active = self._route_signal_stop_flags[index]
+            self._follower_state.signal_stop_active = signal_stop_active
+            if msg.state == 'WAITING_STOP' and signal_stop_active:
+                self._camera_signal_forced = True
+            self._update_camera_frame_locked()
 
     def update_obstacle_hint(self, msg) -> None:
         with self._lock:
@@ -408,6 +423,8 @@ class GuiCore:
         with self._lock:
             self._manual_signal.sig_recog = msg.data
             self._manual_signal.sig_timestamp = now()
+            if msg.data == 1:
+                self._camera_signal_forced = False
             self._update_camera_frame_locked()
 
     def update_road_blocked(self, msg, source: str = 'external') -> None:
@@ -423,7 +440,9 @@ class GuiCore:
             self._cmd_vel.updated_at = now()
 
     def _update_camera_frame_locked(self) -> None:
-        mode = 'signal' if self._manual_signal.sig_recog == 2 else 'drive'
+        mode = 'drive'
+        if self._camera_signal_forced or self._manual_signal.sig_recog == 2:
+            mode = 'signal'
         if mode == 'signal':
             frame = self._signal_camera_frame or self._placeholders['camera_signal']
         else:

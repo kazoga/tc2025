@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import tkinter as tk
 from tkinter import ttk
 from typing import Dict, Optional, TYPE_CHECKING
@@ -10,15 +11,25 @@ try:
     from PIL import Image, ImageTk  # type: ignore
     PIL_IMAGETK_AVAILABLE = True
 except ImportError:  # pragma: no cover - 実行環境依存
-    from PIL import Image  # type: ignore
-
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError:  # pragma: no cover - Pillow すら無い環境では画像機能を無効化
+        Image = None  # type: ignore
     ImageTk = None  # type: ignore
     PIL_IMAGETK_AVAILABLE = False
 
-if TYPE_CHECKING:  # pragma: no cover - 型検査専用
-    from PIL.ImageTk import PhotoImage as PILPhotoImage
-else:
-    PILPhotoImage = object
+try:
+    import cv2  # type: ignore
+
+    CV2_AVAILABLE = True
+except ImportError:  # pragma: no cover - OpenCV が無い環境向けフォールバック
+    cv2 = None  # type: ignore
+    CV2_AVAILABLE = False
+
+if CV2_AVAILABLE:  # pragma: no branch - OpenCV がある場合のみ NumPy を使用
+    import numpy as np
+else:  # pragma: no cover - OpenCV 無し環境では未使用
+    np = None  # type: ignore
 
 from .gui_core import GuiCore
 from .utils import GuiSnapshot, NodeLaunchStatus
@@ -38,16 +49,17 @@ class UiMain:
         self._root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self._root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
 
-        self._image_refs: Dict[str, Optional[PILPhotoImage]] = {
+        self._image_refs: Dict[str, Optional[tk.PhotoImage]] = {
             'route': None,
             'obstacle': None,
             'camera': None,
         }
 
+        self._image_render_available = PIL_IMAGETK_AVAILABLE or CV2_AVAILABLE
         self._image_warning_message = (
-            'Pillow ImageTk が見つからないため画像パネルを無効化しました。\n'
-            'python3-pil.imagetk もしくは Tk サポート付き Pillow をインストールしてください。'
-        ) if not PIL_IMAGETK_AVAILABLE else ''
+            'Pillow ImageTk と OpenCV の両方が利用できないため画像パネルを無効化しました。\n'
+            'python3-pil.imagetk もしくは python3-opencv をインストールしてください。'
+        ) if not self._image_render_available else ''
 
         self._manual_var = tk.StringVar(value='False')
         self._manual_status = tk.StringVar(value='未送信')
@@ -488,24 +500,30 @@ class UiMain:
         return f"現在:{snapshot.manual_signal.road_blocked} 時刻:{ts}" if ts else '受信なし'
 
     def _update_images(self, snapshot: GuiSnapshot) -> None:
-        if not PIL_IMAGETK_AVAILABLE:
+        if not self._image_render_available:
             return
         if snapshot.images.route_map is not None:
-            self._image_refs['route'] = ImageTk.PhotoImage(snapshot.images.route_map)
-            self._route_image_label.configure(image=self._image_refs['route'])
+            photo = self._create_photo_image(snapshot.images.route_map)
+            if photo is not None:
+                self._image_refs['route'] = photo
+                self._route_image_label.configure(image=photo, text='')
         if snapshot.images.obstacle_view is not None:
             overlay = snapshot.images.obstacle_overlay
             image = snapshot.images.obstacle_view.copy()
             if overlay:
-                self._draw_overlay(image, overlay)
-            self._image_refs['obstacle'] = ImageTk.PhotoImage(image)
-            self._obstacle_image_label.configure(image=self._image_refs['obstacle'])
+                image = self._draw_overlay(image, overlay)
+            photo = self._create_photo_image(image)
+            if photo is not None:
+                self._image_refs['obstacle'] = photo
+                self._obstacle_image_label.configure(image=photo, text='')
         if snapshot.images.external_camera is not None:
-            self._image_refs['camera'] = ImageTk.PhotoImage(snapshot.images.external_camera)
-            self._camera_image_label.configure(image=self._image_refs['camera'])
+            photo = self._create_photo_image(snapshot.images.external_camera)
+            if photo is not None:
+                self._image_refs['camera'] = photo
+                self._camera_image_label.configure(image=photo, text='')
 
     def _apply_imagetk_warning_if_needed(self) -> None:
-        if PIL_IMAGETK_AVAILABLE:
+        if self._image_render_available:
             return
         for label in (
             self._route_image_label,
@@ -519,7 +537,30 @@ class UiMain:
                 wraplength=320,
             )
 
-    def _draw_overlay(self, image: Image.Image, text: str) -> None:
+    def _create_photo_image(self, image: Image.Image) -> Optional[tk.PhotoImage]:
+        """Pillow Image から tk.PhotoImage を生成する。"""
+
+        if PIL_IMAGETK_AVAILABLE and ImageTk is not None:
+            return ImageTk.PhotoImage(image)
+        if CV2_AVAILABLE and cv2 is not None and np is not None and Image is not None:
+            return self._create_photo_image_via_cv(image)
+        return None
+
+    def _create_photo_image_via_cv(self, image: Image.Image) -> Optional[tk.PhotoImage]:
+        """OpenCV を用いて Pillow Image を PNG 化し tk.PhotoImage を生成する。"""
+
+        rgb_image = image.convert('RGB')
+        array = np.array(rgb_image)
+        bgr_array = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+        success, buffer = cv2.imencode('.png', bgr_array)
+        if not success:
+            return None
+        data = base64.b64encode(buffer.tobytes()).decode('ascii')
+        return tk.PhotoImage(data=data, format='png')
+
+    def _draw_overlay(self, image: Image.Image, text: str) -> Image.Image:
+        if Image is None or not text:
+            return image
         base = image.convert('RGBA')
         canvas = Image.new('RGBA', base.size, (0, 0, 0, 0))
         from PIL import ImageDraw, ImageFont
@@ -536,8 +577,8 @@ class UiMain:
         for line in lines:
             draw.text((padding, y), line, fill=(255, 255, 255, 255), font=font)
             y += font.getbbox(line)[3]
-        base.alpha_composite(canvas)
-        image.paste(base)
+        composed = Image.alpha_composite(base, canvas)
+        return composed.convert(image.mode)
 
     def _update_launch_states(self, snapshot: GuiSnapshot) -> None:
         for profile_id, widgets in self._launch_widgets.items():

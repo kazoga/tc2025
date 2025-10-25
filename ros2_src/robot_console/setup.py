@@ -13,7 +13,7 @@ setup(
         (f'share/{package_name}/config/node_params', glob('config/node_params/**/*.yaml', recursive=True)),
         (f'share/{package_name}', ['package.xml']),
     ],
-    install_requires=['setuptools', 'Pillow>=9.0'],
+    install_requires=['setuptools', 'Pillow>=9.0', 'opencv-python>=4.5'],
     zip_safe=True,
     maintainer='robot_console maintainers',
     maintainer_email='maintainer@example.com',

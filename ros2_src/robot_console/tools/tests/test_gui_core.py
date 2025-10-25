@@ -1,5 +1,6 @@
 """GuiCore の単体テスト。"""
 
+import math
 import sys
 import types
 from pathlib import Path
@@ -39,7 +40,26 @@ def _install_geometry_stubs() -> None:
 
             self.pose = _Pose()
 
+    class PoseWithCovarianceStamped:  # pragma: no cover - スタブのみ
+        def __init__(self) -> None:
+            class _PoseWithCovariance:
+                def __init__(self) -> None:
+                    class _Pose:
+                        def __init__(self) -> None:
+                            class _Point:
+                                def __init__(self) -> None:
+                                    self.x = 0.0
+                                    self.y = 0.0
+                                    self.z = 0.0
+
+                            self.position = _Point()
+
+                    self.pose = _Pose()
+
+            self.pose = _PoseWithCovariance()
+
     msg_module.PoseStamped = PoseStamped
+    msg_module.PoseWithCovarianceStamped = PoseWithCovarianceStamped
     geometry_msgs.msg = msg_module
     sys.modules['geometry_msgs'] = geometry_msgs
     sys.modules['geometry_msgs.msg'] = msg_module
@@ -66,6 +86,8 @@ if 'geometry_msgs' not in sys.modules:
 
 if 'sensor_msgs' not in sys.modules:
     _install_sensor_stubs()
+
+import geometry_msgs.msg
 
 if 'numpy' not in sys.modules:
     numpy_stub = types.ModuleType('numpy')
@@ -153,3 +175,13 @@ def test_snapshot_is_copy() -> None:
     snapshot.route_state.state = 'modified'
     new_snapshot = core.snapshot()
     assert new_snapshot.route_state.state != 'modified'
+
+
+def test_compute_distance_with_pose_with_covariance() -> None:
+    core = GuiCore(launch_profiles=[])
+    target = geometry_msgs.msg.PoseStamped()
+    target.pose.position.x = 2.0  # type: ignore[attr-defined]
+    pose_cov = geometry_msgs.msg.PoseWithCovarianceStamped()
+    pose_cov.pose.pose.position.x = 1.0  # type: ignore[attr-defined]
+    distance = core._compute_distance(target, pose_cov)
+    assert math.isclose(distance, 1.0)

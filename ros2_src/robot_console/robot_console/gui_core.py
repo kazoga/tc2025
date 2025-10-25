@@ -9,10 +9,10 @@ import subprocess
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from sensor_msgs.msg import Image as ImageMsg
 try:
     import yaml
@@ -261,7 +261,7 @@ class GuiCore:
         self._lock = threading.Lock()
         self._command_queue: queue.Queue[GuiCommand] = queue.Queue()
         self._current_target: Optional[PoseStamped] = None
-        self._current_pose: Optional[PoseStamped] = None
+        self._current_pose: Optional[PoseWithCovarianceStamped] = None
         self._drive_camera_frame = self._placeholders['camera_drive']
         self._signal_camera_frame = self._placeholders['camera_signal']
         self._camera_signal_forced = False
@@ -460,7 +460,7 @@ class GuiCore:
                 self._target_distance.current_distance_m = self._compute_distance(msg, self._current_pose)
                 self._target_distance.updated_at = now()
 
-    def update_amcl_pose(self, msg: PoseStamped) -> None:
+    def update_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
         with self._lock:
             self._current_pose = msg
             if self._current_target is not None:
@@ -665,10 +665,26 @@ class GuiCore:
         state.simulator_enabled = enabled
 
     @staticmethod
-    def _compute_distance(target: PoseStamped, pose: PoseStamped) -> float:
-        dx = target.pose.position.x - pose.pose.position.x
-        dy = target.pose.position.y - pose.pose.position.y
-        dz = target.pose.position.z - pose.pose.position.z
+    def _compute_distance(
+        target: PoseStamped,
+        pose: Union[PoseStamped, PoseWithCovarianceStamped],
+    ) -> float:
+        def _resolve_position(
+            obj: Union[PoseStamped, PoseWithCovarianceStamped]
+        ) -> object:
+            pose_field = obj.pose
+            inner_pose = getattr(pose_field, 'pose', None)
+            if inner_pose is not None and hasattr(inner_pose, 'position'):
+                return inner_pose.position
+            if hasattr(pose_field, 'position'):
+                return pose_field.position
+            raise AttributeError('位置情報を取得できませんでした')
+
+        target_position = target.pose.position
+        pose_position = _resolve_position(pose)
+        dx = target_position.x - pose_position.x
+        dy = target_position.y - pose_position.y
+        dz = target_position.z - pose_position.z
         return (dx ** 2 + dy ** 2 + dz ** 2) ** 0.5
 
     @staticmethod

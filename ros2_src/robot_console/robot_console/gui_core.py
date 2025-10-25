@@ -9,10 +9,10 @@ import subprocess
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from sensor_msgs.msg import Image as ImageMsg
 try:
     import yaml
@@ -39,6 +39,8 @@ from .utils import (
     now,
     resize_with_letter_box,
 )
+
+CAMERA_DISPLAY_SIZE = (480, 360)
 
 
 @dataclass
@@ -250,8 +252,8 @@ class GuiCore:
         self._placeholders = {
             'route': create_placeholder_image((640, 360), 'No Image'),
             'obstacle': create_placeholder_image((400, 400), 'No Image'),
-            'camera_drive': create_placeholder_image((480, 270), 'No Image'),
-            'camera_signal': create_placeholder_image((480, 360), 'No Image'),
+            'camera_drive': create_placeholder_image(CAMERA_DISPLAY_SIZE, 'No Image'),
+            'camera_signal': create_placeholder_image(CAMERA_DISPLAY_SIZE, 'No Image'),
         }
         self._images.route_map = self._placeholders['route']
         self._images.obstacle_view = self._placeholders['obstacle']
@@ -261,11 +263,12 @@ class GuiCore:
         self._lock = threading.Lock()
         self._command_queue: queue.Queue[GuiCommand] = queue.Queue()
         self._current_target: Optional[PoseStamped] = None
-        self._current_pose: Optional[PoseStamped] = None
+        self._current_pose: Optional[PoseWithCovarianceStamped] = None
         self._drive_camera_frame = self._placeholders['camera_drive']
         self._signal_camera_frame = self._placeholders['camera_signal']
         self._camera_signal_forced = False
         self._route_signal_stop_flags: List[bool] = []
+        self._route_line_stop_flags: List[bool] = []
         self._launch_manager = NodeLaunchManager(self._on_launch_status, self._on_log_received)
         self._profiles = launch_profiles or default_launch_profiles()
         self._initialize_launch_states()
@@ -282,11 +285,19 @@ class GuiCore:
                 simulator_launch_file=profile.simulator_launch_file,
                 selected_param=profile.default_param,
             )
-            state.available_params = self._discover_params(profile)
-            if state.selected_param and state.selected_param not in state.available_params:
-                state.available_params.insert(0, state.selected_param)
-            if state.selected_param is None and state.available_params:
-                state.selected_param = state.available_params[0]
+            params = self._discover_params(profile)
+            display_map = self._build_param_display_map(params)
+            state.param_display_map = display_map
+            state.available_params = sorted(display_map.keys())
+            if state.selected_param:
+                display = self._resolve_param_display(display_map, state.selected_param)
+                if display is None:
+                    display = self._register_param_option(state, state.selected_param)
+                state.selected_param_display = display
+            elif state.available_params:
+                first_display = state.available_params[0]
+                state.selected_param_display = first_display
+                state.selected_param = state.param_display_map.get(first_display)
             self._launch_states[profile.profile_id] = state
             self._log_buffers[profile.profile_id] = ConsoleLogBuffer()
 
@@ -314,8 +325,9 @@ class GuiCore:
             additional = profile_conf.get('additional_params', [])
             state = self._launch_states[profile_id]
             for item in additional:
-                if item not in state.available_params:
-                    state.available_params.append(item)
+                if not isinstance(item, str):
+                    continue
+                self._register_param_option(state, item)
 
     def _discover_params(self, profile: NodeLaunchProfile) -> List[str]:
         params: List[str] = []
@@ -337,6 +349,44 @@ class GuiCore:
         params = sorted(set(params))
         return params
 
+    @staticmethod
+    def _build_param_display_map(params: List[str]) -> Dict[str, str]:
+        grouped: Dict[str, List[str]] = {}
+        for path in params:
+            name = Path(path).name or path
+            grouped.setdefault(name, []).append(path)
+        display_map: Dict[str, str] = {}
+        for name, entries in grouped.items():
+            if len(entries) == 1:
+                display_map[name] = entries[0]
+            else:
+                for index, entry in enumerate(sorted(entries), start=1):
+                    display_map[f"{name} ({index})"] = entry
+        return display_map
+
+    @staticmethod
+    def _resolve_param_display(mapping: Dict[str, str], path: Optional[str]) -> Optional[str]:
+        if path is None:
+            return None
+        for display, actual in mapping.items():
+            if actual == path:
+                return display
+        return None
+
+    def _register_param_option(self, state: NodeLaunchState, param_path: str) -> str:
+        display = self._resolve_param_display(state.param_display_map, param_path)
+        if display:
+            return display
+        base = Path(param_path).name or param_path
+        candidate = base
+        suffix = 2
+        while candidate in state.param_display_map:
+            candidate = f"{base} ({suffix})"
+            suffix += 1
+        state.param_display_map[candidate] = param_path
+        state.available_params = sorted(state.param_display_map.keys())
+        return candidate
+
     # ---------- 状態更新メソッド ----------
     def update_route_state(self, msg) -> None:
         with self._lock:
@@ -349,6 +399,7 @@ class GuiCore:
             self._route_state.state = self._translate_route_status(msg.status)
             self._route_state.last_replan_reason = msg.message
             self._route_state.last_replan_time = now()
+            self._route_state.current_label = getattr(msg, 'current_label', self._route_state.current_label)
 
     def update_manager_status(self, msg) -> None:
         with self._lock:
@@ -361,6 +412,9 @@ class GuiCore:
         signal_stop_flags = [
             bool(getattr(wp, 'signal_stop', False)) for wp in getattr(msg, 'waypoints', [])
         ]
+        line_stop_flags = [
+            bool(getattr(wp, 'line_stop', False)) for wp in getattr(msg, 'waypoints', [])
+        ]
         with self._lock:
             if image is not None and (image.width > 10 and image.height > 10):
                 self._images.route_map = resize_with_letter_box(image, (640, 360))
@@ -368,6 +422,8 @@ class GuiCore:
                 self._images.route_map = self._placeholders['route']
             self._route_state.route_version = msg.version
             self._route_signal_stop_flags = signal_stop_flags
+            self._route_line_stop_flags = line_stop_flags
+            self._route_state.current_label = getattr(msg, 'current_label', self._route_state.current_label)
 
     def update_follower_state(self, msg) -> None:
         with self._lock:
@@ -388,6 +444,12 @@ class GuiCore:
                 if 0 <= index < len(self._route_signal_stop_flags):
                     signal_stop_active = self._route_signal_stop_flags[index]
             self._follower_state.signal_stop_active = signal_stop_active
+            line_stop_active = False
+            if msg.state == 'WAITING_STOP':
+                index = msg.current_index
+                if 0 <= index < len(self._route_line_stop_flags):
+                    line_stop_active = self._route_line_stop_flags[index]
+            self._follower_state.line_stop_active = line_stop_active
             if msg.state == 'WAITING_STOP' and signal_stop_active:
                 self._camera_signal_forced = True
             self._update_camera_frame_locked()
@@ -452,28 +514,27 @@ class GuiCore:
 
     def update_active_target(self, msg: PoseStamped) -> None:
         with self._lock:
-            if self._current_target is not None and self._current_pose is not None:
-                prev_distance = self._compute_distance(self._current_target, self._current_pose)
-                self._target_distance.baseline_distance_m = prev_distance
+            previous_target = self._current_target
             self._current_target = msg
+            if previous_target is not None:
+                baseline = self._compute_distance(msg, previous_target)
+                self._target_distance.baseline_distance_m = baseline
             if self._current_pose is not None:
                 self._target_distance.current_distance_m = self._compute_distance(msg, self._current_pose)
                 self._target_distance.updated_at = now()
 
-    def update_amcl_pose(self, msg: PoseStamped) -> None:
+    def update_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
         with self._lock:
             self._current_pose = msg
             if self._current_target is not None:
                 self._target_distance.current_distance_m = self._compute_distance(
                     self._current_target, msg
                 )
-                if self._target_distance.baseline_distance_m == 0:
-                    self._target_distance.baseline_distance_m = self._target_distance.current_distance_m
                 self._target_distance.updated_at = now()
 
     def update_camera_image(self, msg: ImageMsg, mode: str) -> None:
         image = convert_image_message(msg)
-        size = (480, 270) if mode == 'drive' else (480, 360)
+        size = CAMERA_DISPLAY_SIZE
         resized = (
             resize_with_letter_box(image, size)
             if image is not None
@@ -529,9 +590,18 @@ class GuiCore:
     def request_stop_all(self) -> None:
         self._command_queue.put(GuiCommand(GuiCommandType.STOP_ALL, {}))
 
-    def update_selected_param(self, profile_id: str, param_path: Optional[str]) -> None:
+    def update_selected_param(self, profile_id: str, param_display: Optional[str]) -> None:
+        param_path: Optional[str] = None
+        if param_display:
+            with self._lock:
+                state = self._launch_states.get(profile_id)
+                if state:
+                    param_path = state.param_display_map.get(param_display)
         self._command_queue.put(
-            GuiCommand(GuiCommandType.UPDATE_PARAM, {'profile_id': profile_id, 'param_path': param_path})
+            GuiCommand(
+                GuiCommandType.UPDATE_PARAM,
+                {'profile_id': profile_id, 'param_path': param_path},
+            )
         )
 
     def update_simulator_enabled(self, profile_id: str, enabled: bool) -> None:
@@ -649,10 +719,20 @@ class GuiCore:
         param_path = payload.get('param_path')
         if not isinstance(profile_id, str):
             return
-        state = self._launch_states.get(profile_id)
-        if not state:
-            return
-        state.selected_param = str(param_path) if param_path else None
+        with self._lock:
+            state = self._launch_states.get(profile_id)
+            if not state:
+                return
+            if param_path:
+                path_str = str(param_path)
+                state.selected_param = path_str
+                display = self._resolve_param_display(state.param_display_map, path_str)
+                if display is None:
+                    display = self._register_param_option(state, path_str)
+                state.selected_param_display = display
+            else:
+                state.selected_param = None
+                state.selected_param_display = None
 
     def _apply_simulator_toggle(self, payload: Dict[str, object]) -> None:
         profile_id = payload.get('profile_id')
@@ -665,10 +745,26 @@ class GuiCore:
         state.simulator_enabled = enabled
 
     @staticmethod
-    def _compute_distance(target: PoseStamped, pose: PoseStamped) -> float:
-        dx = target.pose.position.x - pose.pose.position.x
-        dy = target.pose.position.y - pose.pose.position.y
-        dz = target.pose.position.z - pose.pose.position.z
+    def _compute_distance(
+        target: PoseStamped,
+        pose: Union[PoseStamped, PoseWithCovarianceStamped],
+    ) -> float:
+        def _resolve_position(
+            obj: Union[PoseStamped, PoseWithCovarianceStamped]
+        ) -> object:
+            pose_field = obj.pose
+            inner_pose = getattr(pose_field, 'pose', None)
+            if inner_pose is not None and hasattr(inner_pose, 'position'):
+                return inner_pose.position
+            if hasattr(pose_field, 'position'):
+                return pose_field.position
+            raise AttributeError('位置情報を取得できませんでした')
+
+        target_position = target.pose.position
+        pose_position = _resolve_position(pose)
+        dx = target_position.x - pose_position.x
+        dy = target_position.y - pose_position.y
+        dz = target_position.z - pose_position.z
         return (dx ** 2 + dy ** 2 + dz ** 2) ** 0.5
 
     @staticmethod

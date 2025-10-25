@@ -40,6 +40,8 @@ from .utils import (
     resize_with_letter_box,
 )
 
+CAMERA_DISPLAY_SIZE = (480, 360)
+
 
 @dataclass
 class NodeLaunchProfile:
@@ -250,8 +252,8 @@ class GuiCore:
         self._placeholders = {
             'route': create_placeholder_image((640, 360), 'No Image'),
             'obstacle': create_placeholder_image((400, 400), 'No Image'),
-            'camera_drive': create_placeholder_image((480, 270), 'No Image'),
-            'camera_signal': create_placeholder_image((480, 360), 'No Image'),
+            'camera_drive': create_placeholder_image(CAMERA_DISPLAY_SIZE, 'No Image'),
+            'camera_signal': create_placeholder_image(CAMERA_DISPLAY_SIZE, 'No Image'),
         }
         self._images.route_map = self._placeholders['route']
         self._images.obstacle_view = self._placeholders['obstacle']
@@ -532,7 +534,7 @@ class GuiCore:
 
     def update_camera_image(self, msg: ImageMsg, mode: str) -> None:
         image = convert_image_message(msg)
-        size = (480, 270) if mode == 'drive' else (480, 360)
+        size = CAMERA_DISPLAY_SIZE
         resized = (
             resize_with_letter_box(image, size)
             if image is not None

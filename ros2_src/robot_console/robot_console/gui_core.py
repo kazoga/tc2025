@@ -101,6 +101,12 @@ class NodeLaunchManager:
             self._processes[profile.profile_id] = process
             self._status_callback(profile.profile_id, NodeLaunchStatus.RUNNING, process.pid, None)
             self._start_reader_threads(profile.profile_id, process)
+            self._start_monitor_thread(
+                dict_key=profile.profile_id,
+                status_id=profile.profile_id,
+                process=process,
+                is_simulator=False,
+            )
 
         if simulator_enabled and profile.simulator_launch_file:
             sim_args = [
@@ -118,6 +124,12 @@ class NodeLaunchManager:
             )
             with self._lock:
                 self._sim_processes[profile.profile_id] = sim_process
+            self._start_monitor_thread(
+                dict_key=profile.profile_id,
+                status_id=f"{profile.profile_id}:sim",
+                process=sim_process,
+                is_simulator=True,
+            )
             self._start_reader_threads(f"{profile.profile_id}:sim", sim_process)
             self._status_callback(
                 f"{profile.profile_id}:sim",
@@ -130,13 +142,12 @@ class NodeLaunchManager:
         """ノードを停止する。"""
 
         with self._lock:
-            process = self._processes.pop(profile_id, None)
-            sim_process = self._sim_processes.pop(profile_id, None)
+            process = self._processes.get(profile_id)
+            sim_process = self._sim_processes.get(profile_id)
 
         if process is not None:
             self._status_callback(profile_id, NodeLaunchStatus.STOPPING, process.pid, None)
             self._terminate_process(process)
-            self._status_callback(profile_id, NodeLaunchStatus.STOPPED, None, None)
         else:
             self._status_callback(profile_id, NodeLaunchStatus.STOPPED, None, None)
 
@@ -148,7 +159,6 @@ class NodeLaunchManager:
                 None,
             )
             self._terminate_process(sim_process)
-            self._status_callback(f"{profile_id}:sim", NodeLaunchStatus.STOPPED, None, None)
         else:
             self._status_callback(f"{profile_id}:sim", NodeLaunchStatus.STOPPED, None, None)
 
@@ -199,6 +209,31 @@ class NodeLaunchManager:
             )
             thread.start()
             self._threads.append(thread)
+
+    def _start_monitor_thread(
+        self,
+        dict_key: str,
+        status_id: str,
+        process: subprocess.Popen[str],
+        is_simulator: bool,
+    ) -> None:
+        """終了状態を監視し辞書の整合性を保つスレッドを起動する。"""
+
+        def _monitor() -> None:
+            return_code = process.wait()
+            with self._lock:
+                target = self._sim_processes if is_simulator else self._processes
+                target.pop(dict_key, None)
+            status = NodeLaunchStatus.STOPPED
+            message = None
+            if return_code != 0:
+                status = NodeLaunchStatus.ERROR
+                message = f"プロセスが異常終了しました (return code={return_code})"
+            self._status_callback(status_id, status, None, message)
+
+        thread = threading.Thread(target=_monitor, daemon=True)
+        thread.start()
+        self._threads.append(thread)
 
 
 class GuiCore:

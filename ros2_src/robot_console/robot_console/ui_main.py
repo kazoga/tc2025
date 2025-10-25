@@ -7,7 +7,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:
     from PIL import Image, ImageTk  # type: ignore
@@ -213,6 +213,8 @@ class UiMain:
         self._event_detail = tk.StringVar(value='更新: --:--:--')
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
+        self._line_stop_active_since: Optional[datetime] = None
+        self._last_line_stop_state = False
 
         self._route_state_vars = {
             'manager': tk.StringVar(value='unknown'),
@@ -688,7 +690,12 @@ class UiMain:
             column=2,
             padx=(8, 0),
         )
-        ttk.Label(obstacle_tab, textvariable=self._obstacle_override_state, wraplength=320).grid(
+        ttk.Label(
+            obstacle_tab,
+            textvariable=self._obstacle_override_state,
+            anchor='w',
+            justify='left',
+        ).grid(
             row=2,
             column=0,
             sticky='w',
@@ -932,14 +939,23 @@ class UiMain:
         self._velocity_vars['angular'].set(f"{snapshot.cmd_vel.angular_dps:.1f} deg/s")
 
         target = snapshot.target_distance
-        baseline = target.baseline_distance_m
-        ratio = 0.0 if baseline <= 0 else max(min(target.current_distance_m / baseline, 1.0), 0.0)
+        baseline = max(target.baseline_distance_m, 0.0)
+        remaining = max(target.current_distance_m, 0.0)
+        ratio = 0.0
+        if baseline > 0.0:
+            completed = baseline - remaining
+            completed = max(min(completed, baseline), 0.0)
+            ratio = completed / baseline
         self._target_vars['distance'].set(f"{target.current_distance_m:.1f} m")
         self._target_vars['progress'].set(ratio * 100.0)
         self._target_vars['progress_percent'].set(f"{ratio * 100.0:.1f}%")
 
+        self._update_line_stop_tracker(snapshot.follower_state.line_stop_active)
         banner_text, banner_bg, banner_fg, banner_ts = self._resolve_banner(snapshot)
-        self._event_banner.set(banner_text)
+        display_text = ''
+        if banner_text:
+            display_text = f"{banner_text}\n更新: {_format_time(banner_ts)}"
+        self._event_banner.set(display_text)
         self._banner_label.configure(bg=banner_bg, fg=banner_fg)
         self._event_detail.set(f"更新: {_format_time(banner_ts)}")
 
@@ -978,6 +994,17 @@ class UiMain:
         self._update_launch_states(snapshot)
         self._update_logs(snapshot)
 
+    def _update_line_stop_tracker(self, active: bool) -> None:
+        """停止線待ちの立ち上がり時刻を記録する。"""
+
+        now_utc = datetime.now(timezone.utc)
+        if active:
+            if not self._last_line_stop_state or self._line_stop_active_since is None:
+                self._line_stop_active_since = now_utc
+        else:
+            self._line_stop_active_since = None
+        self._last_line_stop_state = active
+
     def _resolve_banner(self, snapshot: GuiSnapshot) -> Tuple[str, str, str, Optional[datetime]]:
         """ダッシュボードのイベントバナー表示内容と配色を決定する。"""
 
@@ -1008,34 +1035,45 @@ class UiMain:
 
     def _build_banner(self, snapshot: GuiSnapshot) -> Tuple[str, Optional[datetime]]:
         current_time = datetime.now(timezone.utc)
-        if (
-            snapshot.manual_signal.road_blocked
-            and self._is_recent(snapshot.manual_signal.road_blocked_timestamp, current_time)
-        ):
-            return '道路封鎖アラート', snapshot.manual_signal.road_blocked_timestamp
-        if snapshot.follower_state.state == 'WAITING_STOP':
-            if snapshot.follower_state.signal_stop_active:
-                return '信号: STOP', snapshot.manual_signal.sig_timestamp
-            if snapshot.follower_state.line_stop_active:
-                return '停止線: STOP', None
-        sig_timestamp = snapshot.manual_signal.sig_timestamp
-        sig = snapshot.manual_signal.sig_recog
-        if (
-            sig == 1
-            and self._is_recent(sig_timestamp, current_time)
-        ):
-            return '信号: GO', sig_timestamp
-        if (
-            sig == 2
-            and self._is_recent(sig_timestamp, current_time)
-        ):
-            return '信号: STOP', sig_timestamp
-        if (
-            snapshot.manual_signal.manual_start
-            and self._is_recent(snapshot.manual_signal.manual_timestamp, current_time)
-        ):
-            return 'manual_start: True', snapshot.manual_signal.manual_timestamp
-        return '', None
+        events: List[Tuple[datetime, int, str, Optional[datetime]]] = []
+
+        def add_event(text: str, timestamp: Optional[datetime]) -> None:
+            raw_ts = timestamp or current_time
+            if not self._is_recent(raw_ts, current_time):
+                return
+            if raw_ts.tzinfo is None:
+                normalized = raw_ts.replace(tzinfo=timezone.utc)
+            else:
+                normalized = raw_ts.astimezone(timezone.utc)
+            order = len(events)
+            events.append((normalized, order, text, raw_ts))
+
+        manual = snapshot.manual_signal
+        follower = snapshot.follower_state
+
+        if manual.road_blocked:
+            add_event('道路封鎖アラート', manual.road_blocked_timestamp)
+
+        if follower.state == 'WAITING_STOP':
+            if follower.signal_stop_active:
+                add_event('信号: STOP', manual.sig_timestamp)
+            elif follower.line_stop_active:
+                add_event('停止線: STOP', self._line_stop_active_since)
+
+        if manual.sig_recog == 1:
+            add_event('信号: GO', manual.sig_timestamp)
+        elif manual.sig_recog == 2:
+            add_event('信号: STOP', manual.sig_timestamp)
+
+        if manual.manual_start:
+            add_event('manual_start: True', manual.manual_timestamp)
+
+        if not events:
+            return '', None
+
+        events.sort(key=lambda item: (item[0], item[1]))
+        _, _, text, original_ts = events[-1]
+        return text, original_ts
 
     @staticmethod
     def _is_recent(timestamp: Optional[datetime], current_time: datetime) -> bool:

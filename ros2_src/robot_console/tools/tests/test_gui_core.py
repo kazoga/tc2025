@@ -193,9 +193,11 @@ def test_command_queue_order() -> None:
 def test_snapshot_is_copy() -> None:
     core = GuiCore(launch_profiles=[])
     snapshot = core.snapshot()
-    snapshot.route_state.state = 'modified'
+    snapshot.route_state.manager_state = 'modified'
+    snapshot.route_state.route_status = 'modified'
     new_snapshot = core.snapshot()
-    assert new_snapshot.route_state.state != 'modified'
+    assert new_snapshot.route_state.manager_state != 'modified'
+    assert new_snapshot.route_state.route_status != 'modified'
 
 
 def test_compute_distance_with_pose_with_covariance() -> None:

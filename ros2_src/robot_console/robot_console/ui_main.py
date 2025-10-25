@@ -109,6 +109,17 @@ class ImagePanel(ttk.LabelFrame):
 
         return self._target_size
 
+    def get_display_size(self) -> Tuple[int, int]:
+        """現在のキャンバスサイズを取得し、未配置時はターゲットサイズを返す。"""
+
+        width = self._canvas.winfo_width()
+        height = self._canvas.winfo_height()
+        if width <= 1:
+            width = self._target_size[0]
+        if height <= 1:
+            height = self._target_size[1]
+        return width, height
+
     def update_image(self, photo: Optional[tk.PhotoImage], *, alt_text: str = "画像未取得") -> None:
         """画像と代替テキストを設定する。"""
 
@@ -120,6 +131,7 @@ class ImagePanel(ttk.LabelFrame):
             self._text_item = None
 
         self._photo = photo
+        display_width, _ = self.get_display_size()
         if photo is None:
             self._text_item = self._canvas.create_text(
                 0,
@@ -129,7 +141,7 @@ class ImagePanel(ttk.LabelFrame):
                 font=("Helvetica", 12, "bold"),
                 justify="center",
                 anchor="center",
-                width=max(self._target_size[0] - 20, 50),
+                width=max(display_width - 20, 50),
             )
         else:
             self._image_item = self._canvas.create_image(0, 0, image=photo, anchor="center")
@@ -154,8 +166,7 @@ class ImagePanel(ttk.LabelFrame):
     def _relayout(self) -> None:
         """キャンバス中心に画像もしくはテキストを配置し直す。"""
 
-        width = max(self._canvas.winfo_width(), self._target_size[0])
-        height = max(self._canvas.winfo_height(), self._target_size[1])
+        width, height = self.get_display_size()
         center_x = width / 2
         center_y = height / 2
         if self._image_item is not None:
@@ -1112,19 +1123,20 @@ class UiMain:
 
         def _build_photo(
             source: Optional[Image.Image],
-            target_size: Tuple[int, int],
+            panel: ImagePanel,
         ) -> Optional[tk.PhotoImage]:
             if source is None:
                 return None
             working = source.copy() if hasattr(source, 'copy') else source
             try:
+                target_size = panel.get_display_size()
                 if hasattr(working, 'size') and working.size != target_size:
                     working = resize_with_letter_box(working, target_size)
             except Exception:  # pragma: no cover - サイズ調整失敗時は元画像を使用
                 pass
             return self._create_photo_image(working)
 
-        route_photo = _build_photo(snapshot.images.route_map, self._route_panel.target_size)
+        route_photo = _build_photo(snapshot.images.route_map, self._route_panel)
         self._route_panel.update_image(route_photo, alt_text='画像未取得')
         self._route_panel.update_caption(
             'ルート地図: 表示中' if route_photo else 'ルート地図: 画像未取得'
@@ -1133,7 +1145,7 @@ class UiMain:
         obstacle_source = snapshot.images.obstacle_view
         if obstacle_source is not None and snapshot.images.obstacle_overlay:
             obstacle_source = self._draw_overlay(obstacle_source.copy(), snapshot.images.obstacle_overlay)
-        obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel.target_size)
+        obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel)
         self._obstacle_panel.update_image(obstacle_photo, alt_text='画像未取得')
         overlay_lines = [
             f"遮蔽:{'YES' if snapshot.obstacle_hint.front_blocked else 'NO'}",
@@ -1145,7 +1157,7 @@ class UiMain:
             '障害物ビュー: 表示中' if obstacle_photo else '障害物ビュー: 画像未取得'
         )
 
-        camera_photo = _build_photo(snapshot.images.external_camera, self._camera_panel.target_size)
+        camera_photo = _build_photo(snapshot.images.external_camera, self._camera_panel)
         self._camera_panel.update_image(camera_photo, alt_text='画像未取得')
         camera_mode = snapshot.images.camera_mode or 'unknown'
         caption = f"外部カメラ: {camera_mode}"

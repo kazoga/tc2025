@@ -38,6 +38,8 @@ from .utils import GuiSnapshot, NodeLaunchStatus, resize_with_letter_box
 
 LOGGER = logging.getLogger(__name__)
 
+LOGGER = logging.getLogger(__name__)
+
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 REFRESH_INTERVAL_MS = 200

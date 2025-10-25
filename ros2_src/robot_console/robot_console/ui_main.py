@@ -204,7 +204,8 @@ class UiMain:
         self._image_warning_parent: Optional[ttk.Frame] = None
 
         self._route_state_vars = {
-            'status': tk.StringVar(value='unknown'),
+            'manager': tk.StringVar(value='unknown'),
+            'route_status': tk.StringVar(value='unknown'),
             'progress': tk.DoubleVar(value=0.0),
             'progress_text': tk.StringVar(value='0 / 0'),
             'version': tk.StringVar(value='バージョン: 0'),
@@ -216,7 +217,7 @@ class UiMain:
             'label': tk.StringVar(value='現在: -'),
             'next': tk.StringVar(value='次: -'),
             'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
-            'stagnation': tk.StringVar(value='滞留要因: -'),
+            'stagnation': tk.StringVar(value='滞留なし'),
         }
         self._velocity_vars = {
             'linear': tk.StringVar(value='0.00 m/s'),
@@ -367,35 +368,41 @@ class UiMain:
         )
         route_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         route_frame.columnconfigure(1, weight=1)
-        ttk.Label(route_frame, text='状態').grid(row=0, column=0, sticky='w')
-        ttk.Label(route_frame, textvariable=self._route_state_vars['status']).grid(
+        ttk.Label(route_frame, text='マネージャ状態').grid(row=0, column=0, sticky='w')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['manager']).grid(
             row=0,
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, text='進捗').grid(row=1, column=0, sticky='w')
+        ttk.Label(route_frame, text='ルート状態').grid(row=1, column=0, sticky='w')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['route_status']).grid(
+            row=1,
+            column=1,
+            sticky='w',
+        )
+        ttk.Label(route_frame, text='進捗').grid(row=2, column=0, sticky='w')
         ttk.Progressbar(
             route_frame,
             maximum=100,
             variable=self._route_state_vars['progress'],
-        ).grid(row=1, column=1, sticky='ew', pady=2)
+        ).grid(row=2, column=1, sticky='ew', pady=2)
         ttk.Label(route_frame, textvariable=self._route_state_vars['progress_text']).grid(
-            row=2,
-            column=1,
-            sticky='w',
-        )
-        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
             row=3,
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, text='最終イベント').grid(row=4, column=0, sticky='nw')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
+            row=4,
+            column=1,
+            sticky='w',
+        )
+        ttk.Label(route_frame, text='最終イベント').grid(row=5, column=0, sticky='nw')
         ttk.Label(
             route_frame,
             textvariable=self._route_state_vars['detail'],
             justify='left',
             wraplength=220,
-        ).grid(row=4, column=1, sticky='w')
+        ).grid(row=5, column=1, sticky='w')
 
         follower_frame = ttk.LabelFrame(
             summary,
@@ -886,7 +893,9 @@ class UiMain:
 
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
-        self._route_state_vars['status'].set(route.state)
+        follower = snapshot.follower_state
+        self._route_state_vars['manager'].set(route.manager_state)
+        self._route_state_vars['route_status'].set(route.route_status)
         total_waypoints = max(route.total_waypoints, 0)
         progress_ratio = 0.0
         if total_waypoints > 0:
@@ -894,7 +903,8 @@ class UiMain:
         self._route_state_vars['progress'].set(progress_ratio * 100.0)
         display_index = 0
         if total_waypoints > 0:
-            display_index = min(max(route.current_index + 1, 1), total_waypoints)
+            follower_index = max(follower.current_index, 0)
+            display_index = min(max(follower_index + 1, 1), total_waypoints)
         self._route_state_vars['progress_text'].set(f"{display_index} / {route.total_waypoints}")
         self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
         detail_parts = []
@@ -903,15 +913,15 @@ class UiMain:
         if route.last_replan_time:
             detail_parts.append(f"@ {_format_time(route.last_replan_time)}")
         self._route_state_vars['detail'].set(' '.join(detail_parts) or '最新イベントなし')
-        follower = snapshot.follower_state
         self._follower_vars['state'].set(follower.state)
         self._follower_vars['index'].set(f"Index: {follower.current_index}")
         current_label = follower.current_label or route.current_label or '-'
         self._follower_vars['label'].set(f"現在: {current_label}")
         self._follower_vars['next'].set(f"次: {follower.next_label or '-'}")
-        stagnation = follower.stagnation_reason or '滞留要因: なし'
-        if not stagnation.startswith('滞留要因:'):
-            stagnation = f"滞留要因: {stagnation}"
+        if follower.stagnation_reason:
+            stagnation = follower.stagnation_reason
+        else:
+            stagnation = '滞留なし'
         self._follower_vars['stagnation'].set(stagnation)
         offsets = (
             f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"

@@ -396,14 +396,14 @@ class GuiCore:
             self._route_state.progress = (
                 msg.current_index / msg.total_waypoints if msg.total_waypoints else 0.0
             )
-            self._route_state.state = self._translate_route_status(msg.status)
+            self._route_state.route_status = self._translate_route_status(msg.status)
             self._route_state.last_replan_reason = msg.message
             self._route_state.last_replan_time = now()
             self._route_state.current_label = getattr(msg, 'current_label', self._route_state.current_label)
 
     def update_manager_status(self, msg) -> None:
         with self._lock:
-            self._route_state.state = msg.state
+            self._route_state.manager_state = msg.state
             self._route_state.last_replan_reason = msg.last_cause or msg.decision
             self._route_state.last_replan_time = now()
 

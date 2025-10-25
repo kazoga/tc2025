@@ -211,6 +211,7 @@ class UiMain:
             value='状態: front_blocked=OFF 余裕:0.00m 左:+0.00m 右:+0.00m 更新: --:--:--'
         )
         self._event_banner = tk.StringVar(value='')
+        self._event_detail = tk.StringVar(value='更新: --:--:--')
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
         self._line_stop_active_since: Optional[datetime] = None
@@ -565,6 +566,11 @@ class UiMain:
             justify='center',
         )
         self._banner_label.grid(row=0, column=0, sticky='nsew')
+        ttk.Label(
+            banner_frame,
+            textvariable=self._event_detail,
+            anchor='e',
+        ).grid(row=1, column=0, sticky='ew', pady=(8, 0))
 
         control_frame = ttk.LabelFrame(container, text='制御コマンド', padding=4)
         control_frame.grid(row=0, column=1, sticky='nsew')
@@ -964,6 +970,7 @@ class UiMain:
             display_text = f"{banner_text}\n更新: {_format_time(banner_ts)}"
         self._event_banner.set(display_text)
         self._banner_label.configure(bg=banner_bg, fg=banner_fg)
+        self._event_detail.set(f"更新: {_format_time(banner_ts)}")
 
         manual = snapshot.manual_signal
         self._manual_status_var.set(

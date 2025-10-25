@@ -161,6 +161,9 @@ class RouteFollowerNode(Node):
         timer_period = 1.0 / control_rate
         self.timer = self.create_timer(timer_period, self._on_timer)
 
+        # follower_stateの周期ログ用タイムスタンプを初期化する。
+        self._last_state_log_time: float = 0.0
+
     def _resolve_topic_name(self, name: str) -> str:
         """リマップ適用後のトピック名を取得する。"""
         try:
@@ -321,12 +324,22 @@ class RouteFollowerNode(Node):
         msg.route_version = int(state["route_version"])
         msg.state = str(state["status"])
         msg.current_index = int(state["index"])
+        msg.current_label = str(state.get("current_label", ""))
         msg.front_blocked_majority = bool(state.get("front_blocked", False))
         msg.left_offset_m_median = float(state.get("left_offset_m_median", 0.0))
         msg.right_offset_m_median = float(state.get("right_offset_m_median", 0.0))
         msg.avoidance_attempt_count = int(state["avoid_count"])
         msg.last_stagnation_reason = str(state["reason"])
+        msg.segment_distance_m = float(state.get("segment_distance_m", 0.0))
         self.pub_state.publish(msg)
+
+        now_sec = time.monotonic()
+        if now_sec - self._last_state_log_time >= 1.0:
+            self.get_logger().info(
+                f"[Node] publish {self.follower_state_topic}: state={msg.state}, index={msg.current_index}, "
+                f"route_ver={msg.route_version}, avoid_count={msg.avoidance_attempt_count}"
+            )
+            self._last_state_log_time = now_sec
 
     # ========================================================
     # stuck報告

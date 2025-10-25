@@ -634,8 +634,13 @@ class FollowerCore:
         """/follower_state 相当の簡易状態（Node側でROS msgへ変換）。"""
         cur_label = ""
         next_label = ""
+        segment_distance = 0.0
         if self.route and 0 <= self.index < len(self.route.waypoints):
-            cur_label = self.route.waypoints[self.index].label
+            cur_wp = self.route.waypoints[self.index]
+            cur_label = cur_wp.label
+            if self.index > 0:
+                prev_wp = self.route.waypoints[self.index - 1]
+                segment_distance = self._euclid_xy(prev_wp.pose, cur_wp.pose)
             if self.index + 1 < len(self.route.waypoints):
                 next_label = self.route.waypoints[self.index + 1].label
 
@@ -643,8 +648,10 @@ class FollowerCore:
             "status": self.status.name,
             "index": int(self.index),
             "route_version": int(self.route_version),
+            "current_label": cur_label,
             "current_waypoint_label": cur_label,
             "next_waypoint_label": next_label,
+            "segment_distance_m": float(segment_distance),
             "avoid_count": int(self.avoid_attempt_count),
             "reason": str(self.last_stagnation_reason),
             "front_blocked": bool(self._hint_front_blocked_majority),

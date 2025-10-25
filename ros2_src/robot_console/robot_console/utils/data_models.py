@@ -46,6 +46,7 @@ class FollowerStateView:
     right_offset_m: float = 0.0
     stagnation_reason: str = ""
     retry_count: int = 0
+    signal_stop_active: bool = False
 
 
 @dataclass

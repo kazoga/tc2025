@@ -445,13 +445,18 @@ class UiMain:
     def _build_banner(self, snapshot: GuiSnapshot) -> str:
         if snapshot.manual_signal.road_blocked:
             return '道路封鎖アラート'
-        if snapshot.manual_signal.manual_start:
-            return 'manual_start: True'
+        if (
+            snapshot.follower_state.state == 'WAITING_STOP'
+            and snapshot.follower_state.signal_stop_active
+        ):
+            return '信号: STOP'
         sig = snapshot.manual_signal.sig_recog
         if sig == 1:
             return '信号: GO'
         if sig == 2:
             return '信号: STOP'
+        if snapshot.manual_signal.manual_start:
+            return 'manual_start: True'
         return ''
 
     def _format_manual(self, snapshot: GuiSnapshot) -> str:

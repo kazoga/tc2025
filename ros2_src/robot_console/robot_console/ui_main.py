@@ -4,9 +4,21 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
-from PIL import Image, ImageTk
+try:
+    from PIL import Image, ImageTk  # type: ignore
+    PIL_IMAGETK_AVAILABLE = True
+except ImportError:  # pragma: no cover - 実行環境依存
+    from PIL import Image  # type: ignore
+
+    ImageTk = None  # type: ignore
+    PIL_IMAGETK_AVAILABLE = False
+
+if TYPE_CHECKING:  # pragma: no cover - 型検査専用
+    from PIL.ImageTk import PhotoImage as PILPhotoImage
+else:
+    PILPhotoImage = object
 
 from .gui_core import GuiCore
 from .utils import GuiSnapshot, NodeLaunchStatus
@@ -26,11 +38,16 @@ class UiMain:
         self._root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self._root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
 
-        self._image_refs: Dict[str, Optional[ImageTk.PhotoImage]] = {
+        self._image_refs: Dict[str, Optional[PILPhotoImage]] = {
             'route': None,
             'obstacle': None,
             'camera': None,
         }
+
+        self._image_warning_message = (
+            'Pillow ImageTk が見つからないため画像パネルを無効化しました。\n'
+            'python3-pil.imagetk もしくは Tk サポート付き Pillow をインストールしてください。'
+        ) if not PIL_IMAGETK_AVAILABLE else ''
 
         self._manual_var = tk.StringVar(value='False')
         self._manual_status = tk.StringVar(value='未送信')
@@ -267,6 +284,8 @@ class UiMain:
         self._camera_image_label = ttk.Label(frame, text='External Camera')
         self._camera_image_label.grid(row=0, column=2, sticky='nsew', padx=(8, 0))
 
+        self._apply_imagetk_warning_if_needed()
+
     def _build_launch_sidebar(self, parent: ttk.Frame) -> None:
         sidebar = ttk.Frame(parent)
         sidebar.grid(row=0, column=1, sticky='nsew', padx=(8, 8), pady=8)
@@ -469,6 +488,8 @@ class UiMain:
         return f"現在:{snapshot.manual_signal.road_blocked} 時刻:{ts}" if ts else '受信なし'
 
     def _update_images(self, snapshot: GuiSnapshot) -> None:
+        if not PIL_IMAGETK_AVAILABLE:
+            return
         if snapshot.images.route_map is not None:
             self._image_refs['route'] = ImageTk.PhotoImage(snapshot.images.route_map)
             self._route_image_label.configure(image=self._image_refs['route'])
@@ -482,6 +503,21 @@ class UiMain:
         if snapshot.images.external_camera is not None:
             self._image_refs['camera'] = ImageTk.PhotoImage(snapshot.images.external_camera)
             self._camera_image_label.configure(image=self._image_refs['camera'])
+
+    def _apply_imagetk_warning_if_needed(self) -> None:
+        if PIL_IMAGETK_AVAILABLE:
+            return
+        for label in (
+            self._route_image_label,
+            self._obstacle_image_label,
+            self._camera_image_label,
+        ):
+            label.configure(
+                text=self._image_warning_message,
+                anchor='center',
+                justify='center',
+                wraplength=320,
+            )
 
     def _draw_overlay(self, image: Image.Image, text: str) -> None:
         base = image.convert('RGBA')

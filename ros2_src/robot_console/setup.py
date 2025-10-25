@@ -6,14 +6,14 @@ package_name = 'robot_console'
 setup(
     name=package_name,
     version='0.1.0',
-    packages=[package_name, f'{package_name}.ui_components', f'{package_name}.utils'],
+    packages=[package_name, f'{package_name}.utils'],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         (f'share/{package_name}/launch', glob('launch/*.launch.py')),
         (f'share/{package_name}/config/node_params', glob('config/node_params/**/*.yaml', recursive=True)),
         (f'share/{package_name}', ['package.xml']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'Pillow>=9.0'],
     zip_safe=True,
     maintainer='robot_console maintainers',
     maintainer_email='maintainer@example.com',

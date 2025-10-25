@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
 try:
     from PIL import Image, ImageTk  # type: ignore

@@ -6,7 +6,7 @@ package_name = 'robot_console'
 setup(
     name=package_name,
     version='0.1.0',
-    packages=[package_name, f'{package_name}.ui_components', f'{package_name}.utils'],
+    packages=[package_name, f'{package_name}.utils'],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         (f'share/{package_name}/launch', glob('launch/*.launch.py')),

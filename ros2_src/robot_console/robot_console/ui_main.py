@@ -206,10 +206,9 @@ class UiMain:
         self._obstacle_left = tk.DoubleVar(value=0.0)
         self._obstacle_right = tk.DoubleVar(value=0.0)
         self._obstacle_blocked = tk.BooleanVar(value=False)
-        self._obstacle_override_state = tk.StringVar(value='状態: 自動追従')
-        self._obstacle_override_detail = tk.StringVar(value='受信値: 未取得')
-        self._latest_obstacle_state_text = '受信値: 未取得'
-        self._obstacle_preview_text = ''
+        self._obstacle_override_state = tk.StringVar(
+            value='状態: front_blocked=OFF 余裕:0.00m 左:+0.00m 右:+0.00m 更新: --:--:--'
+        )
         self._event_banner = tk.StringVar(value='')
         self._event_detail = tk.StringVar(value='更新: --:--:--')
         self._image_warning_label: Optional[ttk.Label] = None
@@ -480,7 +479,7 @@ class UiMain:
         target_frame.grid(row=1, column=0, sticky='nsew')
         target_frame.columnconfigure(0, weight=1)
         target_frame.columnconfigure(1, weight=1)
-        ttk.Label(target_frame, text='目標ウェイポイントまでの距離').grid(
+        ttk.Label(target_frame, text='目標ウェイポイントまで').grid(
             row=0,
             column=0,
             sticky='w',
@@ -689,16 +688,11 @@ class UiMain:
             column=2,
             padx=(8, 0),
         )
-        ttk.Label(obstacle_tab, textvariable=self._obstacle_override_state).grid(
+        ttk.Label(obstacle_tab, textvariable=self._obstacle_override_state, wraplength=320).grid(
             row=2,
             column=0,
             sticky='w',
             pady=(6, 0),
-        )
-        ttk.Label(obstacle_tab, textvariable=self._obstacle_override_detail).grid(
-            row=3,
-            column=0,
-            sticky='w',
         )
         notebook.add(obstacle_tab, text='obstacle_hint')
 
@@ -886,15 +880,10 @@ class UiMain:
         self._core.stop_obstacle_override()
 
     def _on_obstacle_params_changed(self, *_args) -> None:
-        self._obstacle_preview_text = (
-            '送信予定: '
-            f"front_blocked={self._obstacle_blocked.get()} "
-            f"clearance={self._obstacle_clearance.get():.2f}m "
-            f"左:{self._obstacle_left.get():+.2f}m 右:{self._obstacle_right.get():+.2f}m"
-        )
-        self._obstacle_override_detail.set(
-            f"{self._latest_obstacle_state_text}\n{self._obstacle_preview_text}"
-        )
+        """障害物ヒント送信パラメータ変更時のフック。"""
+
+        # GUI 上では受信状態のみを表示するため、変更時の追加処理は行わない。
+        return
 
     # ---------- 更新処理 ----------
     def _schedule_update(self) -> None:
@@ -916,18 +905,18 @@ class UiMain:
         self._route_state_vars['route_status'].set(route.route_status or 'unknown')
         self._route_state_vars['version'].set(str(route.route_version))
         total_waypoints = max(route.total_waypoints, 0)
+        follower_index = max(follower.current_index, -1)
+        progress_count = 0
+        if total_waypoints > 0:
+            progress_count = min(max(follower_index + 1, 0), total_waypoints)
         progress_ratio = 0.0
         if total_waypoints > 0:
-            progress_ratio = max(min(route.current_index / total_waypoints, 1.0), 0.0)
+            progress_ratio = progress_count / total_waypoints
         progress_ratio = max(min(progress_ratio, 1.0), 0.0)
         self._route_state_vars['progress'].set(progress_ratio * 100.0)
         self._route_state_vars['progress_percent'].set(f"{progress_ratio * 100.0:.1f}%")
-        display_index = 0
-        if total_waypoints > 0:
-            follower_index = max(follower.current_index, 0)
-            display_index = min(max(follower_index + 1, 1), total_waypoints)
         self._route_state_vars['progress_counter'].set(
-            f"{display_index} / {route.total_waypoints}"
+            f"{progress_count} / {total_waypoints}"
         )
         self._follower_vars['state'].set(follower.state or 'unknown')
         current_label = follower.current_label or route.current_label or '-'
@@ -977,18 +966,13 @@ class UiMain:
         )
 
         hint = snapshot.obstacle_hint
-        state_label = (
-            f"状態: front_blocked={'ON' if hint.front_blocked else 'OFF'} / "
-            f"余裕距離:{hint.front_clearance_m:.2f}m"
-        )
-        self._obstacle_override_state.set(state_label)
-        self._latest_obstacle_state_text = (
-            f"受信値: 左:{hint.left_offset_m:+.2f}m 右:{hint.right_offset_m:+.2f}m "
+        obstacle_status = (
+            f"状態: front_blocked={'ON' if hint.front_blocked else 'OFF'} "
+            f"余裕:{hint.front_clearance_m:.2f}m "
+            f"左:{hint.left_offset_m:+.2f}m 右:{hint.right_offset_m:+.2f}m "
             f"更新:{_format_time(hint.updated_at)}"
         )
-        self._obstacle_override_detail.set(
-            f"{self._latest_obstacle_state_text}\n{self._obstacle_preview_text}"
-        )
+        self._obstacle_override_state.set(obstacle_status)
 
         self._update_images(snapshot)
         self._update_launch_states(snapshot)
@@ -1001,33 +985,26 @@ class UiMain:
         if not base_text:
             return base_text, self._banner_default_bg, self._banner_default_fg, timestamp
 
-        detail = ''
         background = self._banner_default_bg
         foreground = self._banner_default_fg
 
         if base_text.startswith('道路封鎖'):
-            detail = self._format_road(snapshot)
             background = '#c0392b'
             foreground = '#ffffff'
         elif base_text.startswith('信号: GO'):
-            detail = self._format_sig(snapshot)
             background = '#2980b9'
             foreground = '#ffffff'
         elif base_text.startswith('信号: STOP'):
-            detail = self._format_sig(snapshot)
             background = '#d35400'
             foreground = '#ffffff'
         elif base_text.startswith('停止線: STOP'):
-            detail = self._format_sig(snapshot)
             background = '#8e44ad'
             foreground = '#ffffff'
         elif base_text.startswith('manual_start'):
-            detail = self._format_manual(snapshot)
             background = '#16a085'
             foreground = '#ffffff'
 
-        text = base_text if not detail else f"{base_text}\n{detail}"
-        return text, background, foreground, timestamp
+        return base_text, background, foreground, timestamp
 
     def _build_banner(self, snapshot: GuiSnapshot) -> Tuple[str, Optional[datetime]]:
         current_time = datetime.now(timezone.utc)
@@ -1059,37 +1036,6 @@ class UiMain:
         ):
             return 'manual_start: True', snapshot.manual_signal.manual_timestamp
         return '', None
-
-    def _format_manual(self, snapshot: GuiSnapshot) -> str:
-        ts = snapshot.manual_signal.manual_timestamp
-        if ts:
-            return f"送信時刻: {_format_time(ts)}"
-        return '送信時刻: --:--:--'
-
-    def _format_sig(self, snapshot: GuiSnapshot) -> str:
-        if snapshot.follower_state.state == 'WAITING_STOP':
-            if snapshot.follower_state.signal_stop_active:
-                return '停止要因: 信号 STOP'
-            if snapshot.follower_state.line_stop_active:
-                return '停止要因: 停止線 STOP'
-        ts = snapshot.manual_signal.sig_timestamp
-        value = snapshot.manual_signal.sig_recog
-        label = {1: 'GO', 2: 'STOP'}.get(value, '未定義')
-        if value is None:
-            return '受信なし'
-        if ts:
-            return f"最終送信: {label} @{_format_time(ts)}"
-        return f"最終送信: {label}"
-
-    def _format_road(self, snapshot: GuiSnapshot) -> str:
-        ts = snapshot.manual_signal.road_blocked_timestamp
-        source_label = self._translate_road_source(snapshot.manual_signal.road_blocked_source)
-        if ts:
-            return (
-                f"現在:{snapshot.manual_signal.road_blocked} "
-                f"時刻:{_format_time(ts)} 入力元:{source_label}"
-            )
-        return f"入力元:{source_label} 受信なし"
 
     @staticmethod
     def _is_recent(timestamp: Optional[datetime], current_time: datetime) -> bool:
@@ -1148,12 +1094,7 @@ class UiMain:
             obstacle_source = self._draw_overlay(obstacle_source.copy(), snapshot.images.obstacle_overlay)
         obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel)
         self._obstacle_panel.update_image(obstacle_photo, alt_text='画像未取得')
-        overlay_lines = [
-            f"遮蔽:{'YES' if snapshot.obstacle_hint.front_blocked else 'NO'}",
-            f"余裕:{snapshot.obstacle_hint.front_clearance_m:.2f}m",
-            f"左:{snapshot.obstacle_hint.left_offset_m:+.2f}m 右:{snapshot.obstacle_hint.right_offset_m:+.2f}m",
-        ]
-        self._obstacle_panel.update_overlay('\n'.join(overlay_lines))
+        self._obstacle_panel.update_overlay('')
         self._obstacle_panel.update_caption(
             '障害物ビュー: 表示中' if obstacle_photo else '障害物ビュー: 画像未取得'
         )

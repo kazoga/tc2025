@@ -436,8 +436,10 @@ class GuiCore:
             self._follower_state.right_offset_m = msg.right_offset_m_median
             self._follower_state.stagnation_reason = msg.last_stagnation_reason
             self._follower_state.retry_count = msg.avoidance_attempt_count
-            self._target_distance.current_distance_m = msg.distance_to_target
-            self._target_distance.updated_at = now()
+            fallback_distance = getattr(msg, 'distance_to_target', 0.0)
+            if self._current_target is None or self._current_pose is None:
+                self._target_distance.current_distance_m = fallback_distance
+                self._target_distance.updated_at = now()
             signal_stop_active = bool(getattr(msg, 'signal_stop_active', False))
             if not signal_stop_active and msg.state == 'WAITING_STOP':
                 index = msg.current_index

@@ -38,13 +38,12 @@ from .utils import GuiSnapshot, NodeLaunchStatus, resize_with_letter_box
 
 LOGGER = logging.getLogger(__name__)
 
-LOGGER = logging.getLogger(__name__)
-
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 REFRESH_INTERVAL_MS = 200
 SIDEBAR_WIDTH = 288
 JST = timezone(timedelta(hours=9))
+EVENT_BANNER_TTL = timedelta(seconds=60)
 
 
 def _format_time(value: Optional[datetime]) -> str:
@@ -887,10 +886,12 @@ class UiMain:
 
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
-        progress_pct = max(min(route.progress * 100.0, 100.0), 0.0)
         self._route_state_vars['status'].set(route.state)
-        self._route_state_vars['progress'].set(progress_pct)
         total_waypoints = max(route.total_waypoints, 0)
+        progress_ratio = 0.0
+        if total_waypoints > 0:
+            progress_ratio = max(min(route.current_index / total_waypoints, 1.0), 0.0)
+        self._route_state_vars['progress'].set(progress_ratio * 100.0)
         display_index = 0
         if total_waypoints > 0:
             display_index = min(max(route.current_index + 1, 1), total_waypoints)
@@ -902,11 +903,6 @@ class UiMain:
         if route.last_replan_time:
             detail_parts.append(f"@ {_format_time(route.last_replan_time)}")
         self._route_state_vars['detail'].set(' '.join(detail_parts) or '最新イベントなし')
-        progress_pct = 0.0
-        if total_waypoints > 0:
-            progress_pct = max(min((display_index / total_waypoints) * 100.0, 100.0), 0.0)
-        self._route_state_vars['progress'].set(progress_pct)
-
         follower = snapshot.follower_state
         self._follower_vars['state'].set(follower.state)
         self._follower_vars['index'].set(f"Index: {follower.current_index}")
@@ -949,8 +945,13 @@ class UiMain:
             self._sig_status_var.set(
                 f"最終送信: {sig_label} @{_format_time(manual.sig_timestamp)}"
             )
+        source_label = self._translate_road_source(manual.road_blocked_source)
         self._road_status_var.set(
-            f"現在値: {manual.road_blocked} / 最終送信: {_format_time(manual.road_blocked_timestamp)}"
+            (
+                "現在値: "
+                f"{manual.road_blocked} / 最終送信: "
+                f"{_format_time(manual.road_blocked_timestamp)} / 入力元: {source_label}"
+            )
         )
 
         hint = snapshot.obstacle_hint
@@ -1007,19 +1008,33 @@ class UiMain:
         return text, background, foreground
 
     def _build_banner(self, snapshot: GuiSnapshot) -> str:
-        if snapshot.manual_signal.road_blocked:
+        current_time = datetime.now(timezone.utc)
+        if (
+            snapshot.manual_signal.road_blocked
+            and self._is_recent(snapshot.manual_signal.road_blocked_timestamp, current_time)
+        ):
             return '道路封鎖アラート'
         if snapshot.follower_state.state == 'WAITING_STOP':
             if snapshot.follower_state.signal_stop_active:
                 return '信号: STOP'
             if snapshot.follower_state.line_stop_active:
                 return '停止線: STOP'
+        sig_timestamp = snapshot.manual_signal.sig_timestamp
         sig = snapshot.manual_signal.sig_recog
-        if sig == 1:
+        if (
+            sig == 1
+            and self._is_recent(sig_timestamp, current_time)
+        ):
             return '信号: GO'
-        if sig == 2:
+        if (
+            sig == 2
+            and self._is_recent(sig_timestamp, current_time)
+        ):
             return '信号: STOP'
-        if snapshot.manual_signal.manual_start:
+        if (
+            snapshot.manual_signal.manual_start
+            and self._is_recent(snapshot.manual_signal.manual_timestamp, current_time)
+        ):
             return 'manual_start: True'
         return ''
 
@@ -1046,11 +1061,40 @@ class UiMain:
 
     def _format_road(self, snapshot: GuiSnapshot) -> str:
         ts = snapshot.manual_signal.road_blocked_timestamp
-        return (
-            f"現在:{snapshot.manual_signal.road_blocked} 時刻:{_format_time(ts)}"
-            if ts
-            else '受信なし'
-        )
+        source_label = self._translate_road_source(snapshot.manual_signal.road_blocked_source)
+        if ts:
+            return (
+                f"現在:{snapshot.manual_signal.road_blocked} "
+                f"時刻:{_format_time(ts)} 入力元:{source_label}"
+            )
+        return f"入力元:{source_label} 受信なし"
+
+    @staticmethod
+    def _is_recent(timestamp: Optional[datetime], current_time: datetime) -> bool:
+        """指定時刻がイベントバナー表示期間内かを判定する。"""
+
+        if timestamp is None:
+            return False
+        if timestamp.tzinfo is None:
+            ts_utc = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            ts_utc = timestamp.astimezone(timezone.utc)
+        delta = current_time - ts_utc
+        if delta.total_seconds() < 0:
+            return True
+        return delta <= EVENT_BANNER_TTL
+
+    @staticmethod
+    def _translate_road_source(source: Optional[str]) -> str:
+        """road_blocked の入力元を日本語ラベルへ変換する。"""
+
+        mapping = {
+            'console': 'GUI',
+            'external': '外部',
+        }
+        if not source:
+            return '不明'
+        return mapping.get(source, source)
 
     def _update_images(self, snapshot: GuiSnapshot) -> None:
         if not self._image_render_available:

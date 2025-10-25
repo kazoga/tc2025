@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import base64
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 try:
     from PIL import Image, ImageTk  # type: ignore
@@ -34,6 +35,8 @@ else:  # pragma: no cover - OpenCV 無し環境では未使用
 
 from .gui_core import GuiCore
 from .utils import GuiSnapshot, NodeLaunchStatus
+
+LOGGER = logging.getLogger(__name__)
 
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
@@ -854,9 +857,13 @@ class UiMain:
         self._root.after(REFRESH_INTERVAL_MS, self._refresh)
 
     def _refresh(self) -> None:
-        snapshot = self._core.snapshot()
-        self._apply_snapshot(snapshot)
-        self._schedule_update()
+        try:
+            snapshot = self._core.snapshot()
+            self._apply_snapshot(snapshot)
+        except Exception as exc:  # pylint: disable=broad-except
+            LOGGER.exception("スナップショット更新処理で例外が発生しました: %s", exc)
+        finally:
+            self._schedule_update()
 
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
@@ -938,6 +945,37 @@ class UiMain:
         self._update_images(snapshot)
         self._update_launch_states(snapshot)
         self._update_logs(snapshot)
+
+    def _resolve_banner(self, snapshot: GuiSnapshot) -> Tuple[str, str, str]:
+        """ダッシュボードのイベントバナー表示内容と配色を決定する。"""
+
+        base_text = self._build_banner(snapshot)
+        if not base_text:
+            return base_text, self._banner_default_bg, self._banner_default_fg
+
+        detail = ''
+        background = self._banner_default_bg
+        foreground = self._banner_default_fg
+
+        if base_text.startswith('道路封鎖'):
+            detail = self._format_road(snapshot)
+            background = '#c0392b'
+            foreground = '#ffffff'
+        elif base_text.startswith('信号: GO'):
+            detail = self._format_sig(snapshot)
+            background = '#2980b9'
+            foreground = '#ffffff'
+        elif base_text.startswith('信号: STOP'):
+            detail = self._format_sig(snapshot)
+            background = '#d35400'
+            foreground = '#ffffff'
+        elif base_text.startswith('manual_start'):
+            detail = self._format_manual(snapshot)
+            background = '#16a085'
+            foreground = '#ffffff'
+
+        text = base_text if not detail else f"{base_text}\n{detail}"
+        return text, background, foreground
 
     def _build_banner(self, snapshot: GuiSnapshot) -> str:
         if snapshot.manual_signal.road_blocked:

@@ -96,9 +96,15 @@ def create_placeholder_image(
         return image
 
     if hasattr(draw, 'textbbox'):
-        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
-        text_width = right - left
-        text_height = bottom - top
+        try:
+            left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+            text_width = right - left
+            text_height = bottom - top
+        except ValueError:
+            # Pillow がビットマップフォントのみを提供している環境では
+            # textbbox() が ValueError を送出するため、従来の textsize() を
+            # 使って幅と高さを算出する。
+            text_width, text_height = draw.textsize(text, font=font)
     else:  # pragma: no cover - 古い Pillow のみ
         text_width, text_height = draw.textsize(text, font=font)
 

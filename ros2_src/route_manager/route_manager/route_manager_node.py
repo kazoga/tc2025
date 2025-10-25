@@ -264,6 +264,10 @@ class RouteManagerNode(Node):
         self.get_logger().info("route_manager (Phase2: 5-step handling, Node/Core/FSM split) started.")
         self._publish_mission_info()
 
+        # Publishログの間引き用タイムスタンプを初期化する。
+        self._last_status_log_time: float = 0.0
+        self._last_route_state_log_time: float = 0.0
+
     def _resolve_topic_name(self, name: str) -> str:
         """リマップ適用後のトピック名を返す補助関数."""
         try:
@@ -297,10 +301,13 @@ class RouteManagerNode(Node):
         msg.decision = decision
         msg.last_cause = cause
         msg.route_version = int(route_version)
-        self.get_logger().info(
-            f"[Node] publish {self.manager_status_topic}: state={state}, decision={decision}, "
-            f"cause={cause}, ver={int(route_version)}"
-        )
+        now_sec = time.monotonic()
+        if now_sec - self._last_status_log_time >= 1.0:
+            self.get_logger().info(
+                f"[Node] publish {self.manager_status_topic}: state={state}, decision={decision}, "
+                f"cause={cause}, ver={int(route_version)}"
+            )
+            self._last_status_log_time = now_sec
         self.pub_manager_status.publish(msg)
 
     @staticmethod
@@ -335,7 +342,13 @@ class RouteManagerNode(Node):
         msg.current_label = str(label)
         msg.route_version = int(ver)
         msg.total_waypoints = int(total)
-        #self.get_logger().info(f"[Node] publish /route_state: idx={idx}, label='{label}', ver={ver}, total={total}, status={status}")
+        now_sec = time.monotonic()
+        if now_sec - self._last_route_state_log_time >= 1.0:
+            self.get_logger().info(
+                f"[Node] publish {self.route_state_topic}: idx={int(idx)}, label='{label}', "
+                f"ver={int(ver)}, total={int(total)}, status={status}"
+            )
+            self._last_route_state_log_time = now_sec
         self.pub_route_state.publish(msg)
 
     # ------------------------------------------------------------------

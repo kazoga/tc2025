@@ -211,33 +211,32 @@ class UiMain:
         self._latest_obstacle_state_text = '受信値: 未取得'
         self._obstacle_preview_text = ''
         self._event_banner = tk.StringVar(value='')
+        self._event_detail = tk.StringVar(value='更新: --:--:--')
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
         self._route_state_vars = {
             'manager': tk.StringVar(value='unknown'),
             'route_status': tk.StringVar(value='unknown'),
+            'version': tk.StringVar(value='--'),
             'progress': tk.DoubleVar(value=0.0),
-            'progress_text': tk.StringVar(value='0 / 0'),
-            'version': tk.StringVar(value='バージョン: 0'),
-            'detail': tk.StringVar(value=''),
+            'progress_percent': tk.StringVar(value='0.0%'),
+            'progress_counter': tk.StringVar(value='0 / 0'),
         }
         self._follower_vars = {
             'state': tk.StringVar(value='unknown'),
-            'index': tk.StringVar(value='Index: 0'),
-            'label': tk.StringVar(value='現在: -'),
-            'next': tk.StringVar(value='次: -'),
-            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
+            'target_label': tk.StringVar(value='-'),
             'stagnation': tk.StringVar(value='滞留なし'),
+            'offsets': tk.StringVar(value='左:+0.00m / 右:+0.00m'),
         }
         self._velocity_vars = {
             'linear': tk.StringVar(value='0.00 m/s'),
             'angular': tk.StringVar(value='0.0 deg/s'),
         }
         self._target_vars = {
-            'distance': tk.StringVar(value='現在距離: 0.0 m'),
-            'baseline': tk.StringVar(value='基準距離: 0.0 m'),
+            'distance': tk.StringVar(value='0.0 m'),
             'progress': tk.DoubleVar(value=0.0),
+            'progress_percent': tk.StringVar(value='0.0%'),
         }
 
         self._launch_widgets: Dict[str, Dict[str, object]] = {}
@@ -391,29 +390,33 @@ class UiMain:
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, text='進捗').grid(row=2, column=0, sticky='w')
-        ttk.Progressbar(
-            route_frame,
-            maximum=100,
-            variable=self._route_state_vars['progress'],
-        ).grid(row=2, column=1, sticky='ew', pady=2)
-        ttk.Label(route_frame, textvariable=self._route_state_vars['progress_text']).grid(
-            row=3,
+        ttk.Label(route_frame, text='バージョン').grid(row=2, column=0, sticky='w')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
+            row=2,
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
+        ttk.Label(route_frame, text='進捗率').grid(row=3, column=0, sticky='w')
+        progress_frame = ttk.Frame(route_frame)
+        progress_frame.grid(row=3, column=1, sticky='ew', pady=2)
+        progress_frame.columnconfigure(0, weight=1)
+        ttk.Progressbar(
+            progress_frame,
+            maximum=100,
+            variable=self._route_state_vars['progress'],
+        ).grid(row=0, column=0, sticky='ew')
+        ttk.Label(progress_frame, textvariable=self._route_state_vars['progress_percent']).grid(
+            row=0,
+            column=1,
+            sticky='e',
+            padx=(8, 0),
+        )
+        ttk.Label(route_frame, text='進捗カウンタ').grid(row=4, column=0, sticky='w')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['progress_counter']).grid(
             row=4,
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, text='最終イベント').grid(row=5, column=0, sticky='nw')
-        ttk.Label(
-            route_frame,
-            textvariable=self._route_state_vars['detail'],
-            justify='left',
-            wraplength=220,
-        ).grid(row=5, column=1, sticky='w')
 
         follower_frame = ttk.LabelFrame(
             summary,
@@ -422,39 +425,27 @@ class UiMain:
         )
         follower_frame.grid(row=0, column=1, sticky='nsew', padx=(0, 8))
         follower_frame.columnconfigure(1, weight=1)
-        ttk.Label(follower_frame, text='状態').grid(row=0, column=0, sticky='w')
+        ttk.Label(follower_frame, text='フォロワ状態').grid(row=0, column=0, sticky='w')
         ttk.Label(follower_frame, textvariable=self._follower_vars['state']).grid(
             row=0,
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='現在インデックス').grid(row=1, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['index']).grid(
+        ttk.Label(follower_frame, text='目標ウェイポイント').grid(row=1, column=0, sticky='w')
+        ttk.Label(follower_frame, textvariable=self._follower_vars['target_label']).grid(
             row=1,
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='現在ラベル').grid(row=2, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['label']).grid(
+        ttk.Label(follower_frame, text='滞留要因').grid(row=2, column=0, sticky='w')
+        ttk.Label(follower_frame, textvariable=self._follower_vars['stagnation']).grid(
             row=2,
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='滞留要因').grid(row=3, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['stagnation']).grid(
-            row=3,
-            column=1,
-            sticky='w',
-        )
-        ttk.Label(follower_frame, text='左右中央値').grid(row=4, column=0, sticky='w')
+        ttk.Label(follower_frame, text='左右オフセット').grid(row=3, column=0, sticky='w')
         ttk.Label(follower_frame, textvariable=self._follower_vars['offsets']).grid(
-            row=4,
-            column=1,
-            sticky='w',
-        )
-        ttk.Label(follower_frame, text='次ウェイポイント').grid(row=5, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['next']).grid(
-            row=5,
+            row=3,
             column=1,
             sticky='w',
         )
@@ -488,20 +479,31 @@ class UiMain:
         target_frame = ttk.LabelFrame(metrics, text='目標までの距離', style='Card.TLabelframe')
         target_frame.grid(row=1, column=0, sticky='nsew')
         target_frame.columnconfigure(0, weight=1)
-        ttk.Label(target_frame, textvariable=self._target_vars['distance']).grid(
+        target_frame.columnconfigure(1, weight=1)
+        ttk.Label(target_frame, text='目標ウェイポイントまでの距離').grid(
             row=0,
             column=0,
             sticky='w',
         )
+        ttk.Label(target_frame, textvariable=self._target_vars['distance']).grid(
+            row=0,
+            column=1,
+            sticky='e',
+        )
+        ttk.Label(target_frame, text='進捗').grid(row=1, column=0, sticky='w', pady=(6, 0))
+        target_progress = ttk.Frame(target_frame)
+        target_progress.grid(row=1, column=1, sticky='ew', pady=(6, 0))
+        target_progress.columnconfigure(0, weight=1)
         ttk.Progressbar(
-            target_frame,
+            target_progress,
             maximum=100,
             variable=self._target_vars['progress'],
-        ).grid(row=1, column=0, sticky='ew', pady=4)
-        ttk.Label(target_frame, textvariable=self._target_vars['baseline']).grid(
-            row=2,
-            column=0,
-            sticky='w',
+        ).grid(row=0, column=0, sticky='ew')
+        ttk.Label(target_progress, textvariable=self._target_vars['progress_percent']).grid(
+            row=0,
+            column=1,
+            sticky='e',
+            padx=(8, 0),
         )
 
     def _build_image_row(self, parent: ttk.Frame) -> None:
@@ -557,6 +559,11 @@ class UiMain:
             justify='center',
         )
         self._banner_label.grid(row=0, column=0, sticky='nsew')
+        ttk.Label(
+            banner_frame,
+            textvariable=self._event_detail,
+            anchor='e',
+        ).grid(row=1, column=0, sticky='ew', pady=(8, 0))
 
         control_frame = ttk.LabelFrame(container, text='制御コマンド', padding=4)
         control_frame.grid(row=0, column=1, sticky='nsew')
@@ -905,34 +912,27 @@ class UiMain:
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
         follower = snapshot.follower_state
-        self._route_state_vars['manager'].set(route.manager_state)
-        self._route_state_vars['route_status'].set(route.route_status)
+        self._route_state_vars['manager'].set(route.manager_state or 'unknown')
+        self._route_state_vars['route_status'].set(route.route_status or 'unknown')
+        self._route_state_vars['version'].set(str(route.route_version))
         total_waypoints = max(route.total_waypoints, 0)
         progress_ratio = 0.0
         if total_waypoints > 0:
             progress_ratio = max(min(route.current_index / total_waypoints, 1.0), 0.0)
+        progress_ratio = max(min(progress_ratio, 1.0), 0.0)
         self._route_state_vars['progress'].set(progress_ratio * 100.0)
+        self._route_state_vars['progress_percent'].set(f"{progress_ratio * 100.0:.1f}%")
         display_index = 0
         if total_waypoints > 0:
             follower_index = max(follower.current_index, 0)
             display_index = min(max(follower_index + 1, 1), total_waypoints)
-        self._route_state_vars['progress_text'].set(f"{display_index} / {route.total_waypoints}")
-        self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
-        detail_parts = []
-        if route.last_replan_reason:
-            detail_parts.append(route.last_replan_reason)
-        if route.last_replan_time:
-            detail_parts.append(f"@ {_format_time(route.last_replan_time)}")
-        self._route_state_vars['detail'].set(' '.join(detail_parts) or '最新イベントなし')
-        self._follower_vars['state'].set(follower.state)
-        self._follower_vars['index'].set(f"Index: {follower.current_index}")
+        self._route_state_vars['progress_counter'].set(
+            f"{display_index} / {route.total_waypoints}"
+        )
+        self._follower_vars['state'].set(follower.state or 'unknown')
         current_label = follower.current_label or route.current_label or '-'
-        self._follower_vars['label'].set(f"現在: {current_label}")
-        self._follower_vars['next'].set(f"次: {follower.next_label or '-'}")
-        if follower.stagnation_reason:
-            stagnation = follower.stagnation_reason
-        else:
-            stagnation = '滞留なし'
+        self._follower_vars['target_label'].set(current_label or '-')
+        stagnation = follower.stagnation_reason or '滞留なし'
         self._follower_vars['stagnation'].set(stagnation)
         offsets = (
             f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
@@ -945,13 +945,14 @@ class UiMain:
         target = snapshot.target_distance
         baseline = target.baseline_distance_m
         ratio = 0.0 if baseline <= 0 else max(min(target.current_distance_m / baseline, 1.0), 0.0)
-        self._target_vars['distance'].set(f"現在距離: {target.current_distance_m:.1f} m")
-        self._target_vars['baseline'].set(f"基準距離: {baseline:.1f} m")
+        self._target_vars['distance'].set(f"{target.current_distance_m:.1f} m")
         self._target_vars['progress'].set(ratio * 100.0)
+        self._target_vars['progress_percent'].set(f"{ratio * 100.0:.1f}%")
 
-        banner_text, banner_bg, banner_fg = self._resolve_banner(snapshot)
+        banner_text, banner_bg, banner_fg, banner_ts = self._resolve_banner(snapshot)
         self._event_banner.set(banner_text)
         self._banner_label.configure(bg=banner_bg, fg=banner_fg)
+        self._event_detail.set(f"更新: {_format_time(banner_ts)}")
 
         manual = snapshot.manual_signal
         self._manual_status_var.set(
@@ -993,12 +994,12 @@ class UiMain:
         self._update_launch_states(snapshot)
         self._update_logs(snapshot)
 
-    def _resolve_banner(self, snapshot: GuiSnapshot) -> Tuple[str, str, str]:
+    def _resolve_banner(self, snapshot: GuiSnapshot) -> Tuple[str, str, str, Optional[datetime]]:
         """ダッシュボードのイベントバナー表示内容と配色を決定する。"""
 
-        base_text = self._build_banner(snapshot)
+        base_text, timestamp = self._build_banner(snapshot)
         if not base_text:
-            return base_text, self._banner_default_bg, self._banner_default_fg
+            return base_text, self._banner_default_bg, self._banner_default_fg, timestamp
 
         detail = ''
         background = self._banner_default_bg
@@ -1026,38 +1027,38 @@ class UiMain:
             foreground = '#ffffff'
 
         text = base_text if not detail else f"{base_text}\n{detail}"
-        return text, background, foreground
+        return text, background, foreground, timestamp
 
-    def _build_banner(self, snapshot: GuiSnapshot) -> str:
+    def _build_banner(self, snapshot: GuiSnapshot) -> Tuple[str, Optional[datetime]]:
         current_time = datetime.now(timezone.utc)
         if (
             snapshot.manual_signal.road_blocked
             and self._is_recent(snapshot.manual_signal.road_blocked_timestamp, current_time)
         ):
-            return '道路封鎖アラート'
+            return '道路封鎖アラート', snapshot.manual_signal.road_blocked_timestamp
         if snapshot.follower_state.state == 'WAITING_STOP':
             if snapshot.follower_state.signal_stop_active:
-                return '信号: STOP'
+                return '信号: STOP', snapshot.manual_signal.sig_timestamp
             if snapshot.follower_state.line_stop_active:
-                return '停止線: STOP'
+                return '停止線: STOP', None
         sig_timestamp = snapshot.manual_signal.sig_timestamp
         sig = snapshot.manual_signal.sig_recog
         if (
             sig == 1
             and self._is_recent(sig_timestamp, current_time)
         ):
-            return '信号: GO'
+            return '信号: GO', sig_timestamp
         if (
             sig == 2
             and self._is_recent(sig_timestamp, current_time)
         ):
-            return '信号: STOP'
+            return '信号: STOP', sig_timestamp
         if (
             snapshot.manual_signal.manual_start
             and self._is_recent(snapshot.manual_signal.manual_timestamp, current_time)
         ):
-            return 'manual_start: True'
-        return ''
+            return 'manual_start: True', snapshot.manual_signal.manual_timestamp
+        return '', None
 
     def _format_manual(self, snapshot: GuiSnapshot) -> str:
         ts = snapshot.manual_signal.manual_timestamp

@@ -34,7 +34,7 @@ else:  # pragma: no cover - OpenCV 無し環境では未使用
     np = None  # type: ignore
 
 from .gui_core import CAMERA_DISPLAY_SIZE, GuiCore
-from .utils import GuiSnapshot, NodeLaunchStatus, resize_with_letter_box
+from .utils import GuiSnapshot, NodeLaunchState, NodeLaunchStatus, resize_with_letter_box
 
 LOGGER = logging.getLogger(__name__)
 
@@ -185,6 +185,7 @@ class UiMain:
         self._root.title("robot_console")
         self._root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self._root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self._root.protocol("WM_DELETE_WINDOW", self._on_close_request)
 
         self._configure_style()
 
@@ -215,6 +216,11 @@ class UiMain:
         self._image_warning_parent: Optional[ttk.Frame] = None
         self._line_stop_active_since: Optional[datetime] = None
         self._last_line_stop_state = False
+        self._latest_snapshot: Optional[GuiSnapshot] = None
+        self._closing = False
+        self._shutdown_pending = False
+        self._update_job: Optional[str] = None
+        self._shutdown_check_job: Optional[str] = None
 
         self._route_state_vars = {
             'manager': tk.StringVar(value='unknown'),
@@ -894,16 +900,23 @@ class UiMain:
 
     # ---------- 更新処理 ----------
     def _schedule_update(self) -> None:
-        self._root.after(REFRESH_INTERVAL_MS, self._refresh)
+        if self._closing:
+            return
+        try:
+            self._update_job = self._root.after(REFRESH_INTERVAL_MS, self._refresh)
+        except tk.TclError:
+            self._update_job = None
 
     def _refresh(self) -> None:
         try:
             snapshot = self._core.snapshot()
+            self._latest_snapshot = snapshot
             self._apply_snapshot(snapshot)
         except Exception as exc:  # pylint: disable=broad-except
             LOGGER.exception("スナップショット更新処理で例外が発生しました: %s", exc)
         finally:
-            self._schedule_update()
+            if not self._closing:
+                self._schedule_update()
 
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
@@ -993,6 +1006,8 @@ class UiMain:
         self._update_images(snapshot)
         self._update_launch_states(snapshot)
         self._update_logs(snapshot)
+        if self._shutdown_pending and not self._has_active_nodes(snapshot):
+            self._finalize_shutdown()
 
     def _update_line_stop_tracker(self, active: bool) -> None:
         """停止線待ちの立ち上がり時刻を記録する。"""
@@ -1270,6 +1285,108 @@ class UiMain:
             NodeLaunchStatus.ERROR: 'エラー',
         }
         return mapping.get(status, '不明')
+
+    def _on_close_request(self) -> None:
+        """ウィンドウクローズ要求を受け、必要に応じてノード停止を実行する。"""
+
+        if self._closing or self._shutdown_pending:
+            return
+        snapshot = self._get_latest_snapshot()
+        if not self._has_active_nodes(snapshot):
+            self._finalize_shutdown()
+            return
+        self._shutdown_pending = True
+        self._core.request_stop_all()
+        self._schedule_shutdown_check()
+
+    def _get_latest_snapshot(self) -> Optional[GuiSnapshot]:
+        """最新のスナップショットを取得し、取得できなければ直近値を返す。"""
+
+        try:
+            snapshot = self._core.snapshot()
+        except Exception:  # pylint: disable=broad-except
+            return self._latest_snapshot
+        self._latest_snapshot = snapshot
+        return snapshot
+
+    def _schedule_shutdown_check(self) -> None:
+        """ノード停止完了を確認するポーリングを設定する。"""
+
+        if self._closing:
+            return
+        try:
+            self._shutdown_check_job = self._root.after(
+                REFRESH_INTERVAL_MS,
+                self._wait_for_shutdown_completion,
+            )
+        except tk.TclError:
+            self._shutdown_check_job = None
+
+    def _wait_for_shutdown_completion(self) -> None:
+        """ノードがすべて停止したかを確認し、停止済みなら終了する。"""
+
+        self._shutdown_check_job = None
+        if self._closing:
+            return
+        snapshot = self._get_latest_snapshot()
+        if snapshot is None or self._has_active_nodes(snapshot):
+            if self._shutdown_pending:
+                self._schedule_shutdown_check()
+            return
+        self._finalize_shutdown()
+
+    def _finalize_shutdown(self) -> None:
+        """更新ループを停止し、Tk アプリケーションを終了する。"""
+
+        if self._closing:
+            return
+        self._closing = True
+        self._shutdown_pending = False
+        self._cancel_after_job(self._update_job)
+        self._update_job = None
+        self._cancel_after_job(self._shutdown_check_job)
+        self._shutdown_check_job = None
+        try:
+            self._root.destroy()
+        except tk.TclError:
+            LOGGER.debug("ウィンドウ破棄済みのため destroy をスキップしました。")
+
+    def _cancel_after_job(self, job_id: Optional[str]) -> None:
+        """after で登録したジョブがあればキャンセルする。"""
+
+        if job_id is None:
+            return
+        try:
+            self._root.after_cancel(job_id)
+        except tk.TclError:
+            LOGGER.debug("after_cancel 失敗 (既に破棄済み): %s", job_id)
+
+    @staticmethod
+    def _has_active_nodes(snapshot: Optional[GuiSnapshot]) -> bool:
+        """スナップショット内に稼働中のノードが存在するかを判定する。"""
+
+        if snapshot is None:
+            return False
+        for state in snapshot.launch_states.values():
+            if UiMain._is_state_active(state):  # pylint: disable=protected-access
+                return True
+        return False
+
+    @staticmethod
+    def _is_state_active(state: NodeLaunchState) -> bool:
+        """個別ノード状態が稼働中かどうかを判定する。"""
+
+        if state.status in (
+            NodeLaunchStatus.STARTING,
+            NodeLaunchStatus.RUNNING,
+            NodeLaunchStatus.STOPPING,
+        ):
+            return True
+        if state.process_id is not None:
+            return True
+        if state.simulator_process_id is not None:
+            return True
+        return False
 
     def run(self) -> None:
         """tkinter メインループを開始する。"""

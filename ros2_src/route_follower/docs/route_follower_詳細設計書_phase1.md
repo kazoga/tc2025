@@ -216,11 +216,13 @@ _reached()        → 2D距離で到達判定
   ```
   route_version: int
   state: str
-  current_index: int
-  current_waypoint_label: str
-  next_waypoint_label: str
-  distance_to_target: float
-  current_pose: geometry_msgs/PoseStamped
+  active_waypoint_index: int
+  active_waypoint_label: str
+  segment_length_m: float
+  active_target_distance_m: float
+  front_blocked: bool
+  left_offset_m: float
+  right_offset_m: float
   ```
 - これらを100msデバウンス付きで送信。QoS: RELIABLE / VOLATILE
 

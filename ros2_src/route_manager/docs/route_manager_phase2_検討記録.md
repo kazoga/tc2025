@@ -79,7 +79,7 @@ route_managerは、外部から観測可能な以下の4状態を持つ。
 
 | フィールド | 型 | 意味 |
 |-------------|----|------|
-| `reason` | string | followerが検知した滞留要因（"stagnation","no_hint","no_space","avoidance_failed"等） |
+| `reason` | string | followerが検知した滞留要因（"front_blocked","no_hint","no_space","avoidance_failed"等） |
 | `current_wp_label` | string | 現在のwaypointラベル |
 | `avoid_trial_count` | uint32 | followerが行った局所回避試行回数 |
 | `last_hint_blocked` | bool | 最後に受信したobstacle_hintが閉塞を示しているか |
@@ -106,7 +106,7 @@ route_managerは、外部から観測可能な以下の4状態を持つ。
 経路上にまだ左右いずれかの空間余裕があるかを確認し、再計画を指示する。
 
 **判定条件**  
-- `reason` ∈ {"stagnation","avoidance_failed"}  
+- `reason` ∈ {"front_blocked","avoidance_failed"}
 - `avoid_trial_count < avoid_max_retry`  
 - `last_hint_blocked == True`  
 
@@ -204,7 +204,11 @@ def handle_report_stuck(req):
     wp = self.route_table.find(req.current_wp_label)
 
     # Layer1: offset judgment
-    if req.reason in ["stagnation", "avoidance_failed"]        and req.avoid_trial_count < self.param.avoid_max_retry        and req.last_hint_blocked:
+    if (
+        req.reason in ["front_blocked", "avoidance_failed"]
+        and req.avoid_trial_count < self.param.avoid_max_retry
+        and req.last_hint_blocked
+    ):
         if wp.has_left_space and req.last_applied_offset_m <= 0:
             return Decision(REPLAN, offset_hint=-min(wp.left_open, self.param.offset_step_max_m))
         elif wp.has_right_space and req.last_applied_offset_m >= 0:

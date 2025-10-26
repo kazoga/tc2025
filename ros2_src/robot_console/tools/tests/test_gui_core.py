@@ -143,23 +143,37 @@ if 'PIL' not in sys.modules:
 from robot_console.gui_core import GuiCore
 from robot_console.utils import ConsoleLogBuffer, GuiCommandType
 
-
 def _make_follower_state(**overrides):
     """GuiCore.update_follower_state へ渡すテスト用メッセージを生成する。"""
 
     defaults = {
         'state': 'RUNNING',
-        'current_index': 0,
-        'current_waypoint_label': '',
-        'next_waypoint_label': '',
-        'front_blocked_majority': False,
-        'left_offset_m_median': 0.0,
-        'right_offset_m_median': 0.0,
+        'active_waypoint_index': 0,
+        'active_waypoint_label': '',
+        'front_blocked': False,
+        'left_offset_m': 0.0,
+        'right_offset_m': 0.0,
         'last_stagnation_reason': '',
         'avoidance_attempt_count': 0,
-        'distance_to_target': 0.0,
+        'active_target_distance_m': 0.0,
+        'segment_length_m': 0.0,
         'signal_stop_active': False,
         'line_stop_active': False,
+    }
+    defaults.update(overrides)
+    return types.SimpleNamespace(**defaults)
+
+
+def _make_route_state(**overrides):
+    """GuiCore.update_route_state へ渡すテスト用メッセージを生成する。"""
+
+    defaults = {
+        'route_version': 1,
+        'total_waypoints': 10,
+        'current_index': 0,
+        'status': 2,
+        'message': '',
+        'current_label': 'WP00',
     }
     defaults.update(overrides)
     return types.SimpleNamespace(**defaults)
@@ -200,6 +214,38 @@ def test_snapshot_is_copy() -> None:
     assert new_snapshot.route_state.route_status != 'modified'
 
 
+def test_manager_status_does_not_override_event() -> None:
+    core = GuiCore(launch_profiles=[])
+    core.update_route_state(_make_route_state(message='route_ready', current_index=1))
+    core.update_manager_status(
+        types.SimpleNamespace(state='running', decision='shift', last_cause='', route_version=1)
+    )
+    core.update_manager_status(
+        types.SimpleNamespace(state='running', decision='none', last_cause='', route_version=1)
+    )
+    snapshot = core.snapshot()
+    assert snapshot.route_state.last_replan_reason == 'route_ready'
+    assert snapshot.route_state.manager_decision == ''
+    assert snapshot.route_state.manager_cause == ''
+
+
+def test_manager_status_records_cause() -> None:
+    core = GuiCore(launch_profiles=[])
+    core.update_manager_status(
+        types.SimpleNamespace(state='holding', decision='failed', last_cause='front_blocked', route_version=1)
+    )
+    snapshot = core.snapshot()
+    assert snapshot.route_state.manager_cause == 'front_blocked'
+
+
+def test_route_state_message_retained_on_empty_update() -> None:
+    core = GuiCore(launch_profiles=[])
+    core.update_route_state(_make_route_state(message='shift_right(0.5m)', current_index=2))
+    core.update_route_state(_make_route_state(message='', current_index=3))
+    snapshot = core.snapshot()
+    assert snapshot.route_state.last_replan_reason == 'shift_right(0.5m)'
+
+
 def test_compute_distance_with_pose_with_covariance() -> None:
     core = GuiCore(launch_profiles=[])
     target = geometry_msgs.msg.PoseStamped()
@@ -212,7 +258,7 @@ def test_compute_distance_with_pose_with_covariance() -> None:
 
 def test_target_distance_falls_back_to_follower_state_value() -> None:
     core = GuiCore(launch_profiles=[])
-    follower_msg = _make_follower_state(distance_to_target=7.5)
+    follower_msg = _make_follower_state(active_target_distance_m=7.5)
     core.update_follower_state(follower_msg)
     snapshot = core.snapshot()
     assert math.isclose(snapshot.target_distance.current_distance_m, 7.5)
@@ -226,7 +272,19 @@ def test_target_distance_prefers_pose_when_available() -> None:
     pose_cov = geometry_msgs.msg.PoseWithCovarianceStamped()
     pose_cov.pose.pose.position.x = 4.0  # type: ignore[attr-defined]
     core.update_amcl_pose(pose_cov)
-    follower_msg = _make_follower_state(distance_to_target=123.0)
+    follower_msg = _make_follower_state(active_target_distance_m=123.0)
     core.update_follower_state(follower_msg)
     snapshot = core.snapshot()
     assert math.isclose(snapshot.target_distance.current_distance_m, 6.0)
+
+
+def test_ui_main_source_no_legacy_target_label_binding() -> None:
+    ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
+    source = ui_path.read_text(encoding='utf-8')
+    assert "['target_label']" not in source
+
+
+def test_ui_main_source_no_legacy_progress_percent_binding() -> None:
+    ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
+    source = ui_path.read_text(encoding='utf-8')
+    assert "['progress_percent']" not in source

@@ -64,6 +64,7 @@ class ObstacleHintView:
     left_offset_m: float = 0.0
     right_offset_m: float = 0.0
     updated_at: Optional[datetime] = None
+    override_active: bool = False
 
 
 @dataclass

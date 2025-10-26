@@ -587,9 +587,13 @@ class GuiCore:
             'left_offset_m': left,
             'right_offset_m': right,
         }
+        with self._lock:
+            self._obstacle_hint.override_active = True
         self._command_queue.put(GuiCommand(GuiCommandType.OBSTACLE_HINT_OVERRIDE, payload))
 
     def stop_obstacle_override(self) -> None:
+        with self._lock:
+            self._obstacle_hint.override_active = False
         self._command_queue.put(GuiCommand(GuiCommandType.OBSTACLE_HINT_STOP, {}))
 
     def request_launch(self, profile_id: str) -> None:

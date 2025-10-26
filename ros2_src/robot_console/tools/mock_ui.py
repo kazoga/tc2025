@@ -1269,7 +1269,7 @@ class MockDashboardApp(tk.Tk):
         value_row.grid(row=0, column=0, sticky="ew")
         value_row.columnconfigure(5, weight=1)
         self.obstacle_clearance_var = tk.DoubleVar(value=3.0)
-        ttk.Label(value_row, text="余裕距離[m]").grid(row=0, column=0, sticky="e")
+        ttk.Label(value_row, text="前方距離[m]").grid(row=0, column=0, sticky="e")
         self.obstacle_clearance_spin = ttk.Spinbox(
             value_row,
             textvariable=self.obstacle_clearance_var,
@@ -1552,7 +1552,7 @@ class MockDashboardApp(tk.Tk):
             overlay_lines = [
                 (
                     f"遮蔽:{'YES' if follower_state.front_blocked else 'NO'}  "
-                    f"余裕:{obstacle_hint.front_clearance_m:4.2f}m"
+                    f"前方距離:{obstacle_hint.front_clearance_m:4.2f}m"
                 ),
                 (
                     f"左:{follower_state.left_offset_m:+.2f}m  "

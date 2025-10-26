@@ -7,6 +7,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 from typing import Dict, Optional, Tuple
@@ -269,7 +270,7 @@ class UiMain:
         self._obstacle_right = tk.DoubleVar(value=0.0)
         self._obstacle_blocked = tk.BooleanVar(value=False)
         self._obstacle_override_state = tk.StringVar(
-            value='状態: front_blocked=OFF 余裕:0.00m 左:+0.00m 右:+0.00m 更新: --:--:--'
+            value='状態: front_blocked=OFF 前方距離:0.00m 左:+0.00m 右:+0.00m 更新: --:--:--'
         )
         self._event_banner = tk.StringVar(value='')
         self._obstacle_override_active = False
@@ -314,6 +315,10 @@ class UiMain:
         self._stagnation_display_reason: str = '滞留なし'
         self._stagnation_ignored_reason: Optional[str] = None
         self._obstacle_override_active = False
+        self._overlay_font: Optional[object] = None
+        self._overlay_font_supports_wide: bool = False
+        self._sig_value_initialized: bool = False
+        self._sig_last_command: Optional[int] = None
 
     def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""
@@ -338,7 +343,7 @@ class UiMain:
             'target_label': follower_label,
             'stagnation': tk.StringVar(value='滞留なし'),
             'front_clearance': tk.StringVar(value='障害物なし'),
-            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
+            'offsets': tk.StringVar(value='左:+0.00m / 右:+0.00m'),
         }
         missing = set(FOLLOWER_CARD_KEYS) - set(follower_vars.keys())
         if missing:
@@ -958,6 +963,7 @@ class UiMain:
     def _on_send_sig(self) -> None:
         go = self._sig_value.get() == 1
         self._core.request_sig_recog(go)
+        self._sig_last_command = 1 if go else 2
 
     def _on_send_road(self) -> None:
         value = bool(self._road_value.get())
@@ -1072,11 +1078,13 @@ class UiMain:
                 self._stagnation_ignored_reason = None
         self._follower_vars['stagnation'].set(self._stagnation_display_reason)
 
-        front_clearance = snapshot.obstacle_hint.front_clearance_m
+        front_clearance = follower.front_clearance_m
         if math.isinf(front_clearance):
             front_clearance_text = '障害物なし'
         else:
-            front_clearance_text = f"{front_clearance:.2f} m"
+            front_clearance_text = f"{front_clearance:.2f}m"
+        if follower.front_blocked:
+            front_clearance_text += '(blocked)'
         self._follower_vars['front_clearance'].set(front_clearance_text)
         offsets = f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
         self._follower_vars['offsets'].set(offsets)
@@ -1119,7 +1127,14 @@ class UiMain:
             f"現在値: {manual.manual_start} / 最終送信: {_format_time(manual.manual_timestamp)}"
         )
         if manual.sig_recog in (1, 2):
-            self._sig_value.set(manual.sig_recog)
+            if not self._sig_value_initialized:
+                self._sig_value.set(manual.sig_recog)
+                self._sig_value_initialized = True
+            elif (
+                manual.sig_recog != self._sig_last_command
+                and self._sig_value.get() != manual.sig_recog
+            ):
+                self._sig_value.set(manual.sig_recog)
         sig_label = {1: 'GO', 2: 'STOP'}.get(manual.sig_recog, '未定義')
         if manual.sig_recog is None:
             self._sig_status_var.set('最終送信: --:--:--')
@@ -1140,7 +1155,7 @@ class UiMain:
         self._obstacle_override_active = hint.override_active
         obstacle_status = (
             f"状態: front_blocked={'ON' if hint.front_blocked else 'OFF'} "
-            f"余裕:{hint.front_clearance_m:.2f}m "
+            f"前方距離:{hint.front_clearance_m:.2f}m "
             f"左:{hint.left_offset_m:+.2f}m 右:{hint.right_offset_m:+.2f}m "
             f"更新:{_format_time(hint.updated_at)}"
         )
@@ -1354,25 +1369,95 @@ class UiMain:
         data = base64.b64encode(buffer.tobytes()).decode('ascii')
         return tk.PhotoImage(data=data, format='png')
 
+    def _get_overlay_font(self) -> Tuple[Optional[object], bool]:
+        """オーバレイ描画に利用するフォントと対応状況を取得する。"""
+
+        if Image is None:
+            return None, False
+        if self._overlay_font is not None:
+            return self._overlay_font, self._overlay_font_supports_wide
+        try:
+            from PIL import ImageFont
+        except ImportError:  # pragma: no cover - Pillow 無し環境では未使用
+            self._overlay_font = None
+            self._overlay_font_supports_wide = False
+            return None, False
+
+        candidates = [
+            ('NotoSansCJK-Regular.ttc', 20),
+            ('NotoSansCJKjp-Regular.otf', 20),
+            ('IPAGothic.ttf', 20),
+            ('DejaVuSans.ttf', 20),
+            ('DejaVuSans-Bold.ttf', 20),
+        ]
+        search_roots = [None]
+        try:
+            search_roots.append(Path(ImageFont.__file__).resolve().parent)
+        except (AttributeError, TypeError, ValueError):  # pragma: no cover - パス取得失敗時
+            pass
+
+        for name, size in candidates:
+            for root in search_roots:
+                try:
+                    font_path = str(root / name) if root is not None else name
+                    font = ImageFont.truetype(font_path, size)
+                except (OSError, ValueError):
+                    continue
+                self._overlay_font = font
+                self._overlay_font_supports_wide = True
+                return font, True
+
+        self._overlay_font = ImageFont.load_default()
+        self._overlay_font_supports_wide = False
+        return self._overlay_font, False
+
     def _draw_overlay(self, image: Image.Image, text: str) -> Image.Image:
         if Image is None or not text:
             return image
         base = image.convert('RGBA')
         canvas = Image.new('RGBA', base.size, (0, 0, 0, 0))
-        from PIL import ImageDraw, ImageFont
+        from PIL import ImageDraw
+
+        font, supports_wide = self._get_overlay_font()
+        if font is None:
+            return image
+
+        raw_lines = text.split('\n')
+        if not supports_wide:
+            lines = [line.encode('latin-1', 'replace').decode('latin-1') for line in raw_lines]
+        else:
+            lines = raw_lines
 
         draw = ImageDraw.Draw(canvas)
         padding = 6
-        lines = text.split('\n')
-        font = ImageFont.load_default()
-        widths = [draw.textlength(line, font=font) for line in lines]
-        height = sum(font.getbbox(line)[3] for line in lines) + padding
-        width = max(widths) if widths else 0
-        draw.rectangle((0, 0, width + padding * 2, height + padding), fill=(0, 0, 0, 160))
-        y = padding
+        line_spacing = 4
+        line_metrics = []
+        max_width = 0
         for line in lines:
-            draw.text((padding, y), line, fill=(255, 255, 255, 255), font=font)
-            y += font.getbbox(line)[3]
+            display_line = line or ' '
+            if hasattr(draw, 'textbbox'):
+                bbox = draw.textbbox((0, 0), display_line, font=font)
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+            else:
+                width, height = draw.textsize(display_line, font=font)
+            line_metrics.append((display_line, width, height))
+            if width > max_width:
+                max_width = width
+
+        rect_height = padding * 2
+        if line_metrics:
+            rect_height += sum(height for _, _, height in line_metrics)
+            rect_height += line_spacing * (len(line_metrics) - 1)
+
+        draw.rectangle((0, 0, max_width + padding * 2, rect_height), fill=(0, 0, 0, 160))
+        y = padding
+        for index, (display_line, _, height) in enumerate(line_metrics):
+            draw.text((padding, y), display_line, fill=(255, 255, 255, 255), font=font)
+            if index < len(line_metrics) - 1:
+                y += height + line_spacing
+            else:
+                y += height
         composed = Image.alpha_composite(base, canvas)
         return composed.convert(image.mode)
 

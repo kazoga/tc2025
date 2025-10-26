@@ -439,6 +439,9 @@ class GuiCore:
             self._follower_state.active_waypoint_label = msg.active_waypoint_label
             self._follower_state.segment_length_m = getattr(msg, 'segment_length_m', 0.0)
             self._follower_state.front_blocked = getattr(msg, 'front_blocked', False)
+            self._follower_state.front_clearance_m = getattr(
+                msg, 'front_clearance_m', float('inf')
+            )
             self._follower_state.left_offset_m = getattr(msg, 'left_offset_m', 0.0)
             self._follower_state.right_offset_m = getattr(msg, 'right_offset_m', 0.0)
             self._follower_state.stagnation_reason = msg.last_stagnation_reason
@@ -475,7 +478,7 @@ class GuiCore:
             self._obstacle_hint.updated_at = now()
             overlay = (
                 f"遮蔽:{'あり' if msg.front_blocked else 'なし'} "
-                f"余裕:{msg.front_clearance_m:.1f}m\n"
+                f"前方距離:{msg.front_clearance_m:.1f}m\n"
                 f"左:{msg.left_offset_m:.1f}m 右:{msg.right_offset_m:.1f}m"
             )
             self._images.obstacle_overlay = overlay

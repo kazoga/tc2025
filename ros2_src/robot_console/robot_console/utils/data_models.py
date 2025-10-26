@@ -46,6 +46,7 @@ class FollowerStateView:
     active_waypoint_index: int = 0
     active_waypoint_label: str = ""
     front_blocked: bool = False
+    front_clearance_m: float = float('inf')
     segment_length_m: float = 0.0
     left_offset_m: float = 0.0
     right_offset_m: float = 0.0

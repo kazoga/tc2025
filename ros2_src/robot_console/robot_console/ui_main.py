@@ -10,7 +10,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - PyYAML が無い環境に対応
+    yaml = None  # type: ignore[assignment]
 
 try:
     from PIL import Image, ImageTk  # type: ignore
@@ -293,6 +298,9 @@ class UiMain:
         }
 
         self._launch_widgets: Dict[str, Dict[str, object]] = {}
+        self._param_texts: Dict[str, tk.Text] = {}
+        self._param_last_display: Dict[str, str] = {}
+        self._file_cache: Dict[str, Tuple[float, str]] = {}
         self._log_texts: Dict[str, tk.Text] = {}
 
         self._build_layout()
@@ -351,12 +359,15 @@ class UiMain:
     def _build_layout(self) -> None:
         self._notebook = ttk.Notebook(self._root)
         self._dashboard_tab = ttk.Frame(self._notebook)
+        self._params_tab = ttk.Frame(self._notebook)
         self._logs_tab = ttk.Frame(self._notebook)
         self._notebook.add(self._dashboard_tab, text='ダッシュボード')
+        self._notebook.add(self._params_tab, text='パラメータ一覧')
         self._notebook.add(self._logs_tab, text='コンソールログ')
         self._notebook.pack(fill=tk.BOTH, expand=True)
 
         self._build_dashboard(self._dashboard_tab)
+        self._build_params(self._params_tab)
         self._build_logs(self._logs_tab)
 
     def _configure_style(self) -> None:
@@ -953,6 +964,47 @@ class UiMain:
             text.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
             self._log_texts[profile_id] = text
 
+    def _build_params(self, parent: ttk.Frame) -> None:
+        columns = 2
+        snapshot = self._core.snapshot()
+        ordered = [
+            'route_planner',
+            'route_manager',
+            'route_follower',
+            'robot_navigator',
+            'obstacle_monitor',
+        ]
+
+        count = sum(1 for pid in ordered if pid in snapshot.launch_states)
+        rows = max((count + columns - 1) // columns, 1)
+        for col in range(columns):
+            parent.columnconfigure(col, weight=1)
+        for row in range(rows):
+            parent.rowconfigure(row, weight=1)
+
+        self._param_texts.clear()
+        self._param_last_display.clear()
+        index = 0
+        for profile_id in ordered:
+            state = snapshot.launch_states.get(profile_id)
+            if state is None:
+                continue
+            row = index // columns
+            col = index % columns
+            index += 1
+            frame = ttk.LabelFrame(parent, text=state.display_name, padding=6)
+            frame.grid(row=row, column=col, sticky='nsew', padx=6, pady=6)
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(0, weight=1)
+            text = tk.Text(frame, wrap='none', state='disabled')
+            text.grid(row=0, column=0, sticky='nsew')
+            v_scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
+            v_scrollbar.grid(row=0, column=1, sticky='ns')
+            h_scrollbar = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
+            h_scrollbar.grid(row=1, column=0, sticky='ew')
+            text.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+            self._param_texts[profile_id] = text
+
     # ---------- コマンドハンドラ ----------
     def _on_send_manual(self) -> None:
         value = bool(self._manual_value.get())
@@ -1162,6 +1214,7 @@ class UiMain:
 
         self._update_images(snapshot)
         self._update_launch_states(snapshot)
+        self._update_param_views(snapshot)
         self._update_logs(snapshot)
         if self._shutdown_pending and not self._has_active_nodes(snapshot):
             self._finalize_shutdown()
@@ -1407,6 +1460,145 @@ class UiMain:
                 text_widget.yview_moveto(max(min(y_first, 1.0), 0.0))
             text_widget.xview_moveto(max(min(x_first, 1.0), 0.0))
             text_widget.configure(state='disabled')
+
+    def _update_param_views(self, snapshot: GuiSnapshot) -> None:
+        for profile_id, text_widget in self._param_texts.items():
+            state = snapshot.launch_states.get(profile_id)
+            if state is None:
+                continue
+            display_text = self._generate_param_display(profile_id, state)
+            last_text = self._param_last_display.get(profile_id)
+            if display_text == last_text:
+                continue
+            try:
+                x_first, _ = text_widget.xview()
+            except tk.TclError:
+                x_first = 0.0
+            try:
+                y_first, y_last = text_widget.yview()
+            except tk.TclError:
+                y_first, y_last = 0.0, 1.0
+            follow_tail = y_last >= 0.999
+            text_widget.configure(state='normal')
+            text_widget.delete('1.0', tk.END)
+            text_widget.insert(tk.END, display_text)
+            if follow_tail:
+                text_widget.see(tk.END)
+            else:
+                text_widget.yview_moveto(max(min(y_first, 1.0), 0.0))
+            text_widget.xview_moveto(max(min(x_first, 1.0), 0.0))
+            text_widget.configure(state='disabled')
+            self._param_last_display[profile_id] = display_text
+
+    def _generate_param_display(self, profile_id: str, state: NodeLaunchState) -> str:
+        target_path, error_message = self._resolve_param_target(profile_id, state)
+        if error_message:
+            return error_message
+        if target_path is None:
+            return '表示対象のファイルが特定できません。'
+        content = self._read_text_file(target_path)
+        if content is None:
+            return f'ファイルを読み取れませんでした: {target_path}'
+        return f"# 表示ファイル: {target_path}\n\n{content}"
+
+    def _resolve_param_target(
+        self, profile_id: str, state: NodeLaunchState
+    ) -> Tuple[Optional[Path], Optional[str]]:
+        selected_param = state.selected_param
+        if not selected_param:
+            return None, 'パラメータファイルが選択されていません。'
+        param_path = Path(selected_param)
+        if not param_path.exists():
+            return None, f'パラメータファイルが存在しません: {param_path}'
+        if profile_id == 'route_planner':
+            route_path, error_message = self._resolve_route_planner_route_path(param_path)
+            return route_path, error_message
+        return param_path, None
+
+    def _resolve_route_planner_route_path(
+        self, param_path: Path
+    ) -> Tuple[Optional[Path], Optional[str]]:
+        raw_text = self._read_text_file(param_path)
+        if raw_text is None:
+            return None, f'パラメータファイルを読み取れません: {param_path}'
+        config_path_str = self._extract_config_yaml_path(raw_text)
+        if not config_path_str:
+            return None, f'config_yaml_path が設定されていません: {param_path}'
+        candidate = Path(config_path_str).expanduser()
+        if candidate.is_absolute():
+            if candidate.exists():
+                return candidate, None
+            return None, f'ルート定義ファイルが存在しません: {candidate}'
+
+        base_dirs = [param_path.parent]
+        parent_parent = param_path.parent.parent
+        if parent_parent != param_path.parent:
+            base_dirs.append(parent_parent)
+
+        for base_dir in base_dirs:
+            joined = (base_dir / candidate).expanduser()
+            if joined.exists():
+                return joined, None
+
+        fallback = (base_dirs[0] / candidate).expanduser()
+        return None, f'ルート定義ファイルが存在しません: {fallback}'
+
+    def _extract_config_yaml_path(self, raw_text: str) -> Optional[str]:
+        if yaml is not None:
+            try:
+                parsed = yaml.safe_load(raw_text)
+            except yaml.YAMLError:  # type: ignore[attr-defined]
+                parsed = None
+            if parsed is not None:
+                result = self._search_config_path(parsed)
+                if result:
+                    return result
+
+        for line in raw_text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            if stripped.startswith('config_yaml_path'):
+                _, _, remainder = stripped.partition(':')
+                value = remainder.strip().strip("'\"")
+                if value:
+                    return value
+        return None
+
+    def _search_config_path(self, node: Any) -> Optional[str]:
+        if isinstance(node, dict):
+            value = node.get('config_yaml_path')
+            if isinstance(value, str) and value:
+                return value
+            for child in node.values():
+                result = self._search_config_path(child)
+                if result:
+                    return result
+        elif isinstance(node, list):
+            for child in node:
+                result = self._search_config_path(child)
+                if result:
+                    return result
+        return None
+
+    def _read_text_file(self, path: Path) -> Optional[str]:
+        cache_key = str(path)
+        try:
+            stat_result = path.stat()
+        except OSError:
+            self._file_cache.pop(cache_key, None)
+            return None
+        cached = self._file_cache.get(cache_key)
+        mtime = stat_result.st_mtime
+        if cached and cached[0] == mtime:
+            return cached[1]
+        try:
+            text = path.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            self._file_cache.pop(cache_key, None)
+            return None
+        self._file_cache[cache_key] = (mtime, text)
+        return text
 
     def _apply_imagetk_warning_if_needed(self, parent: Optional[ttk.Frame] = None) -> None:
         """画像描画に必要な依存が無い場合に警告ラベルを表示する。"""

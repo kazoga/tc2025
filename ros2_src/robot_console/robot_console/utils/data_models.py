@@ -33,6 +33,9 @@ class RouteStateView:
     last_replan_reason: str = ""
     last_replan_time: Optional[datetime] = None
     route_version: int = 0
+    manager_decision: str = ""
+    manager_cause: str = ""
+    manager_updated_at: Optional[datetime] = None
 
 
 @dataclass
@@ -40,10 +43,10 @@ class FollowerStateView:
     """follower_state の要約情報。"""
 
     state: str = "unknown"
-    current_index: int = 0
-    current_label: str = ""
-    next_label: str = ""
-    front_blocked_majority: bool = False
+    active_waypoint_index: int = 0
+    active_waypoint_label: str = ""
+    front_blocked: bool = False
+    segment_length_m: float = 0.0
     left_offset_m: float = 0.0
     right_offset_m: float = 0.0
     stagnation_reason: str = ""

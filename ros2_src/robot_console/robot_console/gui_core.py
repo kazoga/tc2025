@@ -397,15 +397,22 @@ class GuiCore:
                 msg.current_index / msg.total_waypoints if msg.total_waypoints else 0.0
             )
             self._route_state.route_status = self._translate_route_status(msg.status)
-            self._route_state.last_replan_reason = msg.message
-            self._route_state.last_replan_time = now()
+            message = getattr(msg, 'message', '')
+            if message:
+                self._route_state.last_replan_reason = message
+                self._route_state.last_replan_time = now()
             self._route_state.current_label = getattr(msg, 'current_label', self._route_state.current_label)
 
     def update_manager_status(self, msg) -> None:
         with self._lock:
             self._route_state.manager_state = msg.state
-            self._route_state.last_replan_reason = msg.last_cause or msg.decision
-            self._route_state.last_replan_time = now()
+            decision = str(getattr(msg, 'decision', '') or '').strip()
+            if decision.lower() == 'none':
+                decision = ''
+            cause = str(getattr(msg, 'last_cause', '') or '').strip()
+            self._route_state.manager_decision = decision
+            self._route_state.manager_cause = cause
+            self._route_state.manager_updated_at = now()
 
     def update_route(self, msg) -> None:
         image = convert_image_message(msg.route_image)
@@ -428,27 +435,30 @@ class GuiCore:
     def update_follower_state(self, msg) -> None:
         with self._lock:
             self._follower_state.state = msg.state
-            self._follower_state.current_index = msg.current_index
-            self._follower_state.current_label = msg.current_waypoint_label
-            self._follower_state.next_label = msg.next_waypoint_label
-            self._follower_state.front_blocked_majority = msg.front_blocked_majority
-            self._follower_state.left_offset_m = msg.left_offset_m_median
-            self._follower_state.right_offset_m = msg.right_offset_m_median
+            self._follower_state.active_waypoint_index = msg.active_waypoint_index
+            self._follower_state.active_waypoint_label = msg.active_waypoint_label
+            self._follower_state.segment_length_m = getattr(msg, 'segment_length_m', 0.0)
+            self._follower_state.front_blocked = getattr(msg, 'front_blocked', False)
+            self._follower_state.left_offset_m = getattr(msg, 'left_offset_m', 0.0)
+            self._follower_state.right_offset_m = getattr(msg, 'right_offset_m', 0.0)
             self._follower_state.stagnation_reason = msg.last_stagnation_reason
             self._follower_state.retry_count = msg.avoidance_attempt_count
-            fallback_distance = getattr(msg, 'distance_to_target', 0.0)
+            fallback_distance = float(getattr(msg, 'active_target_distance_m', 0.0))
             if self._current_target is None or self._current_pose is None:
                 self._target_distance.current_distance_m = fallback_distance
                 self._target_distance.updated_at = now()
+            segment_length = float(getattr(msg, 'segment_length_m', 0.0))
+            if segment_length > 0.0:
+                self._target_distance.baseline_distance_m = segment_length
             signal_stop_active = bool(getattr(msg, 'signal_stop_active', False))
             if not signal_stop_active and msg.state == 'WAITING_STOP':
-                index = msg.current_index
+                index = msg.active_waypoint_index
                 if 0 <= index < len(self._route_signal_stop_flags):
                     signal_stop_active = self._route_signal_stop_flags[index]
             self._follower_state.signal_stop_active = signal_stop_active
             line_stop_active = False
             if msg.state == 'WAITING_STOP':
-                index = msg.current_index
+                index = msg.active_waypoint_index
                 if 0 <= index < len(self._route_line_stop_flags):
                     line_stop_active = self._route_line_stop_flags[index]
             self._follower_state.line_stop_active = line_stop_active

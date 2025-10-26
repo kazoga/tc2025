@@ -75,3 +75,8 @@
 
 ### 6. 次のステップ
 - 本方針でユーザー承認を得られれば、GUIモック（フェーズ2）でダッシュボード常時表示を前提にしたレイアウトを実装する。
+
+### 7. ローンチ失敗調査（2025-10-26）
+- `ros2 launch robot_console robot_console.launch.py` 実行時に `AttributeError: 'dict' object has no attribute 'manager'` が発生した。トレースバックより `ui_main.py` の `UiMain._build_state_summary()` で `self._route_state_vars.manager` を参照した際に例外が投げられていることを確認した。該当フィールドは `UiMain._create_route_state_vars()` が返す辞書（`Dict[str, tk.Variable]`）で構築されており、辞書に対するドットアクセスが原因である。【F:ros2_src/robot_console/robot_console/ui_main.py†L251-L318】【F:ros2_src/robot_console/robot_console/ui_main.py†L433-L476】
+- `RouteCardVars` は `TypedDict` として定義された後、同名で `@dataclass` 定義が上書きされている。実行時には辞書を返す実装とドットアクセスを前提とする利用箇所が混在し、GUI生成段階で整合が崩れている。ドットアクセスは辞書を返す現状と矛盾するため、`self._route_state_vars['manager']` 形式へ統一するか、`RouteCardVars` データクラスを生成する実装へ揃える必要がある。【F:ros2_src/robot_console/robot_console/ui_main.py†L48-L65】【F:ros2_src/robot_console/robot_console/ui_main.py†L206-L218】【F:ros2_src/robot_console/robot_console/ui_main.py†L270-L318】
+- さらに同メソッド内で `self._follower_vars['target_label']` を参照しているが、`_create_follower_vars()` は `target_label` キーを生成しておらず、キー存在チェックで `AssertionError` を投げる防御ロジックも導入されている。仮に `route_state_vars` の例外を解消してもこの箇所で `KeyError`／`AssertionError` が発生するため、`label` 変数を使用する実装へ更新する必要がある。【F:ros2_src/robot_console/robot_console/ui_main.py†L318-L384】【F:ros2_src/robot_console/robot_console/ui_main.py†L387-L475】【F:ros2_src/robot_console/robot_console/ui_main.py†L499-L523】

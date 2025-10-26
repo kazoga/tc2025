@@ -141,6 +141,7 @@ if 'PIL' not in sys.modules:
     sys.modules['PIL.ImageTk'] = imagetk_module
 
 from robot_console.gui_core import GuiCore
+from robot_console.ui_main import UiMain
 from robot_console.utils import ConsoleLogBuffer, GuiCommandType
 
 def _make_follower_state(**overrides):
@@ -278,22 +279,39 @@ def test_target_distance_prefers_pose_when_available() -> None:
     assert math.isclose(snapshot.target_distance.current_distance_m, 6.0)
 
 
-def test_ui_main_source_no_legacy_target_label_binding() -> None:
+def test_ui_main_source_aliases_target_label_to_label() -> None:
     ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
     source = ui_path.read_text(encoding='utf-8')
-    assert "['target_label']" not in source
+    assert "'target_label': follower_label" in source
+    assert "self._follower_vars['target_label']" in source
 
 
-def test_ui_main_source_no_legacy_progress_percent_binding() -> None:
+def test_ui_main_source_defines_progress_percent_var() -> None:
     ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
     source = ui_path.read_text(encoding='utf-8')
-    assert "['progress_percent']" not in source
+    assert "'progress_percent': tk.DoubleVar" not in source
+    assert "'progress_percent': tk.StringVar" in source
+    assert "self._target_vars['progress_percent']" in source
 
 
-def test_ui_main_route_vars_use_dict_access() -> None:
-    """Routeカード変数が辞書アクセスで統一されていることを検証する。"""
+def test_ui_main_route_vars_use_attribute_access() -> None:
+    """Routeカード変数がデータクラス属性アクセスで統一されていることを検証する。"""
 
     ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
     source = ui_path.read_text(encoding='utf-8')
-    assert '._route_state_vars[' in source
-    assert '._route_state_vars.' not in source
+    assert '._route_state_vars.' in source
+    assert '._route_state_vars[' not in source
+
+
+def test_ui_main_runtime_state_initializer_sets_defaults() -> None:
+    """UiMainの内部状態初期化ヘルパーが安全な既定値を設定することを確認する。"""
+
+    ui_main = UiMain.__new__(UiMain)
+    UiMain._initialize_runtime_state(ui_main)
+    assert ui_main._closing is False
+    assert ui_main._shutdown_pending is False
+    assert ui_main._update_job is None
+    assert ui_main._shutdown_check_job is None
+    assert ui_main._latest_snapshot is None
+    assert ui_main._line_stop_active_since is None
+    assert ui_main._last_line_stop_state is False

@@ -141,8 +141,8 @@ if 'PIL' not in sys.modules:
     sys.modules['PIL.ImageTk'] = imagetk_module
 
 from robot_console.gui_core import GuiCore
-from robot_console.ui_main import UiMain
-from robot_console.utils import ConsoleLogBuffer, GuiCommandType
+from robot_console.ui_main import UiMain, compute_route_progress
+from robot_console.utils import ConsoleLogBuffer, GuiCommandType, FollowerStateView, RouteStateView
 
 def _make_follower_state(**overrides):
     """GuiCore.update_follower_state へ渡すテスト用メッセージを生成する。"""
@@ -277,6 +277,28 @@ def test_target_distance_prefers_pose_when_available() -> None:
     core.update_follower_state(follower_msg)
     snapshot = core.snapshot()
     assert math.isclose(snapshot.target_distance.current_distance_m, 6.0)
+
+
+def test_compute_route_progress_uses_route_index() -> None:
+    """ルート進捗計算が RouteState のインデックスを基準にすることを確認する。"""
+
+    route_state = RouteStateView(total_waypoints=5, current_index=2)
+    follower_state = FollowerStateView(active_waypoint_index=3)
+    ratio, display_index, total = compute_route_progress(route_state, follower_state)
+    assert math.isclose(ratio, 0.4)
+    assert display_index == 4  # フォロワの1始まり表示
+    assert total == 5
+
+
+def test_compute_route_progress_handles_zero_total() -> None:
+    """経路数が0の場合でも例外なく0表記を返すことを確認する。"""
+
+    route_state = RouteStateView(total_waypoints=0, current_index=3)
+    follower_state = FollowerStateView(active_waypoint_index=1)
+    ratio, display_index, total = compute_route_progress(route_state, follower_state)
+    assert math.isclose(ratio, 0.0)
+    assert display_index == 0
+    assert total == 0
 
 
 def test_ui_main_source_aliases_target_label_to_label() -> None:

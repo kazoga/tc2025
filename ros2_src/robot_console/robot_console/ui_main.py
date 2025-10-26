@@ -65,6 +65,40 @@ def _format_time(value: Optional[datetime]) -> str:
     return value.astimezone(JST).strftime("%H:%M:%S")
 
 
+def compute_route_progress(
+    route: RouteStateView, follower: FollowerStateView
+) -> Tuple[float, int, int]:
+    """ルート進捗バーと表示値を算出する。
+
+    辞書やGUI側のバインディングに依存せず、純粋にデータモデルから進捗率と
+    表示インデックスを決定するためのヘルパーである。揺り戻しによる属性変更が
+    発生しても、この関数をテストすることで回帰を検出できるようにする。
+
+    Args:
+        route (RouteStateView): ルート全体の状態情報。
+        follower (FollowerStateView): フォロワの現在位置情報。
+
+    Returns:
+        Tuple[float, int, int]:
+            - 進捗率（0.0〜1.0）。
+            - 人が読む用の現在インデックス（1始まり、存在しない場合は0）。
+            - サニタイズ済み経路数（負値を0に丸めたもの）。
+    """
+
+    total_waypoints = max(route.total_waypoints, 0)
+    route_index = max(route.current_index, -1)
+    progress_ratio = 0.0
+    if total_waypoints > 0:
+        progress_ratio = max(min(route_index / total_waypoints, 1.0), 0.0)
+
+    display_index = 0
+    if total_waypoints > 0:
+        follower_index = max(follower.active_waypoint_index, -1)
+        display_index = min(max(follower_index + 1, 1), total_waypoints)
+
+    return progress_ratio, display_index, total_waypoints
+
+
 class ImagePanel(ttk.LabelFrame):
     """画像表示とキャプション、必要に応じてオーバレイを備えたパネル。"""
 
@@ -972,21 +1006,12 @@ class UiMain:
         follower = snapshot.follower_state
         self._route_state_vars.manager.set(route.manager_state)
         self._route_state_vars.route_status.set(route.route_status)
-        total_waypoints = max(route.total_waypoints, 0)
-        follower_index = max(follower.current_index, -1)
-        progress_count = 0
-        if total_waypoints > 0:
-            progress_count = min(max(follower_index + 1, 0), total_waypoints)
-        progress_ratio = 0.0
-        if total_waypoints > 0:
-            progress_ratio = max(min(route.current_index / total_waypoints, 1.0), 0.0)
+        progress_ratio, display_index, total_waypoints = compute_route_progress(
+            route, follower
+        )
         self._route_state_vars.progress.set(progress_ratio * 100.0)
-        display_index = 0
-        if total_waypoints > 0:
-            follower_index = max(follower.active_waypoint_index, 0)
-            display_index = min(max(follower_index + 1, 1), total_waypoints)
         self._route_state_vars.progress_text.set(
-            f"{display_index} / {route.total_waypoints}"
+            f"{display_index} / {total_waypoints}"
         )
         self._route_state_vars.version.set(f"バージョン: {route.route_version}")
         detail_entries = []

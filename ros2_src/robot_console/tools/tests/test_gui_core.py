@@ -288,3 +288,12 @@ def test_ui_main_source_no_legacy_progress_percent_binding() -> None:
     ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
     source = ui_path.read_text(encoding='utf-8')
     assert "['progress_percent']" not in source
+
+
+def test_ui_main_route_vars_use_dict_access() -> None:
+    """Routeカード変数が辞書アクセスで統一されていることを検証する。"""
+
+    ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
+    source = ui_path.read_text(encoding='utf-8')
+    assert '._route_state_vars[' in source
+    assert '._route_state_vars.' not in source

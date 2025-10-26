@@ -8,8 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import ttk
-from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TypedDict
 
 try:
     from PIL import Image, ImageTk  # type: ignore
@@ -57,9 +56,8 @@ EVENT_BANNER_TTL = timedelta(seconds=60)
 
 
 
-@dataclass
-class RouteCardVars:
-    """ルート進捗カードで使用する tk 変数群。"""
+class RouteCardVars(TypedDict):
+    """ルート進捗カードで使用する tk 変数群の型ヒント。"""
 
     manager: tk.StringVar
     route_status: tk.StringVar
@@ -272,14 +270,14 @@ class UiMain:
     def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""
 
-        return RouteCardVars(
-            manager=tk.StringVar(value='unknown'),
-            route_status=tk.StringVar(value='unknown'),
-            progress=tk.DoubleVar(value=0.0),
-            progress_text=tk.StringVar(value='0 / 0'),
-            version=tk.StringVar(value='バージョン: 0'),
-            detail=tk.StringVar(value='最新イベントなし'),
-        )
+        return {
+            'manager': tk.StringVar(value='unknown'),
+            'route_status': tk.StringVar(value='unknown'),
+            'progress': tk.DoubleVar(value=0.0),
+            'progress_text': tk.StringVar(value='0 / 0'),
+            'version': tk.StringVar(value='バージョン: 0'),
+            'detail': tk.StringVar(value='最新イベントなし'),
+        }
 
     def _create_follower_vars(self) -> Dict[str, tk.StringVar]:
         """フォロワ状態カードで利用する tk 変数を生成する。"""
@@ -987,10 +985,10 @@ class UiMain:
         if total_waypoints > 0:
             follower_index = max(follower.active_waypoint_index, 0)
             display_index = min(max(follower_index + 1, 1), total_waypoints)
-        self._route_state_vars.progress_text.set(
+        self._route_state_vars['progress_text'].set(
             f"{display_index} / {route.total_waypoints}"
         )
-        self._route_state_vars.version.set(f"バージョン: {route.route_version}")
+        self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
         detail_entries = []
         if route.last_replan_reason:
             event_text = route.last_replan_reason
@@ -1007,7 +1005,7 @@ class UiMain:
             if route.manager_updated_at:
                 manager_text = f"{manager_text} @ {_format_time(route.manager_updated_at)}"
             detail_entries.append(f"Mgr: {manager_text}")
-        self._route_state_vars.detail.set(
+        self._route_state_vars['detail'].set(
             ' | '.join(detail_entries) or '最新イベントなし'
         )
         self._follower_vars['state'].set(follower.state)

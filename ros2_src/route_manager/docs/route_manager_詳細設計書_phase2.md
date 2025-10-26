@@ -89,7 +89,7 @@ followerから滞留検知を受けた場合、以下の3層判断ロジック�
 
 #### 第1層：左右オフセット判定
 - 経路上に左右余地があればオフセット付きで再計画を指示。  
-- 条件：`reason in ("stagnation","avoidance_failed")`, `avoid_trial_count < avoid_max_retry`, `last_hint_blocked=True`
+- 条件：`reason in ("front_blocked","avoidance_failed")`, `avoid_trial_count < avoid_max_retry`, `last_hint_blocked=True`
 - 結果：`offset_hint` に ±min(hint許容量, `offset_step_max_m`) を設定し、`decision_code=REPLAN`。
 
 #### 第2層：スキップ判定
@@ -160,10 +160,13 @@ string note
 ```
 std_msgs/Header header
 string state        # "idle","running","updating_route","holding"
-string decision     # "none","replan","skip","failed"
-string last_cause   # "stagnation","no_hint","no_space","road_block"
+string decision     # "none","update","replan_first","shift","skip","failed"
+string last_cause   # HOLDING時のみ滞留理由を保持（"front_blocked","no_hint","no_space"など）
 uint32 route_version
 ```
+
+- `RouteState.message` には直近で適用したイベント（`route_ready`、`update_route`、`replan_first`、`shift_right(0.5m)` など）を格納し、GUI 側で「Ev:」表記として表示する。
+- `ManagerStatus.decision` は `update` / `replan_first` / `shift` / `skip` / `failed` を採用し、`state="holding"` のときのみ `last_cause` に滞留理由を残す。RUNNING へ復帰した時点で `last_cause` は空文字へ戻す。
 
 ---
 

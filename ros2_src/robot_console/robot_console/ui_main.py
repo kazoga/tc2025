@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 import base64
+import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 from typing import Dict, Optional, Tuple
@@ -45,15 +47,17 @@ FOLLOWER_CARD_KEYS = (
     'label',
     'target_label',
     'stagnation',
+    'front_clearance',
     'offsets',
 )
 
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 REFRESH_INTERVAL_MS = 200
-SIDEBAR_WIDTH = 288
+SIDEBAR_WIDTH = 200
 JST = timezone(timedelta(hours=9))
 EVENT_BANNER_TTL = timedelta(seconds=60)
+STICKY_BANNER_TEXTS = {'信号: STOP', '停止線: STOP'}
 
 def _format_time(value: Optional[datetime]) -> str:
     """日時をHH:MM:SS形式の文字列に変換する。"""
@@ -86,15 +90,18 @@ def compute_route_progress(
     """
 
     total_waypoints = max(route.total_waypoints, 0)
-    route_index = max(route.current_index, -1)
-    progress_ratio = 0.0
-    if total_waypoints > 0:
-        progress_ratio = max(min(route_index / total_waypoints, 1.0), 0.0)
+    if total_waypoints <= 0:
+        return 0.0, 0, 0
 
-    display_index = 0
-    if total_waypoints > 0:
-        follower_index = max(follower.active_waypoint_index, -1)
-        display_index = min(max(follower_index + 1, 1), total_waypoints)
+    follower_index = max(follower.active_waypoint_index, -1)
+    route_index = max(route.current_index, -1)
+
+    progress_source = follower_index
+    if progress_source < 0 and route_index >= 0:
+        progress_source = route_index
+
+    display_index = min(max(progress_source + 1, 0), total_waypoints)
+    progress_ratio = display_index / total_waypoints if total_waypoints else 0.0
 
     return progress_ratio, display_index, total_waypoints
 
@@ -263,10 +270,11 @@ class UiMain:
         self._obstacle_right = tk.DoubleVar(value=0.0)
         self._obstacle_blocked = tk.BooleanVar(value=False)
         self._obstacle_override_state = tk.StringVar(
-            value='状態: front_blocked=OFF 余裕:0.00m 左:+0.00m 右:+0.00m 更新: --:--:--'
+            value='状態: front_blocked=OFF 前方距離:0.00m 左:+0.00m 右:+0.00m 更新: --:--:--'
         )
         self._event_banner = tk.StringVar(value='')
-        self._event_detail = tk.StringVar(value='更新: --:--:--')
+        self._obstacle_override_active = False
+        self._obstacle_toggle_btn: Optional[ttk.Button] = None
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
@@ -296,18 +304,28 @@ class UiMain:
 
         self._line_stop_active_since: Optional[datetime] = None
         self._last_line_stop_state: bool = False
+        self._last_target_progress_ratio: Optional[float] = None
+        self._sticky_stop_banner: Optional[Tuple[str, Optional[datetime]]] = None
         self._latest_snapshot: Optional[GuiSnapshot] = None
         self._closing: bool = False
         self._shutdown_pending: bool = False
         self._update_job: Optional[str] = None
         self._shutdown_check_job: Optional[str] = None
+        self._stagnation_retry_baseline: Optional[int] = None
+        self._stagnation_display_reason: str = '滞留なし'
+        self._stagnation_ignored_reason: Optional[str] = None
+        self._obstacle_override_active = False
+        self._overlay_font: Optional[object] = None
+        self._overlay_font_supports_wide: bool = False
+        self._sig_value_initialized: bool = False
+        self._sig_last_command: Optional[int] = None
 
     def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""
 
         return RouteCardVars(
-            manager=tk.StringVar(value='unknown'),
-            route_status=tk.StringVar(value='unknown'),
+            manager=tk.StringVar(value='UNKNOWN'),
+            route_status=tk.StringVar(value='UNKNOWN'),
             progress=tk.DoubleVar(value=0.0),
             progress_text=tk.StringVar(value='0 / 0'),
             version=tk.StringVar(value='バージョン: 0'),
@@ -319,12 +337,13 @@ class UiMain:
 
         follower_label = tk.StringVar(value='現在: -')
         follower_vars: Dict[str, tk.StringVar] = {
-            'state': tk.StringVar(value='unknown'),
+            'state': tk.StringVar(value='UNKNOWN'),
             'index': tk.StringVar(value='Index: 0'),
             'label': follower_label,
             'target_label': follower_label,
             'stagnation': tk.StringVar(value='滞留なし'),
-            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
+            'front_clearance': tk.StringVar(value='障害物なし'),
+            'offsets': tk.StringVar(value='左:+0.00m / 右:+0.00m'),
         }
         missing = set(FOLLOWER_CARD_KEYS) - set(follower_vars.keys())
         if missing:
@@ -489,25 +508,18 @@ class UiMain:
             progress_frame,
             maximum=100,
             variable=self._route_state_vars.progress,
-        ).grid(row=2, column=1, sticky='ew', pady=2)
-        ttk.Label(route_frame, textvariable=self._route_state_vars.progress_text).grid(
-            row=3,
-            column=1,
-            sticky='e',
-            padx=(8, 0),
-        )
-        ttk.Label(route_frame, textvariable=self._route_state_vars.version).grid(
-            row=4,
-            column=1,
-            sticky='w',
-        )
-        ttk.Label(route_frame, text='最終イベント').grid(row=5, column=0, sticky='nw')
+        ).grid(row=0, column=0, sticky='ew')
+        ttk.Label(
+            progress_frame,
+            textvariable=self._route_state_vars.progress_text,
+        ).grid(row=0, column=1, sticky='e', padx=(8, 0))
+        ttk.Label(route_frame, text='最終イベント').grid(row=4, column=0, sticky='nw')
         ttk.Label(
             route_frame,
             textvariable=self._route_state_vars.detail,
             justify='left',
             wraplength=220,
-        ).grid(row=5, column=1, sticky='w')
+        ).grid(row=4, column=1, sticky='w')
 
         follower_frame = ttk.LabelFrame(
             summary,
@@ -534,7 +546,12 @@ class UiMain:
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='左右オフセット').grid(row=3, column=0, sticky='w')
+        ttk.Label(follower_frame, text='前方障害物まで').grid(row=3, column=0, sticky='w')
+        ttk.Label(
+            follower_frame,
+            textvariable=self._follower_vars['front_clearance'],
+        ).grid(row=3, column=1, sticky='w')
+        ttk.Label(follower_frame, text='回避オフセット').grid(row=4, column=0, sticky='w')
         ttk.Label(follower_frame, textvariable=self._follower_vars['offsets']).grid(
             row=4,
             column=1,
@@ -649,12 +666,6 @@ class UiMain:
             justify='center',
         )
         self._banner_label.grid(row=0, column=0, sticky='nsew')
-        ttk.Label(
-            banner_frame,
-            textvariable=self._event_detail,
-            anchor='e',
-        ).grid(row=1, column=0, sticky='ew', pady=(8, 0))
-
         control_frame = ttk.LabelFrame(container, text='制御コマンド', padding=4)
         control_frame.grid(row=0, column=1, sticky='nsew')
         control_frame.columnconfigure(0, weight=1)
@@ -664,26 +675,26 @@ class UiMain:
 
         manual_tab = ttk.Frame(notebook, padding=6)
         manual_tab.columnconfigure(0, weight=1)
-        choice = ttk.Frame(manual_tab)
-        choice.grid(row=0, column=0, sticky='w')
-        ttk.Radiobutton(choice, text='True', value=True, variable=self._manual_value).grid(
+        manual_row = ttk.Frame(manual_tab)
+        manual_row.grid(row=0, column=0, sticky='w')
+        ttk.Radiobutton(manual_row, text='True', value=True, variable=self._manual_value).grid(
             row=0,
             column=0,
             sticky='w',
         )
-        ttk.Radiobutton(choice, text='False', value=False, variable=self._manual_value).grid(
+        ttk.Radiobutton(manual_row, text='False', value=False, variable=self._manual_value).grid(
             row=0,
             column=1,
             sticky='w',
             padx=(12, 0),
         )
         ttk.Button(
-            manual_tab,
+            manual_row,
             text='manual_start を送信',
             command=self._on_send_manual,
-        ).grid(row=1, column=0, sticky='ew', pady=(6, 0))
+        ).grid(row=0, column=2, sticky='w', padx=(12, 0))
         ttk.Label(manual_tab, textvariable=self._manual_status_var).grid(
-            row=2,
+            row=1,
             column=0,
             sticky='w',
             pady=(6, 0),
@@ -706,15 +717,15 @@ class UiMain:
             padx=(12, 0),
         )
         ttk.Button(
-            sig_tab,
+            sig_row,
             text='sig_recog を送信',
             command=self._on_send_sig,
-        ).grid(row=1, column=0, sticky='ew', pady=(6, 0))
+        ).grid(row=0, column=2, sticky='w', padx=(12, 0))
         ttk.Label(sig_tab, textvariable=self._sig_status_var).grid(
-            row=2,
+            row=1,
             column=0,
             sticky='w',
-            pady=(4, 0),
+            pady=(6, 0),
         )
         notebook.add(sig_tab, text='sig_recog')
 
@@ -722,8 +733,14 @@ class UiMain:
         obstacle_tab.columnconfigure(0, weight=1)
         value_row = ttk.Frame(obstacle_tab)
         value_row.grid(row=0, column=0, sticky='ew')
-        value_row.columnconfigure(5, weight=1)
-        ttk.Label(value_row, text='余裕距離[m]').grid(row=0, column=0, sticky='e')
+        value_row.columnconfigure(7, weight=1)
+        ttk.Checkbutton(
+            value_row,
+            text='front_blocked',
+            variable=self._obstacle_blocked,
+            command=self._on_obstacle_params_changed,
+        ).grid(row=0, column=0, sticky='w', padx=(0, 12))
+        ttk.Label(value_row, text='前方距離[m]').grid(row=0, column=1, sticky='e')
         clearance_spin = ttk.Spinbox(
             value_row,
             from_=0.1,
@@ -733,8 +750,8 @@ class UiMain:
             width=6,
             command=self._on_obstacle_params_changed,
         )
-        clearance_spin.grid(row=0, column=1, sticky='w', padx=(4, 12))
-        ttk.Label(value_row, text='左[m]').grid(row=0, column=2, sticky='e')
+        clearance_spin.grid(row=0, column=2, sticky='w', padx=(4, 12))
+        ttk.Label(value_row, text='左[m]').grid(row=0, column=3, sticky='e')
         left_spin = ttk.Spinbox(
             value_row,
             from_=-5.0,
@@ -744,8 +761,8 @@ class UiMain:
             width=6,
             command=self._on_obstacle_params_changed,
         )
-        left_spin.grid(row=0, column=3, sticky='w', padx=(4, 12))
-        ttk.Label(value_row, text='右[m]').grid(row=0, column=4, sticky='e')
+        left_spin.grid(row=0, column=4, sticky='w', padx=(4, 12))
+        ttk.Label(value_row, text='右[m]').grid(row=0, column=5, sticky='e')
         right_spin = ttk.Spinbox(
             value_row,
             from_=-5.0,
@@ -755,37 +772,25 @@ class UiMain:
             width=6,
             command=self._on_obstacle_params_changed,
         )
-        right_spin.grid(row=0, column=5, sticky='w', padx=(4, 0))
+        right_spin.grid(row=0, column=6, sticky='w', padx=(4, 0))
+
+        self._obstacle_toggle_btn = ttk.Button(
+            value_row,
+            command=self._on_toggle_obstacle_override,
+        )
+        self._obstacle_toggle_btn.grid(row=0, column=8, sticky='e', padx=(12, 0))
+        self._update_obstacle_override_button()
 
         for spin in (clearance_spin, left_spin, right_spin):
             spin.bind('<FocusOut>', self._on_obstacle_params_changed)
             spin.bind('<Return>', self._on_obstacle_params_changed)
-
-        control_row = ttk.Frame(obstacle_tab)
-        control_row.grid(row=1, column=0, sticky='w', pady=(6, 0))
-        ttk.Checkbutton(
-            control_row,
-            text='front_blocked',
-            variable=self._obstacle_blocked,
-            command=self._on_obstacle_params_changed,
-        ).grid(row=0, column=0, sticky='w')
-        ttk.Button(control_row, text='送出開始', command=self._on_start_obstacle).grid(
-            row=0,
-            column=1,
-            padx=(12, 0),
-        )
-        ttk.Button(control_row, text='送出停止', command=self._on_stop_obstacle).grid(
-            row=0,
-            column=2,
-            padx=(8, 0),
-        )
         ttk.Label(
             obstacle_tab,
             textvariable=self._obstacle_override_state,
             anchor='w',
             justify='left',
         ).grid(
-            row=2,
+            row=1,
             column=0,
             sticky='w',
             pady=(6, 0),
@@ -807,14 +812,13 @@ class UiMain:
             sticky='w',
             padx=(12, 0),
         )
-        ttk.Button(road_tab, text='road_blocked を送信', command=self._on_send_road).grid(
-            row=1,
-            column=0,
-            sticky='ew',
-            pady=(6, 0),
-        )
+        ttk.Button(
+            road_row,
+            text='road_blocked を送信',
+            command=self._on_send_road,
+        ).grid(row=0, column=2, sticky='w', padx=(12, 0))
         ttk.Label(road_tab, textvariable=self._road_status_var).grid(
-            row=2,
+            row=1,
             column=0,
             sticky='w',
             pady=(6, 0),
@@ -959,27 +963,39 @@ class UiMain:
     def _on_send_sig(self) -> None:
         go = self._sig_value.get() == 1
         self._core.request_sig_recog(go)
+        self._sig_last_command = 1 if go else 2
 
     def _on_send_road(self) -> None:
         value = bool(self._road_value.get())
         self._core.request_road_blocked(value)
 
-    def _on_start_obstacle(self) -> None:
-        self._core.start_obstacle_override(
-            self._obstacle_blocked.get(),
-            self._obstacle_clearance.get(),
-            self._obstacle_left.get(),
-            self._obstacle_right.get(),
-        )
-
-    def _on_stop_obstacle(self) -> None:
-        self._core.stop_obstacle_override()
+    def _on_toggle_obstacle_override(self) -> None:
+        if self._obstacle_override_active:
+            self._core.stop_obstacle_override()
+            self._obstacle_override_active = False
+        else:
+            self._core.start_obstacle_override(
+                self._obstacle_blocked.get(),
+                self._obstacle_clearance.get(),
+                self._obstacle_left.get(),
+                self._obstacle_right.get(),
+            )
+            self._obstacle_override_active = True
+        self._update_obstacle_override_button()
 
     def _on_obstacle_params_changed(self, *_args) -> None:
         """障害物ヒント送信パラメータ変更時のフック。"""
 
         # GUI 上では受信状態のみを表示するため、変更時の追加処理は行わない。
         return
+
+    def _update_obstacle_override_button(self) -> None:
+        """障害物ヒント送出ボタンの文言を更新する。"""
+
+        if self._obstacle_toggle_btn is None:
+            return
+        label = '送出停止' if self._obstacle_override_active else '送出開始'
+        self._obstacle_toggle_btn.configure(text=label)
 
     # ---------- 更新処理 ----------
     def _schedule_update(self) -> None:
@@ -1004,8 +1020,10 @@ class UiMain:
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
         follower = snapshot.follower_state
-        self._route_state_vars.manager.set(route.manager_state)
-        self._route_state_vars.route_status.set(route.route_status)
+        manager_state = route.manager_state.upper() if route.manager_state else 'UNKNOWN'
+        route_status = route.route_status.upper() if route.route_status else 'UNKNOWN'
+        self._route_state_vars.manager.set(manager_state)
+        self._route_state_vars.route_status.set(route_status)
         progress_ratio, display_index, total_waypoints = compute_route_progress(
             route, follower
         )
@@ -1016,10 +1034,7 @@ class UiMain:
         self._route_state_vars.version.set(f"バージョン: {route.route_version}")
         detail_entries = []
         if route.last_replan_reason:
-            event_text = route.last_replan_reason
-            if route.last_replan_time:
-                event_text = f"{event_text} @ {_format_time(route.last_replan_time)}"
-            detail_entries.append(f"Ev: {event_text}")
+            detail_entries.append(f"Ev: {route.last_replan_reason}")
         manager_tokens = []
         if route.manager_decision:
             manager_tokens.append(route.manager_decision)
@@ -1027,22 +1042,50 @@ class UiMain:
             manager_tokens.append(route.manager_cause)
         if manager_tokens:
             manager_text = ' / '.join(manager_tokens)
-            if route.manager_updated_at:
-                manager_text = f"{manager_text} @ {_format_time(route.manager_updated_at)}"
             detail_entries.append(f"Mgr: {manager_text}")
         self._route_state_vars.detail.set(
-            ' | '.join(detail_entries) or '最新イベントなし'
+            '\n'.join(detail_entries) or '最新イベントなし'
         )
         self._follower_vars['state'].set(follower.state)
         self._follower_vars['index'].set(f"Index: {follower.active_waypoint_index}")
         current_label = follower.active_waypoint_label or route.current_label or '-'
         label_text = f"現在: {current_label}"
         self._follower_vars['label'].set(label_text)
-        if follower.stagnation_reason:
-            stagnation = follower.stagnation_reason
+        reason = (follower.stagnation_reason or '').strip()
+        if follower.state == 'RUNNING':
+            if self._stagnation_display_reason != '滞留なし':
+                self._stagnation_ignored_reason = self._stagnation_display_reason
+            else:
+                self._stagnation_ignored_reason = None
+            self._stagnation_retry_baseline = follower.retry_count
+            self._stagnation_display_reason = '滞留なし'
         else:
-            stagnation = '滞留なし'
-        self._follower_vars['stagnation'].set(stagnation)
+            if reason:
+                if (
+                    self._stagnation_retry_baseline is None
+                    or follower.retry_count > self._stagnation_retry_baseline
+                    or (
+                        self._stagnation_display_reason != reason
+                        and reason != self._stagnation_ignored_reason
+                    )
+                ):
+                    self._stagnation_display_reason = reason
+                    self._stagnation_retry_baseline = follower.retry_count
+                    self._stagnation_ignored_reason = None
+            else:
+                self._stagnation_display_reason = '滞留なし'
+                self._stagnation_retry_baseline = follower.retry_count
+                self._stagnation_ignored_reason = None
+        self._follower_vars['stagnation'].set(self._stagnation_display_reason)
+
+        front_clearance = follower.front_clearance_m
+        if math.isinf(front_clearance):
+            front_clearance_text = '障害物なし'
+        else:
+            front_clearance_text = f"{front_clearance:.2f}m"
+        if follower.front_blocked:
+            front_clearance_text += '(blocked)'
+        self._follower_vars['front_clearance'].set(front_clearance_text)
         offsets = f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
         self._follower_vars['offsets'].set(offsets)
 
@@ -1052,11 +1095,21 @@ class UiMain:
         target = snapshot.target_distance
         baseline = max(target.baseline_distance_m, 0.0)
         remaining = max(target.current_distance_m, 0.0)
-        ratio = 0.0
+        ratio: float
         if baseline > 0.0:
             completed = baseline - remaining
             completed = max(min(completed, baseline), 0.0)
             ratio = completed / baseline
+            ratio = max(min(ratio, 1.0), 0.0)
+            self._last_target_progress_ratio = ratio
+        else:
+            if remaining <= 0.0:
+                ratio = 0.0
+                self._last_target_progress_ratio = 0.0
+            elif self._last_target_progress_ratio is not None:
+                ratio = self._last_target_progress_ratio
+            else:
+                ratio = 0.0
         self._target_vars['distance'].set(f"{target.current_distance_m:.1f} m")
         self._target_vars['progress'].set(ratio * 100.0)
         self._target_vars['progress_percent'].set(f"{ratio * 100.0:.1f}%")
@@ -1068,14 +1121,20 @@ class UiMain:
             display_text = f"{banner_text}\n更新: {_format_time(banner_ts)}"
         self._event_banner.set(display_text)
         self._banner_label.configure(bg=banner_bg, fg=banner_fg)
-        self._event_detail.set(f"更新: {_format_time(banner_ts)}")
 
         manual = snapshot.manual_signal
         self._manual_status_var.set(
             f"現在値: {manual.manual_start} / 最終送信: {_format_time(manual.manual_timestamp)}"
         )
         if manual.sig_recog in (1, 2):
-            self._sig_value.set(manual.sig_recog)
+            if not self._sig_value_initialized:
+                self._sig_value.set(manual.sig_recog)
+                self._sig_value_initialized = True
+            elif (
+                manual.sig_recog != self._sig_last_command
+                and self._sig_value.get() != manual.sig_recog
+            ):
+                self._sig_value.set(manual.sig_recog)
         sig_label = {1: 'GO', 2: 'STOP'}.get(manual.sig_recog, '未定義')
         if manual.sig_recog is None:
             self._sig_status_var.set('最終送信: --:--:--')
@@ -1093,13 +1152,15 @@ class UiMain:
         )
 
         hint = snapshot.obstacle_hint
+        self._obstacle_override_active = hint.override_active
         obstacle_status = (
             f"状態: front_blocked={'ON' if hint.front_blocked else 'OFF'} "
-            f"余裕:{hint.front_clearance_m:.2f}m "
+            f"前方距離:{hint.front_clearance_m:.2f}m "
             f"左:{hint.left_offset_m:+.2f}m 右:{hint.right_offset_m:+.2f}m "
             f"更新:{_format_time(hint.updated_at)}"
         )
         self._obstacle_override_state.set(obstacle_status)
+        self._update_obstacle_override_button()
 
         self._update_images(snapshot)
         self._update_launch_states(snapshot)
@@ -1152,7 +1213,8 @@ class UiMain:
 
         def add_event(text: str, timestamp: Optional[datetime]) -> None:
             raw_ts = timestamp or current_time
-            if not self._is_recent(raw_ts, current_time):
+            ignore_ttl = text in STICKY_BANNER_TEXTS
+            if not ignore_ttl and not self._is_recent(raw_ts, current_time):
                 return
             if raw_ts.tzinfo is None:
                 normalized = raw_ts.replace(tzinfo=timezone.utc)
@@ -1182,10 +1244,16 @@ class UiMain:
             add_event('manual_start: True', manual.manual_timestamp)
 
         if not events:
+            if self._sticky_stop_banner is not None:
+                return self._sticky_stop_banner
             return '', None
 
         events.sort(key=lambda item: (item[0], item[1]))
         _, _, text, original_ts = events[-1]
+        if text in STICKY_BANNER_TEXTS:
+            self._sticky_stop_banner = (text, original_ts)
+        elif self._sticky_stop_banner is not None and self._sticky_stop_banner[0] != text:
+            self._sticky_stop_banner = None
         return text, original_ts
 
     @staticmethod
@@ -1229,34 +1297,45 @@ class UiMain:
             try:
                 target_size = panel.get_display_size()
                 if hasattr(working, 'size') and working.size != target_size:
-                    working = resize_with_letter_box(working, target_size)
+                    working = resize_with_letter_box(
+                        working, target_size, background_color=(31, 31, 31)
+                    )
             except Exception:  # pragma: no cover - サイズ調整失敗時は元画像を使用
                 pass
             return self._create_photo_image(working)
 
-        route_photo = _build_photo(snapshot.images.route_map, self._route_panel)
+        route_source = snapshot.images.route_map
+        route_placeholder = self._is_placeholder_image(route_source)
+        route_photo = _build_photo(route_source, self._route_panel)
         self._route_panel.update_image(route_photo, alt_text='画像未取得')
         self._route_panel.update_caption(
-            'ルート地図: 表示中' if route_photo else 'ルート地図: 画像未取得'
+            'ルート地図:表示中'
+            if route_photo and not route_placeholder
+            else 'ルート地図:未受信'
         )
 
         obstacle_source = snapshot.images.obstacle_view
+        obstacle_placeholder = self._is_placeholder_image(obstacle_source)
         if obstacle_source is not None and snapshot.images.obstacle_overlay:
-            obstacle_source = self._draw_overlay(obstacle_source.copy(), snapshot.images.obstacle_overlay)
+            obstacle_source = self._draw_overlay(
+                obstacle_source.copy(), snapshot.images.obstacle_overlay
+            )
         obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel)
         self._obstacle_panel.update_image(obstacle_photo, alt_text='画像未取得')
         self._obstacle_panel.update_overlay('')
         self._obstacle_panel.update_caption(
-            '障害物ビュー: 表示中' if obstacle_photo else '障害物ビュー: 画像未取得'
+            '障害物ビュー:表示中'
+            if obstacle_photo and not obstacle_placeholder
+            else '障害物ビュー:未受信'
         )
 
-        camera_photo = _build_photo(snapshot.images.external_camera, self._camera_panel)
+        camera_source = snapshot.images.external_camera
+        camera_placeholder = self._is_placeholder_image(camera_source)
+        camera_photo = _build_photo(camera_source, self._camera_panel)
         self._camera_panel.update_image(camera_photo, alt_text='画像未取得')
-        camera_mode = snapshot.images.camera_mode or 'unknown'
-        caption = f"外部カメラ: {camera_mode}"
-        if not camera_photo:
-            caption += ' (未取得)'
-        self._camera_panel.update_caption(caption)
+        topic_name = snapshot.images.camera_mode or '外部カメラ'
+        camera_status = '表示中' if camera_photo and not camera_placeholder else '未受信'
+        self._camera_panel.update_caption(f"{topic_name}:{camera_status}")
 
     def _create_photo_image(self, image: Image.Image) -> Optional[tk.PhotoImage]:
         """Pillow Image から tk.PhotoImage を生成する。"""
@@ -1266,6 +1345,17 @@ class UiMain:
         if CV2_AVAILABLE and cv2 is not None and np is not None and Image is not None:
             return self._create_photo_image_via_cv(image)
         return None
+
+    @staticmethod
+    def _is_placeholder_image(image: Optional[Image.Image]) -> bool:
+        """プレースホルダ画像かどうかを判定する。"""
+
+        if image is None:
+            return False
+        info = getattr(image, 'info', None)
+        if not isinstance(info, dict):
+            return False
+        return bool(info.get('placeholder_tag'))
 
     def _create_photo_image_via_cv(self, image: Image.Image) -> Optional[tk.PhotoImage]:
         """OpenCV を用いて Pillow Image を PNG 化し tk.PhotoImage を生成する。"""
@@ -1279,25 +1369,95 @@ class UiMain:
         data = base64.b64encode(buffer.tobytes()).decode('ascii')
         return tk.PhotoImage(data=data, format='png')
 
+    def _get_overlay_font(self) -> Tuple[Optional[object], bool]:
+        """オーバレイ描画に利用するフォントと対応状況を取得する。"""
+
+        if Image is None:
+            return None, False
+        if self._overlay_font is not None:
+            return self._overlay_font, self._overlay_font_supports_wide
+        try:
+            from PIL import ImageFont
+        except ImportError:  # pragma: no cover - Pillow 無し環境では未使用
+            self._overlay_font = None
+            self._overlay_font_supports_wide = False
+            return None, False
+
+        candidates = [
+            ('NotoSansCJK-Regular.ttc', 20),
+            ('NotoSansCJKjp-Regular.otf', 20),
+            ('IPAGothic.ttf', 20),
+            ('DejaVuSans.ttf', 20),
+            ('DejaVuSans-Bold.ttf', 20),
+        ]
+        search_roots = [None]
+        try:
+            search_roots.append(Path(ImageFont.__file__).resolve().parent)
+        except (AttributeError, TypeError, ValueError):  # pragma: no cover - パス取得失敗時
+            pass
+
+        for name, size in candidates:
+            for root in search_roots:
+                try:
+                    font_path = str(root / name) if root is not None else name
+                    font = ImageFont.truetype(font_path, size)
+                except (OSError, ValueError):
+                    continue
+                self._overlay_font = font
+                self._overlay_font_supports_wide = True
+                return font, True
+
+        self._overlay_font = ImageFont.load_default()
+        self._overlay_font_supports_wide = False
+        return self._overlay_font, False
+
     def _draw_overlay(self, image: Image.Image, text: str) -> Image.Image:
         if Image is None or not text:
             return image
         base = image.convert('RGBA')
         canvas = Image.new('RGBA', base.size, (0, 0, 0, 0))
-        from PIL import ImageDraw, ImageFont
+        from PIL import ImageDraw
+
+        font, supports_wide = self._get_overlay_font()
+        if font is None:
+            return image
+
+        raw_lines = text.split('\n')
+        if not supports_wide:
+            lines = [line.encode('latin-1', 'replace').decode('latin-1') for line in raw_lines]
+        else:
+            lines = raw_lines
 
         draw = ImageDraw.Draw(canvas)
         padding = 6
-        lines = text.split('\n')
-        font = ImageFont.load_default()
-        widths = [draw.textlength(line, font=font) for line in lines]
-        height = sum(font.getbbox(line)[3] for line in lines) + padding
-        width = max(widths) if widths else 0
-        draw.rectangle((0, 0, width + padding * 2, height + padding), fill=(0, 0, 0, 160))
-        y = padding
+        line_spacing = 4
+        line_metrics = []
+        max_width = 0
         for line in lines:
-            draw.text((padding, y), line, fill=(255, 255, 255, 255), font=font)
-            y += font.getbbox(line)[3]
+            display_line = line or ' '
+            if hasattr(draw, 'textbbox'):
+                bbox = draw.textbbox((0, 0), display_line, font=font)
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+            else:
+                width, height = draw.textsize(display_line, font=font)
+            line_metrics.append((display_line, width, height))
+            if width > max_width:
+                max_width = width
+
+        rect_height = padding * 2
+        if line_metrics:
+            rect_height += sum(height for _, _, height in line_metrics)
+            rect_height += line_spacing * (len(line_metrics) - 1)
+
+        draw.rectangle((0, 0, max_width + padding * 2, rect_height), fill=(0, 0, 0, 160))
+        y = padding
+        for index, (display_line, _, height) in enumerate(line_metrics):
+            draw.text((padding, y), display_line, fill=(255, 255, 255, 255), font=font)
+            if index < len(line_metrics) - 1:
+                y += height + line_spacing
+            else:
+                y += height
         composed = Image.alpha_composite(base, canvas)
         return composed.convert(image.mode)
 

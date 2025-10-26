@@ -215,7 +215,6 @@ class UiMain:
             'state': tk.StringVar(value='unknown'),
             'index': tk.StringVar(value='Index: 0'),
             'label': tk.StringVar(value='現在: -'),
-            'next': tk.StringVar(value='次: -'),
             'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
             'stagnation': tk.StringVar(value='滞留なし'),
         }
@@ -441,13 +440,6 @@ class UiMain:
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='次ウェイポイント').grid(row=5, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['next']).grid(
-            row=5,
-            column=1,
-            sticky='w',
-        )
-
         metrics = ttk.Frame(summary)
         metrics.grid(row=0, column=2, sticky='nsew')
         metrics.columnconfigure(0, weight=1)
@@ -903,29 +895,38 @@ class UiMain:
         self._route_state_vars['progress'].set(progress_ratio * 100.0)
         display_index = 0
         if total_waypoints > 0:
-            follower_index = max(follower.current_index, 0)
+            follower_index = max(follower.active_waypoint_index, 0)
             display_index = min(max(follower_index + 1, 1), total_waypoints)
         self._route_state_vars['progress_text'].set(f"{display_index} / {route.total_waypoints}")
         self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
-        detail_parts = []
+        detail_entries = []
         if route.last_replan_reason:
-            detail_parts.append(route.last_replan_reason)
-        if route.last_replan_time:
-            detail_parts.append(f"@ {_format_time(route.last_replan_time)}")
-        self._route_state_vars['detail'].set(' '.join(detail_parts) or '最新イベントなし')
+            event_text = route.last_replan_reason
+            if route.last_replan_time:
+                event_text = f"{event_text} @ {_format_time(route.last_replan_time)}"
+            detail_entries.append(f"Ev: {event_text}")
+        manager_tokens = []
+        if route.manager_decision:
+            manager_tokens.append(route.manager_decision)
+        if route.manager_cause:
+            manager_tokens.append(route.manager_cause)
+        if manager_tokens:
+            manager_text = ' / '.join(manager_tokens)
+            if route.manager_updated_at:
+                manager_text = f"{manager_text} @ {_format_time(route.manager_updated_at)}"
+            detail_entries.append(f"Mgr: {manager_text}")
+        self._route_state_vars['detail'].set(' | '.join(detail_entries) or '最新イベントなし')
         self._follower_vars['state'].set(follower.state)
-        self._follower_vars['index'].set(f"Index: {follower.current_index}")
-        current_label = follower.current_label or route.current_label or '-'
-        self._follower_vars['label'].set(f"現在: {current_label}")
-        self._follower_vars['next'].set(f"次: {follower.next_label or '-'}")
+        self._follower_vars['index'].set(f"Index: {follower.active_waypoint_index}")
+        current_label = follower.active_waypoint_label or route.current_label or '-'
+        label_text = f"現在: {current_label}"
+        self._follower_vars['label'].set(label_text)
         if follower.stagnation_reason:
             stagnation = follower.stagnation_reason
         else:
             stagnation = '滞留なし'
         self._follower_vars['stagnation'].set(stagnation)
-        offsets = (
-            f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
-        )
+        offsets = f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
         self._follower_vars['offsets'].set(offsets)
 
         self._velocity_vars['linear'].set(f"{snapshot.cmd_vel.linear_mps:.2f} m/s")

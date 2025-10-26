@@ -50,15 +50,16 @@ class FollowerStateSnapshot:
     """follower_stateに相当する情報を保持するデータクラス."""
 
     state: str
-    current_index: int
+    active_waypoint_index: int
     route_version: int
     avoidance_attempt_count: int
     last_stagnation_reason: str
-    front_blocked_majority: bool
-    left_offset_m_median: float
-    right_offset_m_median: float
-    current_waypoint_label: str
-    next_waypoint_label: str
+    front_blocked: bool
+    left_offset_m: float
+    right_offset_m: float
+    active_waypoint_label: str
+    segment_length_m: float
+    active_target_distance_m: float
     signal_stop_active: bool
 
 
@@ -145,7 +146,7 @@ class MockDataProvider:
     ]
 
     STAGNATION_REASONS = [
-        "front_blocked_majority",
+        "front_blocked",
         "waiting_manual_start",
         "no_progress_detected",
         "planner_timeout",
@@ -176,15 +177,16 @@ class MockDataProvider:
         )
         self.follower_state = FollowerStateSnapshot(
             state="FOLLOWING",
-            current_index=2,
+            active_waypoint_index=2,
             route_version=1,
             avoidance_attempt_count=0,
-            last_stagnation_reason="front_blocked_majority",
-            front_blocked_majority=False,
-            left_offset_m_median=0.0,
-            right_offset_m_median=0.0,
-            current_waypoint_label="WP02",
-            next_waypoint_label="WP03",
+            last_stagnation_reason="front_blocked",
+            front_blocked=False,
+            left_offset_m=0.0,
+            right_offset_m=0.0,
+            active_waypoint_label="WP02",
+            segment_length_m=5.0,
+            active_target_distance_m=12.0,
             signal_stop_active=False,
         )
         self.obstacle_hint = ObstacleHintSnapshot(
@@ -273,7 +275,7 @@ class MockDataProvider:
 
         # follower_stateの更新
         follower_target = max(self.route_state.current_index - random.randint(0, 1), 0)
-        self.follower_state.current_index = follower_target
+        self.follower_state.active_waypoint_index = follower_target
         self.follower_state.state = random.choice(self.FOLLOWER_CHOICES)
         self.follower_state.route_version = self.route_state.route_version
         self.follower_state.avoidance_attempt_count = min(
@@ -283,26 +285,26 @@ class MockDataProvider:
             self.STAGNATION_REASONS
         )
         if self.obstacle_override_active:
-            self.follower_state.front_blocked_majority = self.obstacle_override_settings[
+            self.follower_state.front_blocked = self.obstacle_override_settings[
                 "front_blocked"
             ]
-            self.follower_state.left_offset_m_median = self.obstacle_override_settings[
+            self.follower_state.left_offset_m = self.obstacle_override_settings[
                 "left_offset_m"
             ]
-            self.follower_state.right_offset_m_median = self.obstacle_override_settings[
+            self.follower_state.right_offset_m = self.obstacle_override_settings[
                 "right_offset_m"
             ]
         else:
-            self.follower_state.front_blocked_majority = random.random() < 0.3
-            self.follower_state.left_offset_m_median = random.uniform(-0.8, 0.8)
-            self.follower_state.right_offset_m_median = random.uniform(-0.8, 0.8)
-        self.follower_state.current_waypoint_label = self.route_state.current_label
-        next_index = min(
-            self.route_state.current_index + 1, self.route_state.total_waypoints
+            self.follower_state.front_blocked = random.random() < 0.3
+            self.follower_state.left_offset_m = random.uniform(-0.8, 0.8)
+            self.follower_state.right_offset_m = random.uniform(-0.8, 0.8)
+        self.follower_state.active_waypoint_label = self.route_state.current_label
+        self.follower_state.segment_length_m = max(random.uniform(3.0, 12.0), 0.1)
+        remaining = max(
+            self.follower_state.segment_length_m - random.uniform(0.0, 2.5),
+            0.0,
         )
-        self.follower_state.next_waypoint_label = self.ROUTE_LABELS[
-            min(next_index, len(self.ROUTE_LABELS)) - 1
-        ]
+        self.follower_state.active_target_distance_m = remaining
         self.follower_state.signal_stop_active = (
             self.follower_state.state == "WAITING_STOP"
         )
@@ -414,13 +416,13 @@ class MockDataProvider:
     def _apply_obstacle_override_to_state(self) -> None:
         """固定値送出が有効なときに状態へ即反映する."""
 
-        self.follower_state.front_blocked_majority = self.obstacle_override_settings[
+        self.follower_state.front_blocked = self.obstacle_override_settings[
             "front_blocked"
         ]
-        self.follower_state.left_offset_m_median = self.obstacle_override_settings[
+        self.follower_state.left_offset_m = self.obstacle_override_settings[
             "left_offset_m"
         ]
-        self.follower_state.right_offset_m_median = self.obstacle_override_settings[
+        self.follower_state.right_offset_m = self.obstacle_override_settings[
             "right_offset_m"
         ]
         self.obstacle_hint.front_clearance_m = self.obstacle_override_settings[
@@ -471,15 +473,16 @@ class MockDataProvider:
             ),
             "follower_state": FollowerStateSnapshot(
                 state=self.follower_state.state,
-                current_index=self.follower_state.current_index,
+                active_waypoint_index=self.follower_state.active_waypoint_index,
                 route_version=self.follower_state.route_version,
                 avoidance_attempt_count=self.follower_state.avoidance_attempt_count,
                 last_stagnation_reason=self.follower_state.last_stagnation_reason,
-                front_blocked_majority=self.follower_state.front_blocked_majority,
-                left_offset_m_median=self.follower_state.left_offset_m_median,
-                right_offset_m_median=self.follower_state.right_offset_m_median,
-                current_waypoint_label=self.follower_state.current_waypoint_label,
-                next_waypoint_label=self.follower_state.next_waypoint_label,
+                front_blocked=self.follower_state.front_blocked,
+                left_offset_m=self.follower_state.left_offset_m,
+                right_offset_m=self.follower_state.right_offset_m,
+                active_waypoint_label=self.follower_state.active_waypoint_label,
+                segment_length_m=self.follower_state.segment_length_m,
+                active_target_distance_m=self.follower_state.active_target_distance_m,
                 signal_stop_active=self.follower_state.signal_stop_active,
             ),
             "obstacle_hint": ObstacleHintSnapshot(
@@ -1090,7 +1093,7 @@ class MockDashboardApp(tk.Tk):
         ttk.Label(follower_frame, textvariable=self.follower_offsets_var).grid(
             row=4, column=1, sticky="w"
         )
-        ttk.Label(follower_frame, text="次ウェイポイント").grid(row=5, column=0, sticky="w")
+        ttk.Label(follower_frame, text="区間長").grid(row=5, column=0, sticky="w")
         self.follower_waypoint_var = tk.StringVar()
         ttk.Label(follower_frame, textvariable=self.follower_waypoint_var).grid(
             row=5, column=1, sticky="w"
@@ -1431,24 +1434,24 @@ class MockDashboardApp(tk.Tk):
             self.follower_state_var.set(
                 f"{follower_state.state} / v{follower_state.route_version}"
             )
-            index_text = f"{follower_state.current_index}/{route_state.total_waypoints}"
+            index_text = (
+                f"{follower_state.active_waypoint_index}/{route_state.total_waypoints}"
+            )
             self.follower_index_var.set(index_text)
-            self.follower_label_var.set(follower_state.current_waypoint_label)
+            self.follower_label_var.set(follower_state.active_waypoint_label)
             stagnation = (
                 f"{follower_state.last_stagnation_reason} / 試行"
                 f" {follower_state.avoidance_attempt_count} 回"
             )
             self.follower_stagnation_var.set(stagnation)
             offsets = (
-                f"左 {follower_state.left_offset_m_median:+.2f} m / "
-                f"右 {follower_state.right_offset_m_median:+.2f} m"
+                f"左 {follower_state.left_offset_m:+.2f} m / "
+                f"右 {follower_state.right_offset_m:+.2f} m"
             )
             self.follower_offsets_var.set(offsets)
-            waypoints = (
-                f"{follower_state.current_waypoint_label} → "
-                f"{follower_state.next_waypoint_label}"
+            self.follower_waypoint_var.set(
+                f"区間長 {follower_state.segment_length_m:.1f} m"
             )
-            self.follower_waypoint_var.set(waypoints)
 
             # manual / signal / road banner
             now = _now()
@@ -1544,16 +1547,16 @@ class MockDashboardApp(tk.Tk):
             sensor_caption = (
                 f"sensor_viewer @ {image_timestamps['sensor_viewer'].strftime('%H:%M:%S')}"
             )
-            sensor_color = "#27ae60" if not follower_state.front_blocked_majority else "#c0392b"
+            sensor_color = "#27ae60" if not follower_state.front_blocked else "#c0392b"
             self.sensor_image.update_content(sensor_caption, sensor_color)
             overlay_lines = [
                 (
-                    f"遮蔽:{'YES' if follower_state.front_blocked_majority else 'NO'}  "
+                    f"遮蔽:{'YES' if follower_state.front_blocked else 'NO'}  "
                     f"余裕:{obstacle_hint.front_clearance_m:4.2f}m"
                 ),
                 (
-                    f"左:{follower_state.left_offset_m_median:+.2f}m  "
-                    f"右:{follower_state.right_offset_m_median:+.2f}m"
+                    f"左:{follower_state.left_offset_m:+.2f}m  "
+                    f"右:{follower_state.right_offset_m:+.2f}m"
                 ),
             ]
             self.sensor_image.update_overlay(overlay_lines)

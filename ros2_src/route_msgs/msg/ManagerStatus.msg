@@ -2,6 +2,6 @@
 
 std_msgs/Header header
 string state        # "idle", "running", "updating_route", "holding"
-string decision     # "none", "replan", "skip", "failed"
-string last_cause   # "stagnation", "no_hint", "no_space", "avoidance_failed", ...
+string decision     # "none", "update", "replan_first", "shift", "skip", "failed"
+string last_cause   # HOLDING時のみ滞留理由（"front_blocked", "no_hint", など）
 uint32 route_version

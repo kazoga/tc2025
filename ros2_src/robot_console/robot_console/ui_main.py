@@ -53,7 +53,7 @@ FOLLOWER_CARD_KEYS = (
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 REFRESH_INTERVAL_MS = 200
-SIDEBAR_WIDTH = 288
+SIDEBAR_WIDTH = 248
 JST = timezone(timedelta(hours=9))
 EVENT_BANNER_TTL = timedelta(seconds=60)
 STICKY_BANNER_TEXTS = {'信号: STOP', '停止線: STOP'}
@@ -269,7 +269,8 @@ class UiMain:
             value='状態: front_blocked=OFF 余裕:0.00m 左:+0.00m 右:+0.00m 更新: --:--:--'
         )
         self._event_banner = tk.StringVar(value='')
-        self._event_detail = tk.StringVar(value='更新: --:--:--')
+        self._obstacle_override_active = False
+        self._obstacle_toggle_btn: Optional[ttk.Button] = None
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
@@ -309,6 +310,7 @@ class UiMain:
         self._stagnation_retry_baseline: Optional[int] = None
         self._stagnation_display_reason: str = '滞留なし'
         self._stagnation_ignored_reason: Optional[str] = None
+        self._obstacle_override_active = False
 
     def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""
@@ -656,12 +658,6 @@ class UiMain:
             justify='center',
         )
         self._banner_label.grid(row=0, column=0, sticky='nsew')
-        ttk.Label(
-            banner_frame,
-            textvariable=self._event_detail,
-            anchor='e',
-        ).grid(row=1, column=0, sticky='ew', pady=(8, 0))
-
         control_frame = ttk.LabelFrame(container, text='制御コマンド', padding=4)
         control_frame.grid(row=0, column=1, sticky='nsew')
         control_frame.columnconfigure(0, weight=1)
@@ -671,26 +667,26 @@ class UiMain:
 
         manual_tab = ttk.Frame(notebook, padding=6)
         manual_tab.columnconfigure(0, weight=1)
-        choice = ttk.Frame(manual_tab)
-        choice.grid(row=0, column=0, sticky='w')
-        ttk.Radiobutton(choice, text='True', value=True, variable=self._manual_value).grid(
+        manual_row = ttk.Frame(manual_tab)
+        manual_row.grid(row=0, column=0, sticky='w')
+        ttk.Radiobutton(manual_row, text='True', value=True, variable=self._manual_value).grid(
             row=0,
             column=0,
             sticky='w',
         )
-        ttk.Radiobutton(choice, text='False', value=False, variable=self._manual_value).grid(
+        ttk.Radiobutton(manual_row, text='False', value=False, variable=self._manual_value).grid(
             row=0,
             column=1,
             sticky='w',
             padx=(12, 0),
         )
         ttk.Button(
-            manual_tab,
+            manual_row,
             text='manual_start を送信',
             command=self._on_send_manual,
-        ).grid(row=1, column=0, sticky='ew', pady=(6, 0))
+        ).grid(row=0, column=2, sticky='w', padx=(12, 0))
         ttk.Label(manual_tab, textvariable=self._manual_status_var).grid(
-            row=2,
+            row=1,
             column=0,
             sticky='w',
             pady=(6, 0),
@@ -713,15 +709,15 @@ class UiMain:
             padx=(12, 0),
         )
         ttk.Button(
-            sig_tab,
+            sig_row,
             text='sig_recog を送信',
             command=self._on_send_sig,
-        ).grid(row=1, column=0, sticky='ew', pady=(6, 0))
+        ).grid(row=0, column=2, sticky='w', padx=(12, 0))
         ttk.Label(sig_tab, textvariable=self._sig_status_var).grid(
-            row=2,
+            row=1,
             column=0,
             sticky='w',
-            pady=(4, 0),
+            pady=(6, 0),
         )
         notebook.add(sig_tab, text='sig_recog')
 
@@ -769,23 +765,20 @@ class UiMain:
             spin.bind('<Return>', self._on_obstacle_params_changed)
 
         control_row = ttk.Frame(obstacle_tab)
-        control_row.grid(row=1, column=0, sticky='w', pady=(6, 0))
+        control_row.grid(row=1, column=0, sticky='ew', pady=(6, 0))
+        control_row.columnconfigure(1, weight=1)
         ttk.Checkbutton(
             control_row,
             text='front_blocked',
             variable=self._obstacle_blocked,
             command=self._on_obstacle_params_changed,
         ).grid(row=0, column=0, sticky='w')
-        ttk.Button(control_row, text='送出開始', command=self._on_start_obstacle).grid(
-            row=0,
-            column=1,
-            padx=(12, 0),
+        self._obstacle_toggle_btn = ttk.Button(
+            control_row,
+            command=self._on_toggle_obstacle_override,
         )
-        ttk.Button(control_row, text='送出停止', command=self._on_stop_obstacle).grid(
-            row=0,
-            column=2,
-            padx=(8, 0),
-        )
+        self._obstacle_toggle_btn.grid(row=0, column=2, sticky='e', padx=(12, 0))
+        self._update_obstacle_override_button()
         ttk.Label(
             obstacle_tab,
             textvariable=self._obstacle_override_state,
@@ -814,14 +807,13 @@ class UiMain:
             sticky='w',
             padx=(12, 0),
         )
-        ttk.Button(road_tab, text='road_blocked を送信', command=self._on_send_road).grid(
-            row=1,
-            column=0,
-            sticky='ew',
-            pady=(6, 0),
-        )
+        ttk.Button(
+            road_row,
+            text='road_blocked を送信',
+            command=self._on_send_road,
+        ).grid(row=0, column=2, sticky='w', padx=(12, 0))
         ttk.Label(road_tab, textvariable=self._road_status_var).grid(
-            row=2,
+            row=1,
             column=0,
             sticky='w',
             pady=(6, 0),
@@ -971,22 +963,33 @@ class UiMain:
         value = bool(self._road_value.get())
         self._core.request_road_blocked(value)
 
-    def _on_start_obstacle(self) -> None:
-        self._core.start_obstacle_override(
-            self._obstacle_blocked.get(),
-            self._obstacle_clearance.get(),
-            self._obstacle_left.get(),
-            self._obstacle_right.get(),
-        )
-
-    def _on_stop_obstacle(self) -> None:
-        self._core.stop_obstacle_override()
+    def _on_toggle_obstacle_override(self) -> None:
+        if self._obstacle_override_active:
+            self._core.stop_obstacle_override()
+            self._obstacle_override_active = False
+        else:
+            self._core.start_obstacle_override(
+                self._obstacle_blocked.get(),
+                self._obstacle_clearance.get(),
+                self._obstacle_left.get(),
+                self._obstacle_right.get(),
+            )
+            self._obstacle_override_active = True
+        self._update_obstacle_override_button()
 
     def _on_obstacle_params_changed(self, *_args) -> None:
         """障害物ヒント送信パラメータ変更時のフック。"""
 
         # GUI 上では受信状態のみを表示するため、変更時の追加処理は行わない。
         return
+
+    def _update_obstacle_override_button(self) -> None:
+        """障害物ヒント送出ボタンの文言を更新する。"""
+
+        if self._obstacle_toggle_btn is None:
+            return
+        label = '送出停止' if self._obstacle_override_active else '送出開始'
+        self._obstacle_toggle_btn.configure(text=label)
 
     # ---------- 更新処理 ----------
     def _schedule_update(self) -> None:
@@ -1110,7 +1113,6 @@ class UiMain:
             display_text = f"{banner_text}\n更新: {_format_time(banner_ts)}"
         self._event_banner.set(display_text)
         self._banner_label.configure(bg=banner_bg, fg=banner_fg)
-        self._event_detail.set(f"更新: {_format_time(banner_ts)}")
 
         manual = snapshot.manual_signal
         self._manual_status_var.set(
@@ -1135,6 +1137,7 @@ class UiMain:
         )
 
         hint = snapshot.obstacle_hint
+        self._obstacle_override_active = hint.override_active
         obstacle_status = (
             f"状態: front_blocked={'ON' if hint.front_blocked else 'OFF'} "
             f"余裕:{hint.front_clearance_m:.2f}m "
@@ -1142,6 +1145,7 @@ class UiMain:
             f"更新:{_format_time(hint.updated_at)}"
         )
         self._obstacle_override_state.set(obstacle_status)
+        self._update_obstacle_override_button()
 
         self._update_images(snapshot)
         self._update_launch_states(snapshot)

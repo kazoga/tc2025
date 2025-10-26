@@ -474,6 +474,7 @@ class FollowerCore:
             if time.time() >= self.stagnation_grace_until:
                 if self._check_stagnation_tick(exclude_stop=exclude_stop):
                     self.status = FollowerStatus.STAGNATION_DETECTED
+                    # 滞留検知をトリガとして回避に移行するため、Hint評価結果に応じた理由を記録する。
                     # Hint統計（Node側集約）に基づく判断
                     if not enough:
                         self.last_stagnation_reason = "no_hint"
@@ -485,6 +486,7 @@ class FollowerCore:
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
                     # 前方ブロック True → L字回避トライ
+                    self.last_stagnation_reason = "front_blocked"
                     success = self._start_avoidance_sequence(cur_wp, cur_pose, med_l, med_r)
                     if success:
                         self.status = FollowerStatus.AVOIDING
@@ -633,30 +635,25 @@ class FollowerCore:
     def _make_state_dict(self) -> dict:
         """/follower_state 相当の簡易状態（Node側でROS msgへ変換）。"""
         cur_label = ""
-        next_label = ""
-        segment_distance = 0.0
+        segment_length = 0.0
         if self.route and 0 <= self.index < len(self.route.waypoints):
             cur_wp = self.route.waypoints[self.index]
             cur_label = cur_wp.label
             if self.index > 0:
                 prev_wp = self.route.waypoints[self.index - 1]
-                segment_distance = self._euclid_xy(prev_wp.pose, cur_wp.pose)
-            if self.index + 1 < len(self.route.waypoints):
-                next_label = self.route.waypoints[self.index + 1].label
+                segment_length = self._euclid_xy(prev_wp.pose, cur_wp.pose)
 
         return {
             "status": self.status.name,
-            "index": int(self.index),
+            "active_waypoint_index": int(self.index),
             "route_version": int(self.route_version),
-            "current_label": cur_label,
-            "current_waypoint_label": cur_label,
-            "next_waypoint_label": next_label,
-            "segment_distance_m": float(segment_distance),
+            "active_waypoint_label": cur_label,
+            "segment_length_m": float(segment_length),
             "avoid_count": int(self.avoid_attempt_count),
             "reason": str(self.last_stagnation_reason),
             "front_blocked": bool(self._hint_front_blocked_majority),
-            "left_offset_m_median": float(self._hint_left_offset_median),
-            "right_offset_m_median": float(self._hint_right_offset_median),
+            "left_offset_m": float(self._hint_left_offset_median),
+            "right_offset_m": float(self._hint_right_offset_median),
             "front_clearance_m": float(self._hint_front_clearance_latest),
         }
 

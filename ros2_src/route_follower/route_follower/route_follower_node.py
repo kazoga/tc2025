@@ -323,20 +323,22 @@ class RouteFollowerNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.route_version = int(state["route_version"])
         msg.state = str(state["status"])
-        msg.current_index = int(state["index"])
-        msg.current_label = str(state.get("current_label", ""))
-        msg.front_blocked_majority = bool(state.get("front_blocked", False))
-        msg.left_offset_m_median = float(state.get("left_offset_m_median", 0.0))
-        msg.right_offset_m_median = float(state.get("right_offset_m_median", 0.0))
+        msg.active_waypoint_index = int(state["active_waypoint_index"])
+        msg.active_waypoint_label = str(state.get("active_waypoint_label", ""))
+        msg.front_blocked = bool(state.get("front_blocked", False))
+        msg.front_clearance_m = float(state.get("front_clearance_m", 0.0))
+        msg.left_offset_m = float(state.get("left_offset_m", 0.0))
+        msg.right_offset_m = float(state.get("right_offset_m", 0.0))
         msg.avoidance_attempt_count = int(state["avoid_count"])
         msg.last_stagnation_reason = str(state["reason"])
-        msg.segment_distance_m = float(state.get("segment_distance_m", 0.0))
+        msg.segment_length_m = float(state.get("segment_length_m", 0.0))
+        msg.active_target_distance_m = float(self._compute_active_target_distance(output))
         self.pub_state.publish(msg)
 
         now_sec = time.monotonic()
         if now_sec - self._last_state_log_time >= 1.0:
             self.get_logger().info(
-                f"[Node] publish {self.follower_state_topic}: state={msg.state}, index={msg.current_index}, "
+                f"[Node] publish {self.follower_state_topic}: state={msg.state}, index={msg.active_waypoint_index}, "
                 f"route_ver={msg.route_version}, avoid_count={msg.avoidance_attempt_count}"
             )
             self._last_state_log_time = now_sec
@@ -388,6 +390,14 @@ class RouteFollowerNode(Node):
     # ========================================================
     # ユーティリティ
     # ========================================================
+
+    def _compute_active_target_distance(self, output) -> float:
+        """現在位置とアクティブターゲット間の距離を算出する。"""
+        current_pose = self.core.get_current_pose()
+        target_pose = output.target_pose or self.core.last_target or self._last_pub_target_pose
+        if current_pose is None or target_pose is None:
+            return 0.0
+        return float(self._euclid_diff(current_pose, target_pose))
 
     def _yaw_from_quat(self, q: Quaternion) -> float:
         x, y, z, w = q.x, q.y, q.z, q.w

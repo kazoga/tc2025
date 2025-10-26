@@ -273,7 +273,7 @@ class RouteManagerNode(Node):
             tuple[str, str, str, int]
         ] = None
         self._latest_route_state_payload: Optional[
-            tuple[int, str, int, int, str]
+            tuple[int, str, int, int, str, str]
         ] = None
         # 1Hzで最新状態を再送するためのタイマーを追加する。
         self._state_snapshot_timer = self.create_timer(0.2, self._publish_state_snapshots)
@@ -330,8 +330,23 @@ class RouteManagerNode(Node):
         }
         return mapping.get(normalized, RouteState.STATUS_UNKNOWN)
 
-    def _publish_route_state_from_core(self, idx: int, label: str, ver: int, total: int, status: str) -> None:
-        payload = (int(idx), str(label), int(ver), int(total), str(status))
+    def _publish_route_state_from_core(
+        self,
+        idx: int,
+        label: str,
+        ver: int,
+        total: int,
+        status: str,
+        message: str,
+    ) -> None:
+        payload = (
+            int(idx),
+            str(label),
+            int(ver),
+            int(total),
+            str(status),
+            str(message or ""),
+        )
         self._latest_route_state_payload = payload
         self._emit_route_state(payload, force_log=True)
 
@@ -350,12 +365,12 @@ class RouteManagerNode(Node):
             f"cause={cause}, ver={route_version}"
         )
 
-    def _log_route_state(self, payload: tuple[int, str, int, int, str]) -> None:
+    def _log_route_state(self, payload: tuple[int, str, int, int, str, str]) -> None:
         """RouteStateの内容をinfoログとして出力する。"""
-        idx, label, ver, total, status = payload
+        idx, label, ver, total, status, message = payload
         self.get_logger().info(
             f"[Node] publish {self.route_state_topic}: idx={idx}, label='{label}', "
-            f"ver={ver}, total={total}, status={status}"
+            f"ver={ver}, total={total}, status={status}, message='{message}'"
         )
 
     def _emit_manager_status(
@@ -374,19 +389,20 @@ class RouteManagerNode(Node):
         self._last_status_publish_time = now_sec
 
     def _emit_route_state(
-        self, payload: tuple[int, str, int, int, str], force_log: bool = False
+        self, payload: tuple[int, str, int, int, str, str], force_log: bool = False
     ) -> None:
         """RouteStateをpublishし、ログを1Hzに間引く。"""
         msg = RouteState()
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
-        idx, label, ver, total, status = payload
+        idx, label, ver, total, status, message = payload
         msg.status = self._normalize_route_state_status(status)
         msg.current_index = idx
         msg.current_label = label
         msg.route_version = ver
         msg.total_waypoints = total
+        msg.message = message
         now_sec = time.monotonic()
         self.pub_route_state.publish(msg)
         if force_log or self._should_log(now_sec, self._last_route_state_log_time):

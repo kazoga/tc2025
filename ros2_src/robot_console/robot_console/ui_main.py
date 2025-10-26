@@ -961,7 +961,8 @@ class UiMain:
         self._follower_vars['state'].set(follower.state)
         self._follower_vars['index'].set(f"Index: {follower.active_waypoint_index}")
         current_label = follower.active_waypoint_label or route.current_label or '-'
-        self._follower_vars['label'].set(f"現在: {current_label}")
+        label_text = f"現在: {current_label}"
+        self._follower_vars['label'].set(label_text)
         if follower.stagnation_reason:
             stagnation = follower.stagnation_reason
         else:

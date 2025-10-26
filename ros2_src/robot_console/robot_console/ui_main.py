@@ -236,6 +236,8 @@ class UiMain:
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
+        self._initialize_runtime_state()
+
         self._route_state_vars: RouteCardVars = self._create_route_state_vars()
         self._follower_vars = self._create_follower_vars()
         self._velocity_vars = {
@@ -254,6 +256,17 @@ class UiMain:
         self._build_layout()
         self._on_obstacle_params_changed()
         self._schedule_update()
+
+    def _initialize_runtime_state(self) -> None:
+        """更新処理および停止監視で利用する内部状態を初期化する。"""
+
+        self._line_stop_active_since: Optional[datetime] = None
+        self._last_line_stop_state: bool = False
+        self._latest_snapshot: Optional[GuiSnapshot] = None
+        self._closing: bool = False
+        self._shutdown_pending: bool = False
+        self._update_job: Optional[str] = None
+        self._shutdown_check_job: Optional[str] = None
 
     def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""

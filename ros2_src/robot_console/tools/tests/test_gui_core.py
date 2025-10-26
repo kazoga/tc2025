@@ -141,6 +141,7 @@ if 'PIL' not in sys.modules:
     sys.modules['PIL.ImageTk'] = imagetk_module
 
 from robot_console.gui_core import GuiCore
+from robot_console.ui_main import UiMain
 from robot_console.utils import ConsoleLogBuffer, GuiCommandType
 
 def _make_follower_state(**overrides):
@@ -300,3 +301,17 @@ def test_ui_main_route_vars_use_attribute_access() -> None:
     source = ui_path.read_text(encoding='utf-8')
     assert '._route_state_vars.' in source
     assert '._route_state_vars[' not in source
+
+
+def test_ui_main_runtime_state_initializer_sets_defaults() -> None:
+    """UiMainの内部状態初期化ヘルパーが安全な既定値を設定することを確認する。"""
+
+    ui_main = UiMain.__new__(UiMain)
+    UiMain._initialize_runtime_state(ui_main)
+    assert ui_main._closing is False
+    assert ui_main._shutdown_pending is False
+    assert ui_main._update_job is None
+    assert ui_main._shutdown_check_job is None
+    assert ui_main._latest_snapshot is None
+    assert ui_main._line_stop_active_since is None
+    assert ui_main._last_line_stop_state is False

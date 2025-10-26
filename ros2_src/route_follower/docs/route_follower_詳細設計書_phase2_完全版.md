@@ -97,14 +97,15 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 |-------------|----|------|
 | route_version | int32 | 経路バージョン |
 | state | string | 現在状態 |
-| current_index | int32 | 現在Waypointインデックス |
-| current_pose | geometry_msgs/Pose | 現在位置 |
-| distance_to_target | float | 現在地〜目標距離[m] |
+| active_waypoint_index | int32 | 現在Waypointインデックス |
+| active_waypoint_label | string | 現在Waypointラベル |
+| active_target_distance_m | float | 現在地〜アクティブターゲット距離[m] |
+| segment_length_m | float | 直前Waypointからの距離[m] |
 | avoidance_attempt_count | int32 | 回避試行回数 |
 | last_stagnation_reason | string | 最後の滞留理由 |
-| front_blocked_majority | bool | front_blocked多数決結果 |
-| left_offset_m_median | float | Hint左オフセット中央値[m] |
-| right_offset_m_median | float | Hint右オフセット中央値[m] |
+| front_blocked | bool | Hint多数決による前方遮蔽判定 |
+| front_clearance_m | float | Hintから得た前方余裕距離[m] |
+| left_offset_m / right_offset_m | float | Hint左右オフセット中央値[m] |
 
 ### 5.3 ReportStuck.srv
 

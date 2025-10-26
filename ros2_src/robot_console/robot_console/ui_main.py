@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 import base64
+import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import tkinter as tk
@@ -305,6 +306,9 @@ class UiMain:
         self._shutdown_pending: bool = False
         self._update_job: Optional[str] = None
         self._shutdown_check_job: Optional[str] = None
+        self._stagnation_retry_baseline: Optional[int] = None
+        self._stagnation_display_reason: str = '滞留なし'
+        self._stagnation_ignored_reason: Optional[str] = None
 
     def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""
@@ -328,7 +332,7 @@ class UiMain:
             'label': follower_label,
             'target_label': follower_label,
             'stagnation': tk.StringVar(value='滞留なし'),
-            'front_clearance': tk.StringVar(value='--.- m'),
+            'front_clearance': tk.StringVar(value='障害物なし'),
             'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
         }
         missing = set(FOLLOWER_CARD_KEYS) - set(follower_vars.keys())
@@ -537,7 +541,7 @@ class UiMain:
             follower_frame,
             textvariable=self._follower_vars['front_clearance'],
         ).grid(row=3, column=1, sticky='w')
-        ttk.Label(follower_frame, text='左右オフセット').grid(row=4, column=0, sticky='w')
+        ttk.Label(follower_frame, text='回避オフセット').grid(row=4, column=0, sticky='w')
         ttk.Label(follower_frame, textvariable=self._follower_vars['offsets']).grid(
             row=4,
             column=1,
@@ -1038,13 +1042,39 @@ class UiMain:
         current_label = follower.active_waypoint_label or route.current_label or '-'
         label_text = f"現在: {current_label}"
         self._follower_vars['label'].set(label_text)
-        stagnation = '滞留なし'
-        if follower.state != 'RUNNING' and follower.stagnation_reason:
-            stagnation = follower.stagnation_reason
-        self._follower_vars['stagnation'].set(stagnation)
-        self._follower_vars['front_clearance'].set(
-            f"{snapshot.obstacle_hint.front_clearance_m:.2f} m"
-        )
+        reason = (follower.stagnation_reason or '').strip()
+        if follower.state == 'RUNNING':
+            if self._stagnation_display_reason != '滞留なし':
+                self._stagnation_ignored_reason = self._stagnation_display_reason
+            else:
+                self._stagnation_ignored_reason = None
+            self._stagnation_retry_baseline = follower.retry_count
+            self._stagnation_display_reason = '滞留なし'
+        else:
+            if reason:
+                if (
+                    self._stagnation_retry_baseline is None
+                    or follower.retry_count > self._stagnation_retry_baseline
+                    or (
+                        self._stagnation_display_reason != reason
+                        and reason != self._stagnation_ignored_reason
+                    )
+                ):
+                    self._stagnation_display_reason = reason
+                    self._stagnation_retry_baseline = follower.retry_count
+                    self._stagnation_ignored_reason = None
+            else:
+                self._stagnation_display_reason = '滞留なし'
+                self._stagnation_retry_baseline = follower.retry_count
+                self._stagnation_ignored_reason = None
+        self._follower_vars['stagnation'].set(self._stagnation_display_reason)
+
+        front_clearance = snapshot.obstacle_hint.front_clearance_m
+        if math.isinf(front_clearance):
+            front_clearance_text = '障害物なし'
+        else:
+            front_clearance_text = f"{front_clearance:.2f} m"
+        self._follower_vars['front_clearance'].set(front_clearance_text)
         offsets = f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
         self._follower_vars['offsets'].set(offsets)
 
@@ -1248,34 +1278,45 @@ class UiMain:
             try:
                 target_size = panel.get_display_size()
                 if hasattr(working, 'size') and working.size != target_size:
-                    working = resize_with_letter_box(working, target_size)
+                    working = resize_with_letter_box(
+                        working, target_size, background_color=(31, 31, 31)
+                    )
             except Exception:  # pragma: no cover - サイズ調整失敗時は元画像を使用
                 pass
             return self._create_photo_image(working)
 
-        route_photo = _build_photo(snapshot.images.route_map, self._route_panel)
+        route_source = snapshot.images.route_map
+        route_placeholder = self._is_placeholder_image(route_source)
+        route_photo = _build_photo(route_source, self._route_panel)
         self._route_panel.update_image(route_photo, alt_text='画像未取得')
         self._route_panel.update_caption(
-            'ルート地図: 表示中' if route_photo else 'ルート地図: 画像未取得'
+            'ルート地図:表示中'
+            if route_photo and not route_placeholder
+            else 'ルート地図:未受信'
         )
 
         obstacle_source = snapshot.images.obstacle_view
+        obstacle_placeholder = self._is_placeholder_image(obstacle_source)
         if obstacle_source is not None and snapshot.images.obstacle_overlay:
-            obstacle_source = self._draw_overlay(obstacle_source.copy(), snapshot.images.obstacle_overlay)
+            obstacle_source = self._draw_overlay(
+                obstacle_source.copy(), snapshot.images.obstacle_overlay
+            )
         obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel)
         self._obstacle_panel.update_image(obstacle_photo, alt_text='画像未取得')
         self._obstacle_panel.update_overlay('')
         self._obstacle_panel.update_caption(
-            '障害物ビュー: 表示中' if obstacle_photo else '障害物ビュー: 画像未取得'
+            '障害物ビュー:表示中'
+            if obstacle_photo and not obstacle_placeholder
+            else '障害物ビュー:未受信'
         )
 
-        camera_photo = _build_photo(snapshot.images.external_camera, self._camera_panel)
+        camera_source = snapshot.images.external_camera
+        camera_placeholder = self._is_placeholder_image(camera_source)
+        camera_photo = _build_photo(camera_source, self._camera_panel)
         self._camera_panel.update_image(camera_photo, alt_text='画像未取得')
-        camera_mode = snapshot.images.camera_mode or 'unknown'
-        caption = f"外部カメラ: {camera_mode}"
-        if not camera_photo:
-            caption += ' (未取得)'
-        self._camera_panel.update_caption(caption)
+        topic_name = snapshot.images.camera_mode or '外部カメラ'
+        camera_status = '表示中' if camera_photo and not camera_placeholder else '未受信'
+        self._camera_panel.update_caption(f"{topic_name}:{camera_status}")
 
     def _create_photo_image(self, image: Image.Image) -> Optional[tk.PhotoImage]:
         """Pillow Image から tk.PhotoImage を生成する。"""
@@ -1285,6 +1326,17 @@ class UiMain:
         if CV2_AVAILABLE and cv2 is not None and np is not None and Image is not None:
             return self._create_photo_image_via_cv(image)
         return None
+
+    @staticmethod
+    def _is_placeholder_image(image: Optional[Image.Image]) -> bool:
+        """プレースホルダ画像かどうかを判定する。"""
+
+        if image is None:
+            return False
+        info = getattr(image, 'info', None)
+        if not isinstance(info, dict):
+            return False
+        return bool(info.get('placeholder_tag'))
 
     def _create_photo_image_via_cv(self, image: Image.Image) -> Optional[tk.PhotoImage]:
         """OpenCV を用いて Pillow Image を PNG 化し tk.PhotoImage を生成する。"""

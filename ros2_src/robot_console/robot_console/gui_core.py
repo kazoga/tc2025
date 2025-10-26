@@ -529,8 +529,10 @@ class GuiCore:
             previous_target = self._current_target
             self._current_target = msg
             if previous_target is not None:
-                baseline = self._compute_distance(msg, previous_target)
+                baseline = max(self._compute_distance(msg, previous_target), 0.0)
                 self._target_distance.baseline_distance_m = baseline
+            else:
+                self._target_distance.baseline_distance_m = 0.0
             if self._current_pose is not None:
                 self._target_distance.current_distance_m = self._compute_distance(msg, self._current_pose)
                 self._target_distance.updated_at = now()

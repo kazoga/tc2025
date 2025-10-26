@@ -37,7 +37,7 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 `gui_core.py` では以下の dataclass を中心に状態を保持する。
 - `RouteStateView`: `route_state` + `manager_status.state` を統合し進捗率・遷移履歴・最新バージョンを格納。
 - `FollowerStateView`: インデックス・現在ラベル・次ラベル・滞留理由・左右オフセット中央値を保持。
-- `ObstacleHintView`: `front_clearance_m`、`front_blocked_majority`、左右オフセット、最終更新時刻を保持。
+- `ObstacleHintView`: `front_clearance_m`、`front_blocked`、左右オフセット、最終更新時刻を保持。
 - `ManualSignalView`: `manual_start`、`sig_recog`、`road_blocked` の最新値と送信タイムスタンプを保持し、`road_blocked` は外部ノードからの受信を常に優先する。
 - `TargetDistanceView`: `active_target` と `amcl_pose` の距離と基準距離（前回ターゲット距離）。
 - `CmdVelView`: 並進速度 [m/s] と角速度 [rad/s]。GUI 表示時に deg/s に変換する。
@@ -56,9 +56,9 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 | 項目 | 配置 | 情報源・更新 | 表示内容 |
 | --- | --- | --- | --- |
 | ルート進捗カード | 上段左 | `route_state` (1Hz) + `manager_status.state`（イベント駆動） | 状態ラベル、進捗バー (`current_index/total_waypoints`)、ルートバージョン履歴、再計画要因と時刻。 |
-| フォロワ状態カード | 上段中央 | `follower_state` (20Hz) | `state`、`current_index`、`current_waypoint_label`、`next_waypoint_label`、滞留理由、左右中央値、回避試行回数。高速更新だが GUI では 5Hz に間引き表示。 |
+| フォロワ状態カード | 上段中央 | `follower_state` (20Hz) | `state`、`active_waypoint_index`、`active_waypoint_label`、`segment_length_m`、滞留理由、左右オフセット、回避試行回数。高速更新だが GUI では 5Hz に間引き表示。 |
 | ロボット速度カード | 上段右 (上段) | `cmd_vel` (20Hz) | 並進速度 [m/s]、角速度 [deg/s]、閾値超過時の色変化。 |
-| 目標距離カード | 上段右 (下段) | `active_target` + `amcl_pose` (5Hz)。いずれか未取得時は `follower_state.distance_to_target` を使用する。 | 現在距離、基準距離、距離比ゲージ。到達閾値 1.0m 以下で警告色。 |
+| 目標距離カード | 上段右 (下段) | `active_target` + `amcl_pose` (5Hz)。いずれか未取得時は `follower_state.active_target_distance_m` を使用する。 | 現在距離、基準距離（`segment_length_m`）、距離比ゲージ。到達閾値 1.0m 以下で警告色。 |
 | 手動・信号・封鎖イベント | 中央左 | `manual_start`・`sig_recog`・`road_blocked` (イベント) | 3種のうち優先度順 (road_blocked > manual_start > sig_recog) で1件をバナー表示。manual_start・sig_recog・road_blocked の各通知は受信後60秒が経過すると自動的にクリアし、未発生時は無地を維持してレイアウト幅を固定する。 |
 | 制御コマンドタブ | 中央右 | GUI操作 | Notebook で manual_start / sig_recog / obstacle_hint / road_blocked を切替。各タブは1～2行構成で縦幅を最小化。 |
 | 画像パネル3面 | 下段 | `route_image` (更新時), `sensor_viewer` (5Hz), 外部カメラ (信号監視:4:3, 走行:16:9 / 5Hz) | それぞれ専用キャンバスに描画。アスペクト比を維持し、余白は背景色と同色でレターボックス処理。障害物ビュー左上に2行オーバレイ (遮蔽/余裕、左/右オフセット)。 |
@@ -93,7 +93,7 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 | UIコンポーネント | 入力/表示内容 | ROS側インタフェース | 備考 |
 | --- | --- | --- | --- |
 | ルート進捗カード | 状態・進捗率・再計画履歴 | `/route_state`, `/manager_status` | モックの表示内容と完全一致させる。 |
-| フォロワ状態カード | 状態・インデックス・ラベル・オフセット | `/follower_state` | `current_waypoint_label` は Route メッセージのラベル辞書を参照。 |
+| フォロワ状態カード | 状態・インデックス・ラベル・区間長 | `/follower_state` | `active_waypoint_label` は Route メッセージのラベル辞書を参照し、`segment_length_m` を進捗計算の分母に利用する。 |
 | ロボット速度カード | 並進・角速度 | `/cmd_vel` | 角速度は GUI 側で deg/s に変換。 |
 | 目標距離カード | 現在距離・基準距離 | `/active_target`, `/amcl_pose` | ターゲット切替時に基準距離を更新。 |
 | 手動・信号・封鎖バナー | 優先度付きイベント表示 | `/manual_start`, `/sig_recog`, `/road_blocked` | 各トピックを購読し、未受信時はデフォルト状態を維持する。詳細な項目対応は `docs/dashboard_topic_mapping.csv` に整理する。 |
@@ -185,7 +185,7 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 ## 6. 更新・同期設計
 - **GUI更新**：`UiMain` が 200ms ごとに `GuiCore.snapshot()` を呼び出す。スナップショットはディープコピーされた dataclass 群で、GUI 側での加工によりスレッド安全性を確保する。
 - **画像処理**：ROS コールバックで `sensor_msgs/Image` を受信後、`cv_bridge` で OpenCV 画像へ変換し、`PIL.Image` に変換。アスペクト比計算を `GuiCore` 側で行い、Tkinter では `PhotoImage` を生成する。画像の描画サイズは各パネルのピクセル数から算出し、背景色 (`#1f1f1f`) と同色のレターボックスを描く。
-- **距離計算**：`active_target` と `amcl_pose` の距離は `tf_transformations` を用いず、単純なユークリッド距離で算出。新しいターゲット受信時に `reference_distance_m` を更新し、到達割合をリセットする。どちらかが未取得の場合のみ `follower_state.distance_to_target` を暫定値として用いる。
+- **距離計算**：`active_target` と `amcl_pose` の距離は `tf_transformations` を用いず、単純なユークリッド距離で算出。新しいターゲット受信時に `reference_distance_m` を更新し、到達割合をリセットする。どちらかが未取得の場合のみ `follower_state.active_target_distance_m` を暫定値として用いる。`reference_distance_m` は最新の `segment_length_m` を反映する。
 - **イベントバナー**：`ManualSignalView` を参照し、`road_blocked` → `manual_start=True` → `sig_recog` の順に優先。`road_blocked` は外部ノードからの受信値を GUI 操作よりも優先して表示する。`manual_start`・`sig_recog`・`road_blocked` に起因するバナーは受信後60秒を経過すると自動的に非表示とし、`WAITING_STOP` 状態に基づく信号／停止線表示は状態が解除されるまで維持する。
 - **障害物固定送出**：送出開始時に内部状態 `override_active=True` を設定し、0.5Hz のタイマーで上書きメッセージを送信する。停止ボタンでタイマーを解除し、通常の受信値表示に復帰する。
 
@@ -251,3 +251,4 @@ robot_console パッケージの正式実装に先立ち、GUI構造・ROS通信
 5. 総合調整とドキュメント更新（約1日）。
 
 以上をもって、robot_console パッケージの実装フェーズに進むための詳細設計とする。
+- ルート進捗カードの詳細欄は `RouteState.message` を "Ev:" 接頭辞で、`ManagerStatus.decision` と `last_cause` を "Mgr:" 接頭辞で1行にまとめて表示する。決定や滞留理由が無い場合は該当部分を省略し、行数を増やさずに情報を圧縮する。

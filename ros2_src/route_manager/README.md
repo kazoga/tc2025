@@ -96,7 +96,7 @@ ros2 launch route_manager route_manager.launch.py \
    ros2 service call /report_stuck route_msgs/srv/ReportStuck \
      "{route_version: 1, current_index: 5, current_wp_label: 'W5',
         current_pose_map: {header: {frame_id: 'map'}, pose: {position: {x: 0.0, y: 0.0}}},
-        reason: 'stagnation', avoid_trial_count: 2, last_hint_blocked: true,
+        reason: 'front_blocked', avoid_trial_count: 2, last_hint_blocked: true,
         last_applied_offset_m: 0.5}"
    ```
    応答の `decision_code` や `offset_hint` を `/manager_status` と合わせて確認する。

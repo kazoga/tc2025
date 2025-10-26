@@ -3,15 +3,16 @@
 ルート進捗,ルート状態,route_state,route_msgs/msg/RouteState.msg,status / state,RouteState.statusを表示
 ルート進捗,バージョン,route_state / active_route,route_msgs/msg/RouteState.msg,route_version / version,RouteState.route_versionを表示
 ルート進捗,進捗率,route_state,route_msgs/msg/RouteState.msg,"current_index,total_waypoints",current_index/total_waypoints×100で進捗バーに反映
-ルート進捗,進捗カウンタ,follower_state / route_state,route_msgs/msg/FollowerState.msg; route_msgs/msg/RouteState.msg,"current_index,total_waypoints",current_index+1とtotal_waypointsで「n / total」を表示。current_indexはfollower_stateから取得
+ルート進捗,進捗カウンタ,follower_state / route_state,route_msgs/msg/FollowerState.msg; route_msgs/msg/RouteState.msg,"active_waypoint_index,total_waypoints",active_waypoint_index+1とtotal_waypointsで「n / total」を表示。active_waypoint_indexはfollower_stateから取得
+ルート進捗,詳細ラベル,route_state / manager_status,route_msgs/msg/RouteState.msg; route_msgs/msg/ManagerStatus.msg,"message,decision,last_cause","RouteState.messageをEv:, ManagerStatus.decision/last_causeをMgr:として1行表示"
 フォロワ状態,フォロワ状態,follower_state,route_msgs/msg/FollowerState.msg,state,特になし
-フォロワ状態,目標ウェイポイント,follower_state / active_route,route_msgs/msg/FollowerState.msg; route_msgs/msg/Route.msg,current_waypoint_label / current_label,current_waypoint_labelが空のときはRoute.current_labelを利用
+フォロワ状態,目標ウェイポイント,follower_state / active_route,route_msgs/msg/FollowerState.msg; route_msgs/msg/Route.msg,active_waypoint_label / current_label,active_waypoint_labelが空のときはRoute.current_labelを利用
 フォロワ状態,滞留要因,follower_state,route_msgs/msg/FollowerState.msg,last_stagnation_reason,空の場合は「滞留なし」を表示
-フォロワ状態,左右オフセット,follower_state,route_msgs/msg/FollowerState.msg,"left_offset_m_median,right_offset_m_median",左:+x / 右:+yの文字列で表示
+フォロワ状態,左右オフセット,follower_state,route_msgs/msg/FollowerState.msg,"left_offset_m,right_offset_m",左:+x / 右:+yの文字列で表示
 ロボット速度,並進速度,cmd_vel,geometry_msgs/msg/Twist.msg,linear.x,m/sに変換して小数第2位まで表示
 ロボット速度,角速度,cmd_vel,geometry_msgs/msg/Twist.msg,angular.z,rad/sをdeg/sへ換算し小数第1位表示
-目標までの距離,目標ウェイポイントまでの距離,follower_state,route_msgs/msg/FollowerState.msg,distance_to_target,distance_to_targetを表示
-目標までの距離,進捗,amcl_pose,geometry_msgs/msg/PoseWithCovarianceStamped.msg,"current_distance_m,baseline_distance_m",baseline_distance_m>0のときcurrent_distance_m/baseline_distance_m×100を進捗バーに反映
+目標までの距離,目標ウェイポイントまでの距離,follower_state,route_msgs/msg/FollowerState.msg,active_target_distance_m,active_target_distance_mを表示
+目標までの距離,進捗,amcl_pose,geometry_msgs/msg/PoseWithCovarianceStamped.msg,"current_distance_m,baseline_distance_m",baseline_distance_m>0のときcurrent_distance_m/baseline_distance_m×100を進捗バーに反映。follower_state.segment_length_mで更新
 手動・信号・封鎖イベント,バナーテキスト,manual_start / sig_recog / road_blocked / follower_state / active_route,std_msgs/msg/Bool.msg; std_msgs/msg/Int32.msg; route_msgs/msg/FollowerState.msg; route_msgs/msg/Route.msg,data / state / signal_stop_active / line_stop_active,manual_startで手動開始、road_blockedで道路封鎖、WAITING_STOP時は信号・停止線フラグで文言を決定
 手動・信号・封鎖イベント,詳細行,ー,ー,updated_at,JSTの更新時刻のみを表示
 制御コマンド(manual_start),送信状況,manual_start,std_msgs/msg/Bool.msg,"data,manual_timestamp",現在値と最終送信時刻を表示（GUI送信時は即時反映）

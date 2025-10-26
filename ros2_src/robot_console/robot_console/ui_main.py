@@ -38,6 +38,24 @@ from .utils import GuiSnapshot, NodeLaunchStatus, resize_with_letter_box
 
 LOGGER = logging.getLogger(__name__)
 
+FOLLOWER_CARD_KEYS = (
+    'state',
+    'index',
+    'label',
+    'stagnation',
+    'offsets',
+)
+
+ROUTE_CARD_KEYS = (
+    'manager',
+    'route_status',
+    'progress',
+    'progress_text',
+    'version',
+    'detail',
+)
+
+
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 REFRESH_INTERVAL_MS = 200
@@ -203,22 +221,8 @@ class UiMain:
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
-        self._route_state_vars = {
-            'manager': tk.StringVar(value='unknown'),
-            'route_status': tk.StringVar(value='unknown'),
-            'progress': tk.DoubleVar(value=0.0),
-            'progress_text': tk.StringVar(value='0 / 0'),
-            'version': tk.StringVar(value='バージョン: 0'),
-            'detail': tk.StringVar(value=''),
-        }
-        self._follower_vars = {
-            'state': tk.StringVar(value='unknown'),
-            'index': tk.StringVar(value='Index: 0'),
-            'label': tk.StringVar(value='現在: -'),
-            'next': tk.StringVar(value='次: -'),
-            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
-            'stagnation': tk.StringVar(value='滞留なし'),
-        }
+        self._route_state_vars: Dict[str, tk.Variable] = self._create_route_state_vars()
+        self._follower_vars = self._create_follower_vars()
         self._velocity_vars = {
             'linear': tk.StringVar(value='0.00 m/s'),
             'angular': tk.StringVar(value='0.0 deg/s'),
@@ -235,6 +239,40 @@ class UiMain:
         self._build_layout()
         self._on_obstacle_params_changed()
         self._schedule_update()
+
+    def _create_route_state_vars(self) -> Dict[str, tk.Variable]:
+        """ルート進捗カードで利用する tk 変数を生成する。"""
+
+        route_vars: Dict[str, tk.Variable] = {
+            'manager': tk.StringVar(value='unknown'),
+            'route_status': tk.StringVar(value='unknown'),
+            'progress': tk.DoubleVar(value=0.0),
+            'progress_text': tk.StringVar(value='0 / 0'),
+            'version': tk.StringVar(value='バージョン: 0'),
+            'detail': tk.StringVar(value='最新イベントなし'),
+        }
+        missing = set(ROUTE_CARD_KEYS) - set(route_vars.keys())
+        if missing:
+            raise AssertionError(f'ルート進捗カードのキーが不足しています: {missing}')
+        return route_vars
+
+    def _create_follower_vars(self) -> Dict[str, tk.StringVar]:
+        """フォロワ状態カードで利用する tk 変数を生成する。"""
+
+        follower_label = tk.StringVar(value='現在: -')
+        follower_vars: Dict[str, tk.StringVar] = {
+            'state': tk.StringVar(value='unknown'),
+            'index': tk.StringVar(value='Index: 0'),
+            'label': follower_label,
+            'stagnation': tk.StringVar(value='滞留なし'),
+            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
+        }
+        if 'target_label' in follower_vars:
+            raise AssertionError('target_label は廃止済みのキーです。')
+        missing = set(FOLLOWER_CARD_KEYS) - set(follower_vars.keys())
+        if missing:
+            raise AssertionError(f'フォロワカードのキーが不足しています: {missing}')
+        return follower_vars
 
     def _build_layout(self) -> None:
         self._notebook = ttk.Notebook(self._root)
@@ -441,13 +479,6 @@ class UiMain:
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='次ウェイポイント').grid(row=5, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['next']).grid(
-            row=5,
-            column=1,
-            sticky='w',
-        )
-
         metrics = ttk.Frame(summary)
         metrics.grid(row=0, column=2, sticky='nsew')
         metrics.columnconfigure(0, weight=1)
@@ -903,29 +934,38 @@ class UiMain:
         self._route_state_vars['progress'].set(progress_ratio * 100.0)
         display_index = 0
         if total_waypoints > 0:
-            follower_index = max(follower.current_index, 0)
+            follower_index = max(follower.active_waypoint_index, 0)
             display_index = min(max(follower_index + 1, 1), total_waypoints)
         self._route_state_vars['progress_text'].set(f"{display_index} / {route.total_waypoints}")
         self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
-        detail_parts = []
+        detail_entries = []
         if route.last_replan_reason:
-            detail_parts.append(route.last_replan_reason)
-        if route.last_replan_time:
-            detail_parts.append(f"@ {_format_time(route.last_replan_time)}")
-        self._route_state_vars['detail'].set(' '.join(detail_parts) or '最新イベントなし')
+            event_text = route.last_replan_reason
+            if route.last_replan_time:
+                event_text = f"{event_text} @ {_format_time(route.last_replan_time)}"
+            detail_entries.append(f"Ev: {event_text}")
+        manager_tokens = []
+        if route.manager_decision:
+            manager_tokens.append(route.manager_decision)
+        if route.manager_cause:
+            manager_tokens.append(route.manager_cause)
+        if manager_tokens:
+            manager_text = ' / '.join(manager_tokens)
+            if route.manager_updated_at:
+                manager_text = f"{manager_text} @ {_format_time(route.manager_updated_at)}"
+            detail_entries.append(f"Mgr: {manager_text}")
+        self._route_state_vars['detail'].set(' | '.join(detail_entries) or '最新イベントなし')
         self._follower_vars['state'].set(follower.state)
-        self._follower_vars['index'].set(f"Index: {follower.current_index}")
-        current_label = follower.current_label or route.current_label or '-'
-        self._follower_vars['label'].set(f"現在: {current_label}")
-        self._follower_vars['next'].set(f"次: {follower.next_label or '-'}")
+        self._follower_vars['index'].set(f"Index: {follower.active_waypoint_index}")
+        current_label = follower.active_waypoint_label or route.current_label or '-'
+        label_text = f"現在: {current_label}"
+        self._follower_vars['label'].set(label_text)
         if follower.stagnation_reason:
             stagnation = follower.stagnation_reason
         else:
             stagnation = '滞留なし'
         self._follower_vars['stagnation'].set(stagnation)
-        offsets = (
-            f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
-        )
+        offsets = f"左:{follower.left_offset_m:+.2f}m / 右:{follower.right_offset_m:+.2f}m"
         self._follower_vars['offsets'].set(offsets)
 
         self._velocity_vars['linear'].set(f"{snapshot.cmd_vel.linear_mps:.2f} m/s")

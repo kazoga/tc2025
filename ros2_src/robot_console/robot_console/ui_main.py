@@ -56,14 +56,17 @@ JST = timezone(timedelta(hours=9))
 EVENT_BANNER_TTL = timedelta(seconds=60)
 
 
-ROUTE_CARD_KEYS = (
-    'manager',
-    'route_status',
-    'progress',
-    'progress_text',
-    'version',
-    'detail',
-)
+
+@dataclass
+class RouteCardVars:
+    """ルート進捗カードで使用する tk 変数群。"""
+
+    manager: tk.StringVar
+    route_status: tk.StringVar
+    progress: tk.DoubleVar
+    progress_text: tk.StringVar
+    version: tk.StringVar
+    detail: tk.StringVar
 
 
 def _format_time(value: Optional[datetime]) -> str:
@@ -247,7 +250,7 @@ class UiMain:
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
-        self._route_state_vars: Dict[str, tk.Variable] = self._create_route_state_vars()
+        self._route_state_vars: RouteCardVars = self._create_route_state_vars()
         self._follower_vars = self._create_follower_vars()
         self._velocity_vars = {
             'linear': tk.StringVar(value='0.00 m/s'),
@@ -266,21 +269,17 @@ class UiMain:
         self._on_obstacle_params_changed()
         self._schedule_update()
 
-    def _create_route_state_vars(self) -> Dict[str, tk.Variable]:
+    def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""
 
-        vars_map: Dict[str, tk.Variable] = {
-            'manager': tk.StringVar(value='unknown'),
-            'route_status': tk.StringVar(value='unknown'),
-            'progress': tk.DoubleVar(value=0.0),
-            'progress_text': tk.StringVar(value='0 / 0'),
-            'version': tk.StringVar(value='バージョン: 0'),
-            'detail': tk.StringVar(value='最新イベントなし'),
-        }
-        missing = set(ROUTE_CARD_KEYS) - set(vars_map.keys())
-        if missing:
-            raise AssertionError(f'ルートカードのキーが不足しています: {missing}')
-        return vars_map
+        return RouteCardVars(
+            manager=tk.StringVar(value='unknown'),
+            route_status=tk.StringVar(value='unknown'),
+            progress=tk.DoubleVar(value=0.0),
+            progress_text=tk.StringVar(value='0 / 0'),
+            version=tk.StringVar(value='バージョン: 0'),
+            detail=tk.StringVar(value='最新イベントなし'),
+        )
 
     def _create_follower_vars(self) -> Dict[str, tk.StringVar]:
         """フォロワ状態カードで利用する tk 変数を生成する。"""
@@ -988,10 +987,10 @@ class UiMain:
         if total_waypoints > 0:
             follower_index = max(follower.active_waypoint_index, 0)
             display_index = min(max(follower_index + 1, 1), total_waypoints)
-        self._route_state_vars['progress_text'].set(
+        self._route_state_vars.progress_text.set(
             f"{display_index} / {route.total_waypoints}"
         )
-        self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
+        self._route_state_vars.version.set(f"バージョン: {route.route_version}")
         detail_entries = []
         if route.last_replan_reason:
             event_text = route.last_replan_reason
@@ -1008,7 +1007,7 @@ class UiMain:
             if route.manager_updated_at:
                 manager_text = f"{manager_text} @ {_format_time(route.manager_updated_at)}"
             detail_entries.append(f"Mgr: {manager_text}")
-        self._route_state_vars['detail'].set(
+        self._route_state_vars.detail.set(
             ' | '.join(detail_entries) or '最新イベントなし'
         )
         self._follower_vars['state'].set(follower.state)

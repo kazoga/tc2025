@@ -55,7 +55,7 @@ def convert_image_message(msg: ImageMsg) -> Optional[Image.Image]:
 def resize_with_letter_box(
     image: Image.Image,
     target_size: Tuple[int, int],
-    background_color: Tuple[int, int, int] = (24, 24, 24),
+    background_color: Tuple[int, int, int] = (31, 31, 31),
 ) -> Image.Image:
     """アスペクト比を保ちながら余白を背景色で塗った画像を返す。"""
 
@@ -72,13 +72,16 @@ def resize_with_letter_box(
     offset_x = (target_width - new_width) // 2
     offset_y = (target_height - new_height) // 2
     canvas.paste(resized, (offset_x, offset_y))
+    placeholder_text = getattr(image, "info", {}).get("placeholder_tag")
+    if placeholder_text:
+        canvas.info["placeholder_tag"] = placeholder_text
     return canvas
 
 
 def create_placeholder_image(
     size: Tuple[int, int],
     text: str,
-    background_color: Tuple[int, int, int] = (24, 24, 24),
+    background_color: Tuple[int, int, int] = (31, 31, 31),
     foreground_color: Tuple[int, int, int] = (255, 255, 255),
 ) -> Image.Image:
     """テキストを中央に描画したプレースホルダ画像を生成する。"""
@@ -91,24 +94,31 @@ def create_placeholder_image(
 
     draw = ImageDraw.Draw(image)
     try:
-        font = ImageFont.load_default()
+        base_font = ImageFont.load_default()
     except Exception:  # pragma: no cover - フォント取得失敗時は描画なし
         return image
 
+    # 既定ビットマップフォントを拡大してプレースホルダ文字を見やすくする。
     if hasattr(draw, 'textbbox'):
         try:
-            left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
-            text_width = right - left
-            text_height = bottom - top
+            left, top, right, bottom = draw.textbbox((0, 0), text, font=base_font)
         except ValueError:
-            # Pillow がビットマップフォントのみを提供している環境では
-            # textbbox() が ValueError を送出するため、従来の textsize() を
-            # 使って幅と高さを算出する。
-            text_width, text_height = draw.textsize(text, font=font)
+            width, height = draw.textsize(text, font=base_font)
+            left, top, right, bottom = 0, 0, width, height
     else:  # pragma: no cover - 古い Pillow のみ
-        text_width, text_height = draw.textsize(text, font=font)
+        width, height = draw.textsize(text, font=base_font)
+        left, top, right, bottom = 0, 0, width, height
 
-    pos_x = max(0, (size[0] - text_width) // 2)
-    pos_y = max(0, (size[1] - text_height) // 2)
-    draw.text((pos_x, pos_y), text, fill=foreground_color, font=font)
+    text_width = max(right - left, 1)
+    text_height = max(bottom - top, 1)
+    mask = Image.new('L', (text_width, text_height), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.text((-left, -top), text, fill=255, font=base_font)
+    scale = 5
+    scaled_mask = mask.resize((text_width * scale, text_height * scale), Image.NEAREST)
+
+    pos_x = max(0, (size[0] - scaled_mask.width) // 2)
+    pos_y = max(0, (size[1] - scaled_mask.height) // 2)
+    image.paste(foreground_color, (pos_x, pos_y, pos_x + scaled_mask.width, pos_y + scaled_mask.height), scaled_mask)
+    image.info['placeholder_tag'] = text
     return image

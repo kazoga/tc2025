@@ -38,6 +38,7 @@ from .utils import GuiSnapshot, NodeLaunchState, NodeLaunchStatus, resize_with_l
 
 LOGGER = logging.getLogger(__name__)
 
+
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 REFRESH_INTERVAL_MS = 200
@@ -222,7 +223,7 @@ class UiMain:
         self._update_job: Optional[str] = None
         self._shutdown_check_job: Optional[str] = None
 
-        self._route_state_vars = {
+        self._route_state_vars: Dict[str, tk.Variable] = {
             'manager': tk.StringVar(value='unknown'),
             'route_status': tk.StringVar(value='unknown'),
             'version': tk.StringVar(value='--'),
@@ -230,7 +231,7 @@ class UiMain:
             'progress_percent': tk.StringVar(value='0.0%'),
             'progress_counter': tk.StringVar(value='0 / 0'),
         }
-        self._follower_vars = {
+        self._follower_vars: Dict[str, tk.StringVar] = {
             'state': tk.StringVar(value='unknown'),
             'index': tk.StringVar(value='Index: 0'),
             'label': tk.StringVar(value='現在: -'),

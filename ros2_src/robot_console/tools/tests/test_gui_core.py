@@ -143,7 +143,6 @@ if 'PIL' not in sys.modules:
 from robot_console.gui_core import GuiCore
 from robot_console.utils import ConsoleLogBuffer, GuiCommandType
 
-
 def _make_follower_state(**overrides):
     """GuiCore.update_follower_state へ渡すテスト用メッセージを生成する。"""
 

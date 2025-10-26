@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import base64
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import ttk
+from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 try:
@@ -34,7 +36,7 @@ else:  # pragma: no cover - OpenCV 無し環境では未使用
     np = None  # type: ignore
 
 from .gui_core import CAMERA_DISPLAY_SIZE, GuiCore
-from .utils import GuiSnapshot, NodeLaunchStatus, resize_with_letter_box
+from .utils import GuiSnapshot, NodeLaunchState, NodeLaunchStatus, resize_with_letter_box
 
 LOGGER = logging.getLogger(__name__)
 
@@ -127,6 +129,17 @@ class ImagePanel(ttk.LabelFrame):
 
         return self._target_size
 
+    def get_display_size(self) -> Tuple[int, int]:
+        """現在のキャンバスサイズを取得し、未配置時はターゲットサイズを返す。"""
+
+        width = self._canvas.winfo_width()
+        height = self._canvas.winfo_height()
+        if width <= 1:
+            width = self._target_size[0]
+        if height <= 1:
+            height = self._target_size[1]
+        return width, height
+
     def update_image(self, photo: Optional[tk.PhotoImage], *, alt_text: str = "画像未取得") -> None:
         """画像と代替テキストを設定する。"""
 
@@ -138,6 +151,7 @@ class ImagePanel(ttk.LabelFrame):
             self._text_item = None
 
         self._photo = photo
+        display_width, _ = self.get_display_size()
         if photo is None:
             self._text_item = self._canvas.create_text(
                 0,
@@ -147,7 +161,7 @@ class ImagePanel(ttk.LabelFrame):
                 font=("Helvetica", 12, "bold"),
                 justify="center",
                 anchor="center",
-                width=max(self._target_size[0] - 20, 50),
+                width=max(display_width - 20, 50),
             )
         else:
             self._image_item = self._canvas.create_image(0, 0, image=photo, anchor="center")
@@ -172,8 +186,7 @@ class ImagePanel(ttk.LabelFrame):
     def _relayout(self) -> None:
         """キャンバス中心に画像もしくはテキストを配置し直す。"""
 
-        width = max(self._canvas.winfo_width(), self._target_size[0])
-        height = max(self._canvas.winfo_height(), self._target_size[1])
+        width, height = self.get_display_size()
         center_x = width / 2
         center_y = height / 2
         if self._image_item is not None:
@@ -181,6 +194,18 @@ class ImagePanel(ttk.LabelFrame):
         if self._text_item is not None:
             self._canvas.coords(self._text_item, center_x, center_y)
             self._canvas.itemconfigure(self._text_item, width=max(width - 24, 50))
+
+
+@dataclass
+class RouteCardVars:
+    """ルート進捗カードで利用する tk 変数群。"""
+
+    manager: tk.StringVar
+    route_status: tk.StringVar
+    progress: tk.DoubleVar
+    progress_text: tk.StringVar
+    version: tk.StringVar
+    detail: tk.StringVar
 
 
 class UiMain:
@@ -192,6 +217,7 @@ class UiMain:
         self._root.title("robot_console")
         self._root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self._root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self._root.protocol("WM_DELETE_WINDOW", self._on_close_request)
 
         self._configure_style()
 
@@ -213,11 +239,11 @@ class UiMain:
         self._obstacle_left = tk.DoubleVar(value=0.0)
         self._obstacle_right = tk.DoubleVar(value=0.0)
         self._obstacle_blocked = tk.BooleanVar(value=False)
-        self._obstacle_override_state = tk.StringVar(value='状態: 自動追従')
-        self._obstacle_override_detail = tk.StringVar(value='受信値: 未取得')
-        self._latest_obstacle_state_text = '受信値: 未取得'
-        self._obstacle_preview_text = ''
+        self._obstacle_override_state = tk.StringVar(
+            value='状態: front_blocked=OFF 余裕:0.00m 左:+0.00m 右:+0.00m 更新: --:--:--'
+        )
         self._event_banner = tk.StringVar(value='')
+        self._event_detail = tk.StringVar(value='更新: --:--:--')
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
@@ -228,9 +254,9 @@ class UiMain:
             'angular': tk.StringVar(value='0.0 deg/s'),
         }
         self._target_vars = {
-            'distance': tk.StringVar(value='現在距離: 0.0 m'),
-            'baseline': tk.StringVar(value='基準距離: 0.0 m'),
+            'distance': tk.StringVar(value='0.0 m'),
             'progress': tk.DoubleVar(value=0.0),
+            'progress_percent': tk.StringVar(value='0.0%'),
         }
 
         self._launch_widgets: Dict[str, Dict[str, object]] = {}
@@ -407,29 +433,39 @@ class UiMain:
         route_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         route_frame.columnconfigure(1, weight=1)
         ttk.Label(route_frame, text='マネージャ状態').grid(row=0, column=0, sticky='w')
-        ttk.Label(route_frame, textvariable=self._route_state_vars['manager']).grid(
+        ttk.Label(route_frame, textvariable=self._route_state_vars.manager).grid(
             row=0,
             column=1,
             sticky='w',
         )
         ttk.Label(route_frame, text='ルート状態').grid(row=1, column=0, sticky='w')
-        ttk.Label(route_frame, textvariable=self._route_state_vars['route_status']).grid(
+        ttk.Label(route_frame, textvariable=self._route_state_vars.route_status).grid(
             row=1,
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, text='進捗').grid(row=2, column=0, sticky='w')
-        ttk.Progressbar(
-            route_frame,
-            maximum=100,
-            variable=self._route_state_vars['progress'],
-        ).grid(row=2, column=1, sticky='ew', pady=2)
-        ttk.Label(route_frame, textvariable=self._route_state_vars['progress_text']).grid(
-            row=3,
+        ttk.Label(route_frame, text='バージョン').grid(row=2, column=0, sticky='w')
+        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
+            row=2,
             column=1,
             sticky='w',
         )
-        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
+        ttk.Label(route_frame, text='進捗率').grid(row=3, column=0, sticky='w')
+        progress_frame = ttk.Frame(route_frame)
+        progress_frame.grid(row=3, column=1, sticky='ew', pady=2)
+        progress_frame.columnconfigure(0, weight=1)
+        ttk.Progressbar(
+            progress_frame,
+            maximum=100,
+            variable=self._route_state_vars.progress,
+        ).grid(row=2, column=1, sticky='ew', pady=2)
+        ttk.Label(route_frame, textvariable=self._route_state_vars.progress_text).grid(
+            row=3,
+            column=1,
+            sticky='e',
+            padx=(8, 0),
+        )
+        ttk.Label(route_frame, textvariable=self._route_state_vars.version).grid(
             row=4,
             column=1,
             sticky='w',
@@ -437,7 +473,7 @@ class UiMain:
         ttk.Label(route_frame, text='最終イベント').grid(row=5, column=0, sticky='nw')
         ttk.Label(
             route_frame,
-            textvariable=self._route_state_vars['detail'],
+            textvariable=self._route_state_vars.detail,
             justify='left',
             wraplength=220,
         ).grid(row=5, column=1, sticky='w')
@@ -449,31 +485,25 @@ class UiMain:
         )
         follower_frame.grid(row=0, column=1, sticky='nsew', padx=(0, 8))
         follower_frame.columnconfigure(1, weight=1)
-        ttk.Label(follower_frame, text='状態').grid(row=0, column=0, sticky='w')
+        ttk.Label(follower_frame, text='フォロワ状態').grid(row=0, column=0, sticky='w')
         ttk.Label(follower_frame, textvariable=self._follower_vars['state']).grid(
             row=0,
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='現在インデックス').grid(row=1, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['index']).grid(
+        ttk.Label(follower_frame, text='目標ウェイポイント').grid(row=1, column=0, sticky='w')
+        ttk.Label(follower_frame, textvariable=self._follower_vars['target_label']).grid(
             row=1,
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='現在ラベル').grid(row=2, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['label']).grid(
+        ttk.Label(follower_frame, text='滞留要因').grid(row=2, column=0, sticky='w')
+        ttk.Label(follower_frame, textvariable=self._follower_vars['stagnation']).grid(
             row=2,
             column=1,
             sticky='w',
         )
-        ttk.Label(follower_frame, text='滞留要因').grid(row=3, column=0, sticky='w')
-        ttk.Label(follower_frame, textvariable=self._follower_vars['stagnation']).grid(
-            row=3,
-            column=1,
-            sticky='w',
-        )
-        ttk.Label(follower_frame, text='左右中央値').grid(row=4, column=0, sticky='w')
+        ttk.Label(follower_frame, text='左右オフセット').grid(row=3, column=0, sticky='w')
         ttk.Label(follower_frame, textvariable=self._follower_vars['offsets']).grid(
             row=4,
             column=1,
@@ -508,20 +538,31 @@ class UiMain:
         target_frame = ttk.LabelFrame(metrics, text='目標までの距離', style='Card.TLabelframe')
         target_frame.grid(row=1, column=0, sticky='nsew')
         target_frame.columnconfigure(0, weight=1)
-        ttk.Label(target_frame, textvariable=self._target_vars['distance']).grid(
+        target_frame.columnconfigure(1, weight=1)
+        ttk.Label(target_frame, text='目標ウェイポイントまで').grid(
             row=0,
             column=0,
             sticky='w',
         )
+        ttk.Label(target_frame, textvariable=self._target_vars['distance']).grid(
+            row=0,
+            column=1,
+            sticky='e',
+        )
+        ttk.Label(target_frame, text='進捗').grid(row=1, column=0, sticky='w', pady=(6, 0))
+        target_progress = ttk.Frame(target_frame)
+        target_progress.grid(row=1, column=1, sticky='ew', pady=(6, 0))
+        target_progress.columnconfigure(0, weight=1)
         ttk.Progressbar(
-            target_frame,
+            target_progress,
             maximum=100,
             variable=self._target_vars['progress'],
-        ).grid(row=1, column=0, sticky='ew', pady=4)
-        ttk.Label(target_frame, textvariable=self._target_vars['baseline']).grid(
-            row=2,
-            column=0,
-            sticky='w',
+        ).grid(row=0, column=0, sticky='ew')
+        ttk.Label(target_progress, textvariable=self._target_vars['progress_percent']).grid(
+            row=0,
+            column=1,
+            sticky='e',
+            padx=(8, 0),
         )
 
     def _build_image_row(self, parent: ttk.Frame) -> None:
@@ -577,6 +618,11 @@ class UiMain:
             justify='center',
         )
         self._banner_label.grid(row=0, column=0, sticky='nsew')
+        ttk.Label(
+            banner_frame,
+            textvariable=self._event_detail,
+            anchor='e',
+        ).grid(row=1, column=0, sticky='ew', pady=(8, 0))
 
         control_frame = ttk.LabelFrame(container, text='制御コマンド', padding=4)
         control_frame.grid(row=0, column=1, sticky='nsew')
@@ -702,16 +748,16 @@ class UiMain:
             column=2,
             padx=(8, 0),
         )
-        ttk.Label(obstacle_tab, textvariable=self._obstacle_override_state).grid(
+        ttk.Label(
+            obstacle_tab,
+            textvariable=self._obstacle_override_state,
+            anchor='w',
+            justify='left',
+        ).grid(
             row=2,
             column=0,
             sticky='w',
             pady=(6, 0),
-        )
-        ttk.Label(obstacle_tab, textvariable=self._obstacle_override_detail).grid(
-            row=3,
-            column=0,
-            sticky='w',
         )
         notebook.add(obstacle_tab, text='obstacle_hint')
 
@@ -899,39 +945,45 @@ class UiMain:
         self._core.stop_obstacle_override()
 
     def _on_obstacle_params_changed(self, *_args) -> None:
-        self._obstacle_preview_text = (
-            '送信予定: '
-            f"front_blocked={self._obstacle_blocked.get()} "
-            f"clearance={self._obstacle_clearance.get():.2f}m "
-            f"左:{self._obstacle_left.get():+.2f}m 右:{self._obstacle_right.get():+.2f}m"
-        )
-        self._obstacle_override_detail.set(
-            f"{self._latest_obstacle_state_text}\n{self._obstacle_preview_text}"
-        )
+        """障害物ヒント送信パラメータ変更時のフック。"""
+
+        # GUI 上では受信状態のみを表示するため、変更時の追加処理は行わない。
+        return
 
     # ---------- 更新処理 ----------
     def _schedule_update(self) -> None:
-        self._root.after(REFRESH_INTERVAL_MS, self._refresh)
+        if self._closing:
+            return
+        try:
+            self._update_job = self._root.after(REFRESH_INTERVAL_MS, self._refresh)
+        except tk.TclError:
+            self._update_job = None
 
     def _refresh(self) -> None:
         try:
             snapshot = self._core.snapshot()
+            self._latest_snapshot = snapshot
             self._apply_snapshot(snapshot)
         except Exception as exc:  # pylint: disable=broad-except
             LOGGER.exception("スナップショット更新処理で例外が発生しました: %s", exc)
         finally:
-            self._schedule_update()
+            if not self._closing:
+                self._schedule_update()
 
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
         follower = snapshot.follower_state
-        self._route_state_vars['manager'].set(route.manager_state)
-        self._route_state_vars['route_status'].set(route.route_status)
+        self._route_state_vars.manager.set(route.manager_state)
+        self._route_state_vars.route_status.set(route.route_status)
         total_waypoints = max(route.total_waypoints, 0)
+        follower_index = max(follower.current_index, -1)
+        progress_count = 0
+        if total_waypoints > 0:
+            progress_count = min(max(follower_index + 1, 0), total_waypoints)
         progress_ratio = 0.0
         if total_waypoints > 0:
             progress_ratio = max(min(route.current_index / total_waypoints, 1.0), 0.0)
-        self._route_state_vars['progress'].set(progress_ratio * 100.0)
+        self._route_state_vars.progress.set(progress_ratio * 100.0)
         display_index = 0
         if total_waypoints > 0:
             follower_index = max(follower.active_waypoint_index, 0)
@@ -976,15 +1028,25 @@ class UiMain:
         self._velocity_vars['angular'].set(f"{snapshot.cmd_vel.angular_dps:.1f} deg/s")
 
         target = snapshot.target_distance
-        baseline = target.baseline_distance_m
-        ratio = 0.0 if baseline <= 0 else max(min(target.current_distance_m / baseline, 1.0), 0.0)
-        self._target_vars['distance'].set(f"現在距離: {target.current_distance_m:.1f} m")
-        self._target_vars['baseline'].set(f"基準距離: {baseline:.1f} m")
+        baseline = max(target.baseline_distance_m, 0.0)
+        remaining = max(target.current_distance_m, 0.0)
+        ratio = 0.0
+        if baseline > 0.0:
+            completed = baseline - remaining
+            completed = max(min(completed, baseline), 0.0)
+            ratio = completed / baseline
+        self._target_vars['distance'].set(f"{target.current_distance_m:.1f} m")
         self._target_vars['progress'].set(ratio * 100.0)
+        self._target_vars['progress_percent'].set(f"{ratio * 100.0:.1f}%")
 
-        banner_text, banner_bg, banner_fg = self._resolve_banner(snapshot)
-        self._event_banner.set(banner_text)
+        self._update_line_stop_tracker(snapshot.follower_state.line_stop_active)
+        banner_text, banner_bg, banner_fg, banner_ts = self._resolve_banner(snapshot)
+        display_text = ''
+        if banner_text:
+            display_text = f"{banner_text}\n更新: {_format_time(banner_ts)}"
+        self._event_banner.set(display_text)
         self._banner_label.configure(bg=banner_bg, fg=banner_fg)
+        self._event_detail.set(f"更新: {_format_time(banner_ts)}")
 
         manual = snapshot.manual_signal
         self._manual_status_var.set(
@@ -1009,119 +1071,100 @@ class UiMain:
         )
 
         hint = snapshot.obstacle_hint
-        state_label = (
-            f"状態: front_blocked={'ON' if hint.front_blocked else 'OFF'} / "
-            f"余裕距離:{hint.front_clearance_m:.2f}m"
-        )
-        self._obstacle_override_state.set(state_label)
-        self._latest_obstacle_state_text = (
-            f"受信値: 左:{hint.left_offset_m:+.2f}m 右:{hint.right_offset_m:+.2f}m "
+        obstacle_status = (
+            f"状態: front_blocked={'ON' if hint.front_blocked else 'OFF'} "
+            f"余裕:{hint.front_clearance_m:.2f}m "
+            f"左:{hint.left_offset_m:+.2f}m 右:{hint.right_offset_m:+.2f}m "
             f"更新:{_format_time(hint.updated_at)}"
         )
-        self._obstacle_override_detail.set(
-            f"{self._latest_obstacle_state_text}\n{self._obstacle_preview_text}"
-        )
+        self._obstacle_override_state.set(obstacle_status)
 
         self._update_images(snapshot)
         self._update_launch_states(snapshot)
         self._update_logs(snapshot)
+        if self._shutdown_pending and not self._has_active_nodes(snapshot):
+            self._finalize_shutdown()
 
-    def _resolve_banner(self, snapshot: GuiSnapshot) -> Tuple[str, str, str]:
+    def _update_line_stop_tracker(self, active: bool) -> None:
+        """停止線待ちの立ち上がり時刻を記録する。"""
+
+        now_utc = datetime.now(timezone.utc)
+        if active:
+            if not self._last_line_stop_state or self._line_stop_active_since is None:
+                self._line_stop_active_since = now_utc
+        else:
+            self._line_stop_active_since = None
+        self._last_line_stop_state = active
+
+    def _resolve_banner(self, snapshot: GuiSnapshot) -> Tuple[str, str, str, Optional[datetime]]:
         """ダッシュボードのイベントバナー表示内容と配色を決定する。"""
 
-        base_text = self._build_banner(snapshot)
+        base_text, timestamp = self._build_banner(snapshot)
         if not base_text:
-            return base_text, self._banner_default_bg, self._banner_default_fg
+            return base_text, self._banner_default_bg, self._banner_default_fg, timestamp
 
-        detail = ''
         background = self._banner_default_bg
         foreground = self._banner_default_fg
 
         if base_text.startswith('道路封鎖'):
-            detail = self._format_road(snapshot)
             background = '#c0392b'
             foreground = '#ffffff'
         elif base_text.startswith('信号: GO'):
-            detail = self._format_sig(snapshot)
             background = '#2980b9'
             foreground = '#ffffff'
         elif base_text.startswith('信号: STOP'):
-            detail = self._format_sig(snapshot)
             background = '#d35400'
             foreground = '#ffffff'
         elif base_text.startswith('停止線: STOP'):
-            detail = self._format_sig(snapshot)
             background = '#8e44ad'
             foreground = '#ffffff'
         elif base_text.startswith('manual_start'):
-            detail = self._format_manual(snapshot)
             background = '#16a085'
             foreground = '#ffffff'
 
-        text = base_text if not detail else f"{base_text}\n{detail}"
-        return text, background, foreground
+        return base_text, background, foreground, timestamp
 
-    def _build_banner(self, snapshot: GuiSnapshot) -> str:
+    def _build_banner(self, snapshot: GuiSnapshot) -> Tuple[str, Optional[datetime]]:
         current_time = datetime.now(timezone.utc)
-        if (
-            snapshot.manual_signal.road_blocked
-            and self._is_recent(snapshot.manual_signal.road_blocked_timestamp, current_time)
-        ):
-            return '道路封鎖アラート'
-        if snapshot.follower_state.state == 'WAITING_STOP':
-            if snapshot.follower_state.signal_stop_active:
-                return '信号: STOP'
-            if snapshot.follower_state.line_stop_active:
-                return '停止線: STOP'
-        sig_timestamp = snapshot.manual_signal.sig_timestamp
-        sig = snapshot.manual_signal.sig_recog
-        if (
-            sig == 1
-            and self._is_recent(sig_timestamp, current_time)
-        ):
-            return '信号: GO'
-        if (
-            sig == 2
-            and self._is_recent(sig_timestamp, current_time)
-        ):
-            return '信号: STOP'
-        if (
-            snapshot.manual_signal.manual_start
-            and self._is_recent(snapshot.manual_signal.manual_timestamp, current_time)
-        ):
-            return 'manual_start: True'
-        return ''
+        events: List[Tuple[datetime, int, str, Optional[datetime]]] = []
 
-    def _format_manual(self, snapshot: GuiSnapshot) -> str:
-        ts = snapshot.manual_signal.manual_timestamp
-        if ts:
-            return f"送信時刻: {_format_time(ts)}"
-        return '送信時刻: --:--:--'
+        def add_event(text: str, timestamp: Optional[datetime]) -> None:
+            raw_ts = timestamp or current_time
+            if not self._is_recent(raw_ts, current_time):
+                return
+            if raw_ts.tzinfo is None:
+                normalized = raw_ts.replace(tzinfo=timezone.utc)
+            else:
+                normalized = raw_ts.astimezone(timezone.utc)
+            order = len(events)
+            events.append((normalized, order, text, raw_ts))
 
-    def _format_sig(self, snapshot: GuiSnapshot) -> str:
-        if snapshot.follower_state.state == 'WAITING_STOP':
-            if snapshot.follower_state.signal_stop_active:
-                return '停止要因: 信号 STOP'
-            if snapshot.follower_state.line_stop_active:
-                return '停止要因: 停止線 STOP'
-        ts = snapshot.manual_signal.sig_timestamp
-        value = snapshot.manual_signal.sig_recog
-        label = {1: 'GO', 2: 'STOP'}.get(value, '未定義')
-        if value is None:
-            return '受信なし'
-        if ts:
-            return f"最終送信: {label} @{_format_time(ts)}"
-        return f"最終送信: {label}"
+        manual = snapshot.manual_signal
+        follower = snapshot.follower_state
 
-    def _format_road(self, snapshot: GuiSnapshot) -> str:
-        ts = snapshot.manual_signal.road_blocked_timestamp
-        source_label = self._translate_road_source(snapshot.manual_signal.road_blocked_source)
-        if ts:
-            return (
-                f"現在:{snapshot.manual_signal.road_blocked} "
-                f"時刻:{_format_time(ts)} 入力元:{source_label}"
-            )
-        return f"入力元:{source_label} 受信なし"
+        if manual.road_blocked:
+            add_event('道路封鎖アラート', manual.road_blocked_timestamp)
+
+        if follower.state == 'WAITING_STOP':
+            if follower.signal_stop_active:
+                add_event('信号: STOP', manual.sig_timestamp)
+            elif follower.line_stop_active:
+                add_event('停止線: STOP', self._line_stop_active_since)
+
+        if manual.sig_recog == 1:
+            add_event('信号: GO', manual.sig_timestamp)
+        elif manual.sig_recog == 2:
+            add_event('信号: STOP', manual.sig_timestamp)
+
+        if manual.manual_start:
+            add_event('manual_start: True', manual.manual_timestamp)
+
+        if not events:
+            return '', None
+
+        events.sort(key=lambda item: (item[0], item[1]))
+        _, _, text, original_ts = events[-1]
+        return text, original_ts
 
     @staticmethod
     def _is_recent(timestamp: Optional[datetime], current_time: datetime) -> bool:
@@ -1156,19 +1199,20 @@ class UiMain:
 
         def _build_photo(
             source: Optional[Image.Image],
-            target_size: Tuple[int, int],
+            panel: ImagePanel,
         ) -> Optional[tk.PhotoImage]:
             if source is None:
                 return None
             working = source.copy() if hasattr(source, 'copy') else source
             try:
+                target_size = panel.get_display_size()
                 if hasattr(working, 'size') and working.size != target_size:
                     working = resize_with_letter_box(working, target_size)
             except Exception:  # pragma: no cover - サイズ調整失敗時は元画像を使用
                 pass
             return self._create_photo_image(working)
 
-        route_photo = _build_photo(snapshot.images.route_map, self._route_panel.target_size)
+        route_photo = _build_photo(snapshot.images.route_map, self._route_panel)
         self._route_panel.update_image(route_photo, alt_text='画像未取得')
         self._route_panel.update_caption(
             'ルート地図: 表示中' if route_photo else 'ルート地図: 画像未取得'
@@ -1177,19 +1221,14 @@ class UiMain:
         obstacle_source = snapshot.images.obstacle_view
         if obstacle_source is not None and snapshot.images.obstacle_overlay:
             obstacle_source = self._draw_overlay(obstacle_source.copy(), snapshot.images.obstacle_overlay)
-        obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel.target_size)
+        obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel)
         self._obstacle_panel.update_image(obstacle_photo, alt_text='画像未取得')
-        overlay_lines = [
-            f"遮蔽:{'YES' if snapshot.obstacle_hint.front_blocked else 'NO'}",
-            f"余裕:{snapshot.obstacle_hint.front_clearance_m:.2f}m",
-            f"左:{snapshot.obstacle_hint.left_offset_m:+.2f}m 右:{snapshot.obstacle_hint.right_offset_m:+.2f}m",
-        ]
-        self._obstacle_panel.update_overlay('\n'.join(overlay_lines))
+        self._obstacle_panel.update_overlay('')
         self._obstacle_panel.update_caption(
             '障害物ビュー: 表示中' if obstacle_photo else '障害物ビュー: 画像未取得'
         )
 
-        camera_photo = _build_photo(snapshot.images.external_camera, self._camera_panel.target_size)
+        camera_photo = _build_photo(snapshot.images.external_camera, self._camera_panel)
         self._camera_panel.update_image(camera_photo, alt_text='画像未取得')
         camera_mode = snapshot.images.camera_mode or 'unknown'
         caption = f"外部カメラ: {camera_mode}"
@@ -1322,6 +1361,108 @@ class UiMain:
             NodeLaunchStatus.ERROR: 'エラー',
         }
         return mapping.get(status, '不明')
+
+    def _on_close_request(self) -> None:
+        """ウィンドウクローズ要求を受け、必要に応じてノード停止を実行する。"""
+
+        if self._closing or self._shutdown_pending:
+            return
+        snapshot = self._get_latest_snapshot()
+        if not self._has_active_nodes(snapshot):
+            self._finalize_shutdown()
+            return
+        self._shutdown_pending = True
+        self._core.request_stop_all()
+        self._schedule_shutdown_check()
+
+    def _get_latest_snapshot(self) -> Optional[GuiSnapshot]:
+        """最新のスナップショットを取得し、取得できなければ直近値を返す。"""
+
+        try:
+            snapshot = self._core.snapshot()
+        except Exception:  # pylint: disable=broad-except
+            return self._latest_snapshot
+        self._latest_snapshot = snapshot
+        return snapshot
+
+    def _schedule_shutdown_check(self) -> None:
+        """ノード停止完了を確認するポーリングを設定する。"""
+
+        if self._closing:
+            return
+        try:
+            self._shutdown_check_job = self._root.after(
+                REFRESH_INTERVAL_MS,
+                self._wait_for_shutdown_completion,
+            )
+        except tk.TclError:
+            self._shutdown_check_job = None
+
+    def _wait_for_shutdown_completion(self) -> None:
+        """ノードがすべて停止したかを確認し、停止済みなら終了する。"""
+
+        self._shutdown_check_job = None
+        if self._closing:
+            return
+        snapshot = self._get_latest_snapshot()
+        if snapshot is None or self._has_active_nodes(snapshot):
+            if self._shutdown_pending:
+                self._schedule_shutdown_check()
+            return
+        self._finalize_shutdown()
+
+    def _finalize_shutdown(self) -> None:
+        """更新ループを停止し、Tk アプリケーションを終了する。"""
+
+        if self._closing:
+            return
+        self._closing = True
+        self._shutdown_pending = False
+        self._cancel_after_job(self._update_job)
+        self._update_job = None
+        self._cancel_after_job(self._shutdown_check_job)
+        self._shutdown_check_job = None
+        try:
+            self._root.destroy()
+        except tk.TclError:
+            LOGGER.debug("ウィンドウ破棄済みのため destroy をスキップしました。")
+
+    def _cancel_after_job(self, job_id: Optional[str]) -> None:
+        """after で登録したジョブがあればキャンセルする。"""
+
+        if job_id is None:
+            return
+        try:
+            self._root.after_cancel(job_id)
+        except tk.TclError:
+            LOGGER.debug("after_cancel 失敗 (既に破棄済み): %s", job_id)
+
+    @staticmethod
+    def _has_active_nodes(snapshot: Optional[GuiSnapshot]) -> bool:
+        """スナップショット内に稼働中のノードが存在するかを判定する。"""
+
+        if snapshot is None:
+            return False
+        for state in snapshot.launch_states.values():
+            if UiMain._is_state_active(state):  # pylint: disable=protected-access
+                return True
+        return False
+
+    @staticmethod
+    def _is_state_active(state: NodeLaunchState) -> bool:
+        """個別ノード状態が稼働中かどうかを判定する。"""
+
+        if state.status in (
+            NodeLaunchStatus.STARTING,
+            NodeLaunchStatus.RUNNING,
+            NodeLaunchStatus.STOPPING,
+        ):
+            return True
+        if state.process_id is not None:
+            return True
+        if state.simulator_process_id is not None:
+            return True
+        return False
 
     def run(self) -> None:
         """tkinter メインループを開始する。"""

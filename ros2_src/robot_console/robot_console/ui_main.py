@@ -215,13 +215,6 @@ class UiMain:
         self._event_detail = tk.StringVar(value='更新: --:--:--')
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
-        self._line_stop_active_since: Optional[datetime] = None
-        self._last_line_stop_state = False
-        self._latest_snapshot: Optional[GuiSnapshot] = None
-        self._closing = False
-        self._shutdown_pending = False
-        self._update_job: Optional[str] = None
-        self._shutdown_check_job: Optional[str] = None
 
         self._route_state_vars: Dict[str, tk.Variable] = {
             'manager': tk.StringVar(value='unknown'),
@@ -231,10 +224,11 @@ class UiMain:
             'progress_percent': tk.StringVar(value='0.0%'),
             'progress_counter': tk.StringVar(value='0 / 0'),
         }
+        follower_label = tk.StringVar(value='現在: -')
         self._follower_vars: Dict[str, tk.StringVar] = {
             'state': tk.StringVar(value='unknown'),
             'index': tk.StringVar(value='Index: 0'),
-            'label': tk.StringVar(value='現在: -'),
+            'label': follower_label,
             'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
             'stagnation': tk.StringVar(value='滞留なし'),
             'offsets': tk.StringVar(value='左:+0.00m / 右:+0.00m'),

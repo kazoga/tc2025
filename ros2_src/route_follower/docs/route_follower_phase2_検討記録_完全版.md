@@ -46,7 +46,7 @@ Phase2ではグローバル経路の再計算までは行わず、ローカル�
 | データ源 | obstacle_monitor /obstacle_avoidance_hint |
 | キャッシュ長 | 5秒 |
 | 判定 | front_blocked=True の比率 >= 0.8 |
-| 左右開放度 | front_blocked=True サンプルの中央値 |
+| 左右オフセット | front_blocked=True サンプルの中央値 |
 | 出力0値 | 障害物で閉塞時は0.0、障害物なしは0.75以上 |
 
 ### 3.4 回避方針
@@ -94,9 +94,9 @@ dy2 =  sin(yaw)*forward
 |------|----|
 | サービス型 | route_msgs/srv/ReportStuck |
 | リクエスト | route_version:int32, current_index:int32, current_wp_label:string, current_pose_map:Pose, reason:string, avoid_trial_count:uint32, last_hint_blocked:bool, last_applied_offset_m:float |
-| レスポンス | decision:uint8(1=replan/2=skip/3=failed), waiting_deadline:Duration, offset_hint:float, note:string |
+| レスポンス | decision_code:uint8(1=replan/2=skip/3=failed), waiting_deadline:Duration, offset_hint:float, note:string |
 | 呼出方式 | 同期（timeout=30s） |
-| decision処理 | replan/skip→WAITING_REROUTE, failed→ERROR |
+| decision_code処理 | replan/skip→WAITING_REROUTE, failed→ERROR |
 
 ---
 
@@ -144,7 +144,7 @@ RUNNING
  │        └─ Hint有 / 回避可 → AVOIDING
  │                ├─ L字完了 → RUNNING
  │                └─ 再滞留 → report_stuck(avoidance_failed)
- ├─ report_stuck decision=replan/skip → WAITING_REROUTE
+ ├─ report_stuck decision_code=replan/skip → WAITING_REROUTE
  │        └─ 新route受信 → RUNNING
  └─ timeout30s → ERROR
 ```

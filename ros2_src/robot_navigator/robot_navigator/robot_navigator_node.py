@@ -10,7 +10,7 @@ ROS2 (rclpy) 実装。ROS1 の navigator.py（TimeOptimalController）を踏襲�
 - Python 3 準拠
 - 日本語コメントを簡潔に付与（初見でも理解しやすい粒度）
 - 旧実装の制御ロジックと各種パラメータ値を踏襲
-- LaserScan トピック名は /scan に統一（パラメータで上書き可）
+- LaserScan や各種トピック名は既定の相対名を用い、launch の remap で変更可能
 """
 
 from __future__ import annotations
@@ -80,19 +80,11 @@ class RobotNavigator(Node):
         self.declare_parameter('min_obstacle_distance', 0.5)
         self.declare_parameter('obst_max_dist', 5.0)
         source_descriptor = ParameterDescriptor(
-            description='障害物距離の取得元を指定します',
+            description='障害物距離の取得モードを指定します',
             additional_constraints="must be either 'scan' or 'hint'",
         )
-        self.declare_parameter('obstacle_distance_source', 'hint', source_descriptor)
-        self.declare_parameter('hint_topic', '/obstacle_avoidance_hint')
+        self.declare_parameter('obstacle_distance_mode', 'hint', source_descriptor)
 
-        # トピック名
-        self.declare_parameter('scan_topic', '/scan')
-        self.declare_parameter('odom_topic', '/odom')
-        self.declare_parameter('amcl_pose_topic', '/amcl_pose')
-        self.declare_parameter('goal_topic', '/active_target')
-        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('marker_topic', '/direction_marker')
         self.declare_parameter('marker_frame', 'map')
 
         # ログ
@@ -112,24 +104,25 @@ class RobotNavigator(Node):
         self.safety_distance: float = float(self.get_parameter('safety_distance').value)
         self.min_obstacle_distance: float = float(self.get_parameter('min_obstacle_distance').value)
         self.obst_max_dist: float = float(self.get_parameter('obst_max_dist').value)
-        source_param = str(self.get_parameter('obstacle_distance_source').value)
-        self.obstacle_distance_source: str = source_param.lower()
-        if self.obstacle_distance_source not in {'scan', 'hint'}:
+        source_param = str(self.get_parameter('obstacle_distance_mode').value)
+        self.obstacle_distance_mode: str = source_param.lower()
+        if self.obstacle_distance_mode not in {'scan', 'hint'}:
             self.get_logger().warn(
-                'obstacle_distance_source は scan/hint のみを許容します。hint を使用します。'
+                'obstacle_distance_mode は scan/hint のみを許容します。hint を使用します。'
             )
-            self.obstacle_distance_source = 'hint'
-        self.hint_topic: str = str(self.get_parameter('hint_topic').value)
-
-        self.scan_topic: str = str(self.get_parameter('scan_topic').value)
-        self.odom_topic: str = str(self.get_parameter('odom_topic').value)
-        self.amcl_pose_topic: str = str(self.get_parameter('amcl_pose_topic').value)
-        self.goal_topic: str = str(self.get_parameter('goal_topic').value)
-        self.cmd_vel_topic: str = str(self.get_parameter('cmd_vel_topic').value)
-        self.marker_topic: str = str(self.get_parameter('marker_topic').value)
+            self.obstacle_distance_mode = 'hint'
         self.marker_frame: str = str(self.get_parameter('marker_frame').value)
 
         self.log_csv_path: str = str(self.get_parameter('log_csv_path').value)
+
+        # --- 通信に用いるトピック名（リマップ前の既定値） ---
+        scan_topic = 'scan'
+        odom_topic = 'odom'
+        amcl_pose_topic = 'amcl_pose'
+        goal_topic = 'active_target'
+        cmd_vel_topic = 'cmd_vel'
+        marker_topic = 'direction_marker'
+        hint_topic = 'obstacle_avoidance_hint'
 
         # --- 角速度用 PID（旧実装値を踏襲） ---
         self.kp_w: float = 0.65
@@ -151,7 +144,7 @@ class RobotNavigator(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
-        self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, pub_qos)
+        self.cmd_pub = self.create_publisher(Twist, cmd_vel_topic, pub_qos)
 
         # Marker は 1 深度で十分
         marker_qos = QoSProfile(
@@ -159,15 +152,14 @@ class RobotNavigator(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        self.marker_pub = self.create_publisher(Marker, self.marker_topic, marker_qos)
+        self.marker_pub = self.create_publisher(Marker, marker_topic, marker_qos)
 
         # 購読（amcl, odom, goal は RELIABLE、scan は SensorDataQoS）
-        self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
-        self.create_subscription(PoseWithCovarianceStamped, self.amcl_pose_topic, self.on_amcl_pose, 10)
-        self.create_subscription(PoseStamped, self.goal_topic, self.on_goal, 10)
-        if self.obstacle_distance_source == 'scan':
-            self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
-            self.get_logger().info('障害物距離ソース: /scan')
+        self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
+        self.create_subscription(PoseWithCovarianceStamped, amcl_pose_topic, self.on_amcl_pose, 10)
+        self.create_subscription(PoseStamped, goal_topic, self.on_goal, 10)
+        if self.obstacle_distance_mode == 'scan':
+            self.create_subscription(LaserScan, scan_topic, self.on_scan, qos_profile_sensor_data)
         else:
             hint_qos = QoSProfile(
                 reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -175,9 +167,22 @@ class RobotNavigator(Node):
                 depth=1,
             )
             self.create_subscription(
-                ObstacleAvoidanceHint, self.hint_topic, self.on_hint, hint_qos
+                ObstacleAvoidanceHint, hint_topic, self.on_hint, hint_qos
             )
-            self.get_logger().info(f'障害物距離ソース: {self.hint_topic}')
+        
+        # --- リマップ後の名称を保持（ログや診断用） ---
+        self.scan_topic_name = self._resolve_topic_name(scan_topic)
+        self.odom_topic_name = self._resolve_topic_name(odom_topic)
+        self.amcl_pose_topic_name = self._resolve_topic_name(amcl_pose_topic)
+        self.goal_topic_name = self._resolve_topic_name(goal_topic)
+        self.cmd_vel_topic_name = self._resolve_topic_name(cmd_vel_topic)
+        self.marker_topic_name = self._resolve_topic_name(marker_topic)
+        self.hint_topic_name = self._resolve_topic_name(hint_topic)
+
+        if self.obstacle_distance_mode == 'scan':
+            self.get_logger().info(f'障害物距離ソース: {self.scan_topic_name}')
+        else:
+            self.get_logger().info(f'障害物距離ソース: {self.hint_topic_name}')
 
         # --- 制御タイマー ---
         self.timer = self.create_timer(self.dt, self.on_timer)
@@ -202,6 +207,14 @@ class RobotNavigator(Node):
             self.get_logger().warn(f'CSVログを開けませんでした: {e}')
 
         self.get_logger().info('robot_navigator 起動（ROS2 rclpy）')
+
+    def _resolve_topic_name(self, name: str) -> str:
+        """リマップ適用後のトピック名を取得する。"""
+
+        try:
+            return self.resolve_topic_name(name)
+        except AttributeError:
+            return name
 
     # -------------------- コールバック群 --------------------
     def on_odom(self, msg: Odometry) -> None:
@@ -247,10 +260,14 @@ class RobotNavigator(Node):
     def on_hint(self, msg: ObstacleAvoidanceHint) -> None:
         """ヒントメッセージから障害物距離を更新する。"""
         distance: Optional[float]
-        if msg.front_range is None or math.isinf(msg.front_range) or math.isnan(msg.front_range):
+        if (
+            msg.front_clearance_m is None
+            or math.isinf(msg.front_clearance_m)
+            or math.isnan(msg.front_clearance_m)
+        ):
             distance = None
         else:
-            distance = float(msg.front_range)
+            distance = float(msg.front_clearance_m)
         self._apply_obstacle_distance(distance)
 
     def _apply_obstacle_distance(self, distance: Optional[float]) -> None:
@@ -302,7 +319,7 @@ class RobotNavigator(Node):
     def _publish_stop_with_throttle(self) -> None:
         """入力未揃い時の安全停止（5秒スロットルの WARN ログ付き）。"""
         self.get_logger().warn(
-            f"データ待ち（{self.amcl_pose_topic}, {self.odom_topic}, {self.goal_topic})",
+            f"データ待ち（{self.amcl_pose_topic_name}, {self.odom_topic_name}, {self.goal_topic_name})",
             throttle_duration_sec=5.0,
         )
         self.cmd_pub.publish(Twist())
@@ -311,7 +328,7 @@ class RobotNavigator(Node):
         """active_target の座標と距離を 1 秒周期で INFO ログ出力する。"""
         if not self.current_goal:
             self.get_logger().info(
-                f"active_target待機中: 目標未受信（{self.goal_topic}）",
+                f"active_target待機中: 目標未受信（{self.goal_topic_name}）",
             )
             return
 

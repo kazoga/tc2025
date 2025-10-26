@@ -100,13 +100,25 @@ def ros_route_to_core(route: Route) -> RouteModel:
             left_open=float(getattr(wp, "left_open", 0.0) or 0.0),
         )
         rm_wps.append(w)
+    start_index = int(getattr(route, "start_index", 0))
+    if rm_wps and 0 <= start_index < len(rm_wps):
+        current_index = start_index
+        current_label = rm_wps[start_index].label
+    else:
+        current_index = 0 if rm_wps else -1
+        current_label = rm_wps[0].label if rm_wps else ""
+    start_label = str(
+        getattr(route, "start_waypoint_label", getattr(route, "start_label", current_label))
+    )
+    if start_label:
+        current_label = start_label
     return RouteModel(
         waypoints=rm_wps,
         version=VersionMM(major=version_int, minor=0),
         frame_id=frame_id,
         has_image=has_image,
-        current_index=0 if rm_wps else -1,
-        current_label=(rm_wps[0].label if rm_wps else ""),
+        current_index=current_index,
+        current_label=current_label,
     )
 
 
@@ -117,7 +129,7 @@ def core_route_to_ros(route: RouteModel) -> Route:
     msg.header.frame_id = route.frame_id or "map"
     msg.version = int(route.version.to_int())
     msg.start_index = route.current_index
-    msg.start_wp_label = route.current_label
+    msg.start_waypoint_label = route.current_label
     # route_image の実体はplanner応答から受領する前提。ここでは有無のみを尊重。
     if route.has_image:
         msg.route_image = Image()  # encodingなどはplanner実装に依存
@@ -162,14 +174,13 @@ class RouteManagerNode(Node):
         self.declare_parameter("goal_label", "")
         self.declare_parameter("checkpoint_labels", [])
         self.declare_parameter("auto_request_on_startup", True)
-        self.declare_parameter("planner_get_service_name", "/get_route")
-        self.declare_parameter("planner_update_service_name", "/update_route")
         self.declare_parameter("planner_timeout_sec", 5.0)
         self.declare_parameter("planner_retry_count", 2)
+        self.declare_parameter("planner_connect_timeout_sec", 10.0)
         self.declare_parameter("state_publish_rate_hz", 1.0)
         self.declare_parameter("image_encoding_check", False)
         self.declare_parameter("report_stuck_timeout_sec", 5.0)
-        self.declare_parameter("offset_step_m_max", 1.0)  # shift 最大横ずれ[m]
+        self.declare_parameter("offset_step_max_m", 1.0)  # shift 最大横ずれ[m]
 
         # ---------------- パラメータ取得 ----------------
         self.start_label: str = self.get_parameter("start_label").get_parameter_value().string_value
@@ -178,39 +189,56 @@ class RouteManagerNode(Node):
             self.get_parameter("checkpoint_labels").get_parameter_value().string_array_value
         )
         self.auto_request: bool = self.get_parameter("auto_request_on_startup").get_parameter_value().bool_value
-        self.srv_get_name: str = self.get_parameter("planner_get_service_name").get_parameter_value().string_value
-        self.srv_update_name: str = self.get_parameter("planner_update_service_name").get_parameter_value().string_value
         self.timeout_sec: float = float(self.get_parameter("planner_timeout_sec").get_parameter_value().double_value)
         self.retry_count: int = int(self.get_parameter("planner_retry_count").get_parameter_value().integer_value)
+        self.connect_timeout_sec: float = float(
+            self.get_parameter("planner_connect_timeout_sec").get_parameter_value().double_value
+        )
         self.state_rate_hz: float = float(self.get_parameter("state_publish_rate_hz").get_parameter_value().double_value)
         self.image_encoding_check: bool = self.get_parameter("image_encoding_check").get_parameter_value().bool_value
         self.report_stuck_timeout_sec: float = float(
             self.get_parameter("report_stuck_timeout_sec").get_parameter_value().double_value
         )
-        self.offset_step_m_max: float = float(
-            self.get_parameter("offset_step_m_max").get_parameter_value().double_value
+        self.offset_step_max_m: float = float(
+            self.get_parameter("offset_step_max_m").get_parameter_value().double_value
         )
+        planner_get_service = 'get_route'
+        planner_update_service = 'update_route'
+        active_route_topic = 'active_route'
+        route_state_topic = 'route_state'
+        mission_info_topic = 'mission_info'
+        manager_status_topic = 'manager_status'
+        report_stuck_service = 'report_stuck'
 
         # ---------------- QoS ----------------
         self.qos_tl = qos_tl()
         self.qos_stream = qos_vol()
 
         # ---------------- Publisher ----------------
-        self.pub_active_route = self.create_publisher(Route, "/active_route", self.qos_tl)
-        self.pub_route_state = self.create_publisher(RouteState, "/route_state", self.qos_stream)
-        self.pub_mission_info = self.create_publisher(MissionInfo, "/mission_info", self.qos_tl)
-        self.pub_manager_status = self.create_publisher(ManagerStatus, "/manager_status", self.qos_stream)
+        self.pub_active_route = self.create_publisher(Route, active_route_topic, self.qos_tl)
+        self.pub_route_state = self.create_publisher(RouteState, route_state_topic, self.qos_stream)
+        self.pub_mission_info = self.create_publisher(MissionInfo, mission_info_topic, self.qos_tl)
+        self.pub_manager_status = self.create_publisher(ManagerStatus, manager_status_topic, self.qos_stream)
 
         # ---------------- Service Clients ----------------
         self.cb_cli = MutuallyExclusiveCallbackGroup()
-        self.cli_get = self.create_client(GetRoute, self.srv_get_name, callback_group=self.cb_cli)
-        self.cli_update = self.create_client(UpdateRoute, self.srv_update_name, callback_group=self.cb_cli)
+        self.cli_get = self.create_client(GetRoute, planner_get_service, callback_group=self.cb_cli)
+        self.cli_update = self.create_client(UpdateRoute, planner_update_service, callback_group=self.cb_cli)
 
         # ---------------- Service Server ----------------
         self.cb_srv = MutuallyExclusiveCallbackGroup()
         self.srv_report_stuck = self.create_service(
-            ReportStuck, "/report_stuck", self._on_report_stuck, callback_group=self.cb_srv
+            ReportStuck, report_stuck_service, self._on_report_stuck, callback_group=self.cb_srv
         )
+
+        # リマップを考慮した名称をログ用に保持
+        self.srv_get_name = self._resolve_service_name(planner_get_service)
+        self.srv_update_name = self._resolve_service_name(planner_update_service)
+        self.active_route_topic = self._resolve_topic_name(active_route_topic)
+        self.route_state_topic = self._resolve_topic_name(route_state_topic)
+        self.mission_info_topic = self._resolve_topic_name(mission_info_topic)
+        self.manager_status_topic = self._resolve_topic_name(manager_status_topic)
+        self.report_stuck_service_name = self._resolve_service_name(report_stuck_service)
 
         # ---------------- Core 構築 ----------------
         self.core = RouteManagerCore(
@@ -218,7 +246,7 @@ class RouteManagerNode(Node):
             publish_active_route=self._publish_active_route_from_core,
             publish_status=self._publish_status_from_core,
             publish_route_state=self._publish_route_state_from_core,
-            offset_step_m_max=self.offset_step_m_max,
+            offset_step_max_m=self.offset_step_max_m,
         )
 
         # Planner呼び出しの非同期コールバックをCoreへ注入
@@ -236,40 +264,168 @@ class RouteManagerNode(Node):
         self.get_logger().info("route_manager (Phase2: 5-step handling, Node/Core/FSM split) started.")
         self._publish_mission_info()
 
+        # Publishログの間引き用タイムスタンプおよび最新状態を保持する。
+        self._last_status_log_time: float = 0.0
+        self._last_route_state_log_time: float = 0.0
+        self._last_status_publish_time: float = 0.0
+        self._last_route_state_publish_time: float = 0.0
+        self._latest_status_payload: Optional[
+            tuple[str, str, str, int]
+        ] = None
+        self._latest_route_state_payload: Optional[
+            tuple[int, str, int, int, str, str]
+        ] = None
+        # 1Hzで最新状態を再送するためのタイマーを追加する。
+        self._state_snapshot_timer = self.create_timer(0.2, self._publish_state_snapshots)
+
+    def _resolve_topic_name(self, name: str) -> str:
+        """リマップ適用後のトピック名を返す補助関数."""
+        try:
+            return self.resolve_topic_name(name)
+        except AttributeError:
+            return name
+
+    def _resolve_service_name(self, name: str) -> str:
+        """リマップ適用後のサービス名を返す補助関数."""
+        try:
+            return self.resolve_service_name(name)
+        except AttributeError:
+            return name
+
     # ------------------------------------------------------------------
     # Core -> Node: Publish 実装（ROSメッセージへ変換して配信）
     # ------------------------------------------------------------------
     def _publish_active_route_from_core(self, route: RouteModel) -> None:
-        self.get_logger().info(f"[Node] publish /active_route: version={int(route.version.to_int())}, waypoints={len(route.waypoints)}")
+        self.get_logger().info(
+            f"[Node] publish {self.active_route_topic}: version={int(route.version.to_int())}, "
+            f"waypoints={len(route.waypoints)}"
+        )
         ros_route = core_route_to_ros(route)
         self.pub_active_route.publish(ros_route)
 
     def _publish_status_from_core(self, state: str, decision: str, cause: str, route_version: int) -> None:
+        payload = (state, decision, cause, int(route_version))
+        self._latest_status_payload = payload
+        self._emit_manager_status(payload, force_log=True)
+
+    @staticmethod
+    def _normalize_route_state_status(status: str) -> int:
+        """RouteState.status に格納する列挙値へ変換する。"""
+        normalized = (status or "").strip().lower()
+        mapping = {
+            "": RouteState.STATUS_UNKNOWN,
+            "unknown": RouteState.STATUS_UNKNOWN,
+            "idle": RouteState.STATUS_IDLE,
+            "running": RouteState.STATUS_RUNNING,
+            "active": RouteState.STATUS_RUNNING,
+            "requesting": RouteState.STATUS_RUNNING,
+            "updating": RouteState.STATUS_UPDATING_ROUTE,
+            "updating_route": RouteState.STATUS_UPDATING_ROUTE,
+            "waiting_reroute": RouteState.STATUS_HOLDING,
+            "holding": RouteState.STATUS_HOLDING,
+            "completed": RouteState.STATUS_COMPLETED,
+            "finished": RouteState.STATUS_COMPLETED,
+            "error": RouteState.STATUS_ERROR,
+            "failed": RouteState.STATUS_ERROR,
+        }
+        return mapping.get(normalized, RouteState.STATUS_UNKNOWN)
+
+    def _publish_route_state_from_core(
+        self,
+        idx: int,
+        label: str,
+        ver: int,
+        total: int,
+        status: str,
+        message: str,
+    ) -> None:
+        payload = (
+            int(idx),
+            str(label),
+            int(ver),
+            int(total),
+            str(status),
+            str(message or ""),
+        )
+        self._latest_route_state_payload = payload
+        self._emit_route_state(payload, force_log=True)
+
+    @staticmethod
+    def _should_log(now_sec: float, last_log_time: float) -> bool:
+        """1秒間隔でログ出力するべきかを判定する。"""
+        if last_log_time == 0.0:
+            return True
+        return now_sec - last_log_time >= 1.0
+
+    def _log_manager_status(self, payload: tuple[str, str, str, int]) -> None:
+        """ManagerStatusの内容をinfoログとして出力する。"""
+        state, decision, cause, route_version = payload
+        self.get_logger().info(
+            f"[Node] publish {self.manager_status_topic}: state={state}, decision={decision}, "
+            f"cause={cause}, ver={route_version}"
+        )
+
+    def _log_route_state(self, payload: tuple[int, str, int, int, str, str]) -> None:
+        """RouteStateの内容をinfoログとして出力する。"""
+        idx, label, ver, total, status, message = payload
+        self.get_logger().info(
+            f"[Node] publish {self.route_state_topic}: idx={idx}, label='{label}', "
+            f"ver={ver}, total={total}, status={status}, message='{message}'"
+        )
+
+    def _emit_manager_status(
+        self, payload: tuple[str, str, str, int], force_log: bool = False
+    ) -> None:
+        """ManagerStatusをpublishし、ログを1Hzに間引く。"""
         msg = ManagerStatus()
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.state = state
-        msg.decision = decision
-        msg.last_cause = cause
-        msg.route_version = int(route_version)
-        self.get_logger().info(f"[Node] publish /manager_status: state={state}, decision={decision}, cause={cause}, ver={int(route_version)}")
+        msg.state, msg.decision, msg.last_cause, msg.route_version = payload
+        now_sec = time.monotonic()
         self.pub_manager_status.publish(msg)
+        if force_log or self._should_log(now_sec, self._last_status_log_time):
+            self._log_manager_status(payload)
+            self._last_status_log_time = now_sec
+        self._last_status_publish_time = now_sec
 
-    def _publish_route_state_from_core(self, idx: int, label: str, ver: int, total: int, status: str) -> None:
+    def _emit_route_state(
+        self, payload: tuple[int, str, int, int, str, str], force_log: bool = False
+    ) -> None:
+        """RouteStateをpublishし、ログを1Hzに間引く。"""
         msg = RouteState()
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
-        msg.status = status
-        msg.current_index = int(idx)
-        msg.current_label = str(label)
-        msg.route_version = int(ver)
-        msg.total_waypoints = int(total)
-        #self.get_logger().info(f"[Node] publish /route_state: idx={idx}, label='{label}', ver={ver}, total={total}, status={status}")
+        idx, label, ver, total, status, message = payload
+        msg.status = self._normalize_route_state_status(status)
+        msg.current_index = idx
+        msg.current_label = label
+        msg.route_version = ver
+        msg.total_waypoints = total
+        msg.message = message
+        now_sec = time.monotonic()
         self.pub_route_state.publish(msg)
+        if force_log or self._should_log(now_sec, self._last_route_state_log_time):
+            self._log_route_state(payload)
+            self._last_route_state_log_time = now_sec
+        self._last_route_state_publish_time = now_sec
+
+    def _publish_state_snapshots(self) -> None:
+        """最新状態を1Hz間隔で再送してログとpublish回数を一致させる。"""
+        now_sec = time.monotonic()
+        if (
+            self._latest_status_payload is not None
+            and self._should_log(now_sec, self._last_status_publish_time)
+        ):
+            self._emit_manager_status(self._latest_status_payload)
+        if (
+            self._latest_route_state_payload is not None
+            and self._should_log(now_sec, self._last_route_state_publish_time)
+        ):
+            self._emit_route_state(self._latest_route_state_payload)
 
     # ------------------------------------------------------------------
-    # Service Server: /report_stuck（Core+FSMで4段階ロジックを維持）
+    # Service Server: report_stuck（Core+FSMで4段階ロジックを維持）
     # ------------------------------------------------------------------
     def _on_report_stuck(self, req: ReportStuck.Request, res: ReportStuck.Response) -> ReportStuck.Response:
         pose_map = getattr(req, "current_pose_map", None)
@@ -289,7 +445,7 @@ class RouteManagerNode(Node):
         )
 
         self.get_logger().info(
-            "[Node] /report_stuck: received -> delegate to Core/FSM "
+            f"[Node] {self.report_stuck_service_name}: received -> delegate to Core/FSM "
             f"idx={report.current_index} label='{report.current_label}' reason='{report.reason}'"
         )
         # Coreのイベントループ上でFSM処理を非同期実行し、結果を同期的に取得
@@ -301,19 +457,23 @@ class RouteManagerNode(Node):
         if getattr(result, "success", False):
             # replan/shift/skip の区別は note で示す（元実装のコメントを維持）
             if note == "skipped":
-                res.decision = 2  # DECISION_SKIP
+                res.decision_code = ReportStuck.Response.DECISION_SKIP
             else:
-                res.decision = 1  # DECISION_REPLAN（shift含む）
+                res.decision_code = ReportStuck.Response.DECISION_REPLAN
             res.note = note
             res.waiting_deadline = Duration(sec=0, nanosec=200 * 10**6)
             res.offset_hint = offset_hint
-            self.get_logger().info(f"[Node] /report_stuck: success decision={res.decision} note='{note}'")
+            self.get_logger().info(
+                f"[Node] {self.report_stuck_service_name}: success decision_code={res.decision_code} note='{note}'"
+            )
         else:
-            res.decision = 3  # DECISION_FAILED
+            res.decision_code = ReportStuck.Response.DECISION_FAILED
             res.note = note or "avoidance_failed"
             res.waiting_deadline = Duration(sec=0, nanosec=0)
             res.offset_hint = 0.0
-            self.get_logger().info(f"[Node] /report_stuck: failed note='{res.note}'")
+            self.get_logger().info(
+                f"[Node] {self.report_stuck_service_name}: failed note='{res.note}'"
+            )
         return res
 
     # ------------------------------------------------------------------
@@ -332,8 +492,8 @@ class RouteManagerNode(Node):
         # ROSサービス接続待ち
         start = time.time()
         while not self.cli_get.wait_for_service(timeout_sec=0.2):
-            if time.time() - start > getattr(self, 'connect_timeout_sec', 10.0):
-                self.get_logger().error("[Node] get_route unavailable")
+            if time.time() - start > self.connect_timeout_sec:
+                self.get_logger().error(f"[Node] {self.srv_get_name} unavailable")
                 return
 
         # FSM経由で初期ルート要求（Coreが保持するloopにタスク投入）
@@ -363,7 +523,7 @@ class RouteManagerNode(Node):
             resp = future.result()
         except Exception as exc:
             self.get_logger().info(f"[Node] planner GetRoute exception: {exc}")
-            return type("Resp", (), {"success": False, "message": f"get_route exception: {exc}"})
+            return type("Resp", (), {"success": False, "message": f"{self.srv_get_name} exception: {exc}"})
         ok = bool(getattr(resp, "success", False))
         self.get_logger().info(f"[Node] planner GetRoute returned ok={ok}")
         route = getattr(resp, "route", None)
@@ -375,9 +535,9 @@ class RouteManagerNode(Node):
     async def _planner_update_async(
         self, major_version: int, prev_index: int, prev_label: str, next_index: Optional[int], next_label: str
     ):
-        if not self.cli_update.wait_for_service(timeout_sec=self.get_parameter("planner_timeout_sec").value):
-            self.get_logger().info("[Node] planner UpdateRoute unavailable")
-            return type("Resp", (), {"success": False, "message": "update_route unavailable"})
+        if not self.cli_update.wait_for_service(timeout_sec=self.timeout_sec):
+            self.get_logger().info(f"[Node] planner UpdateRoute unavailable ({self.srv_update_name})")
+            return type("Resp", (), {"success": False, "message": f"{self.srv_update_name} unavailable"})
         self.get_logger().info(f"[Node] call planner UpdateRoute: ver(major)={major_version}, prev=({prev_index},{prev_label}), next=({next_index},{next_label})")
         req = UpdateRoute.Request()
         req.route_version = int(major_version)
@@ -393,7 +553,7 @@ class RouteManagerNode(Node):
             resp = future.result()
         except Exception as exc:
             self.get_logger().info(f"[Node] planner UpdateRoute exception: {exc}")
-            return type("Resp", (), {"success": False, "message": f"update_route exception: {exc}"})
+            return type("Resp", (), {"success": False, "message": f"{self.srv_update_name} exception: {exc}"})
         ok = bool(getattr(resp, "success", False))
         self.get_logger().info(f"[Node] planner UpdateRoute returned ok={ok}")
         route = getattr(resp, "route", None)
@@ -417,7 +577,10 @@ class RouteManagerNode(Node):
         msg.start_label = self.start_label
         msg.goal_label = self.goal_label
         msg.checkpoint_labels = list(self.checkpoint_labels)
-        self.get_logger().info(f"[Node] publish /mission_info: start='{msg.start_label}', goal='{msg.goal_label}', checkpoints={list(self.checkpoint_labels)}")
+        self.get_logger().info(
+            f"[Node] publish {self.mission_info_topic}: start='{msg.start_label}', "
+            f"goal='{msg.goal_label}', checkpoints={list(self.checkpoint_labels)}"
+        )
         self.pub_mission_info.publish(msg)
 
     def destroy_node(self) -> None:

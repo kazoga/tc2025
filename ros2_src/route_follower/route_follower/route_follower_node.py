@@ -82,7 +82,31 @@ class RouteFollowerNode(Node):
 
     def __init__(self) -> None:
         super().__init__("route_follower")
+
+        # パラメータ宣言
+        self.declare_parameter("arrival_threshold", 0.6)
+        self.declare_parameter("control_rate_hz", 20.0)
+        self.declare_parameter("resend_interval_sec", 1.0)
+        self.declare_parameter("start_immediately", True)
+        self.declare_parameter("target_frame", "map")
+
+        arrival_threshold = float(self.get_parameter("arrival_threshold").value)
+        control_rate = float(self.get_parameter("control_rate_hz").value)
+        if control_rate <= 0.0:
+            self.get_logger().warn("control_rate_hz が0以下のため20Hzを使用します。")
+            control_rate = 20.0
+        resend_interval = float(self.get_parameter("resend_interval_sec").value)
+        if resend_interval <= 0.0:
+            self.get_logger().warn("resend_interval_sec が0以下のため1.0秒を使用します。")
+            resend_interval = 1.0
+        self.start_immediately: bool = bool(self.get_parameter("start_immediately").value)
+        self.target_frame: str = str(self.get_parameter("target_frame").value)
+
         self.core = FollowerCore(self.get_logger())
+        self.core.arrival_threshold = arrival_threshold
+        self.core.control_rate_hz = control_rate
+        self.core.republish_target_hz = 1.0 / resend_interval
+        self.core.start_immediately = self.start_immediately
         self.get_logger().info("route_follower_node started.")
 
         # QoS設定
@@ -91,18 +115,39 @@ class RouteFollowerNode(Node):
         self.qos_be = qos_best_effort()
 
         # Pub/Sub設定
-        self.sub_route = self.create_subscription(Route, "/active_route", self._on_route, self.qos_tl)
-        self.sub_pose = self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_pose, self.qos_vol)
-        self.sub_hint = self.create_subscription(
-            ObstacleAvoidanceHint, "/obstacle_avoidance_hint", self._on_hint, self.qos_be
+        active_route_topic = 'active_route'
+        amcl_pose_topic = 'amcl_pose'
+        obstacle_hint_topic = 'obstacle_avoidance_hint'
+        manual_start_topic = 'manual_start'
+        signal_recognition_topic = 'sig_recog'
+        active_target_topic = 'active_target'
+        follower_state_topic = 'follower_state'
+        report_stuck_service = 'report_stuck'
+
+        self.sub_route = self.create_subscription(Route, active_route_topic, self._on_route, self.qos_tl)
+        self.sub_pose = self.create_subscription(
+            PoseWithCovarianceStamped, amcl_pose_topic, self._on_pose, self.qos_vol
         )
-        self.sub_manual = self.create_subscription(Bool, "/manual_start", self._on_manual_start, self.qos_vol)
-        self.sub_sig = self.create_subscription(Int32, "/sig_recog", self._on_sig_recog, self.qos_vol)
+        self.sub_hint = self.create_subscription(
+            ObstacleAvoidanceHint, obstacle_hint_topic, self._on_hint, self.qos_be
+        )
+        self.sub_manual = self.create_subscription(Bool, manual_start_topic, self._on_manual_start, self.qos_vol)
+        self.sub_sig = self.create_subscription(Int32, signal_recognition_topic, self._on_sig_recog, self.qos_vol)
 
-        self.pub_target = self.create_publisher(PoseStamped, "/active_target", self.qos_vol)
-        self.pub_state = self.create_publisher(FollowerState, "/follower_state", self.qos_vol)
+        self.pub_target = self.create_publisher(PoseStamped, active_target_topic, self.qos_vol)
+        self.pub_state = self.create_publisher(FollowerState, follower_state_topic, self.qos_vol)
 
-        self.cli_report_stuck = self.create_client(ReportStuck, "/report_stuck")
+        self.cli_report_stuck = self.create_client(ReportStuck, report_stuck_service)
+
+        # リマップ適用後の名称をログ用に保存
+        self.active_route_topic = self._resolve_topic_name(active_route_topic)
+        self.amcl_pose_topic = self._resolve_topic_name(amcl_pose_topic)
+        self.obstacle_hint_topic = self._resolve_topic_name(obstacle_hint_topic)
+        self.manual_start_topic = self._resolve_topic_name(manual_start_topic)
+        self.signal_recognition_topic = self._resolve_topic_name(signal_recognition_topic)
+        self.active_target_topic = self._resolve_topic_name(active_target_topic)
+        self.follower_state_topic = self._resolve_topic_name(follower_state_topic)
+        self.report_stuck_service_name = self._resolve_service_name(report_stuck_service)
 
         self._report_lock = threading.Lock()
         self._report_stuck_pending: bool = False
@@ -112,17 +157,35 @@ class RouteFollowerNode(Node):
         # Timer
         self._last_pub_target_pose = None
         self._last_pub_time = 0.0
-        self._republish_interval = 1.0 / self.core.republish_target_hz
-        self.timer = self.create_timer(1.0 / 20.0, self._on_timer)
+        self._republish_interval = resend_interval
+        timer_period = 1.0 / control_rate
+        self.timer = self.create_timer(timer_period, self._on_timer)
+
+        # follower_stateの周期ログ用タイムスタンプを初期化する。
+        self._last_state_log_time: float = 0.0
+
+    def _resolve_topic_name(self, name: str) -> str:
+        """リマップ適用後のトピック名を取得する。"""
+        try:
+            return self.resolve_topic_name(name)
+        except AttributeError:
+            return name
+
+    def _resolve_service_name(self, name: str) -> str:
+        """リマップ適用後のサービス名を取得する。"""
+        try:
+            return self.resolve_service_name(name)
+        except AttributeError:
+            return name
 
     # ========================================================
     # Callback群
     # ========================================================
 
     def _on_route(self, msg: Route) -> None:
-        """/active_route 受信."""
+        """経路トピック受信時の処理."""
         if not msg.waypoints:
-            self.get_logger().warn("/active_route: 空のrouteを無視します。")
+            self.get_logger().warn(f"{self.active_route_topic}: 空のrouteを無視します。")
             return
 
         wp_list = []
@@ -138,12 +201,19 @@ class RouteFollowerNode(Node):
                 )
             )
 
-        route = CoreRoute(version=int(getattr(msg, "version", -1)), waypoints=wp_list,
-                            start_index=int(getattr(msg, "start_index", 0)), start_label=str(getattr(msg, "start_label", "")))
+        route = CoreRoute(
+            version=int(getattr(msg, "version", -1)),
+            waypoints=wp_list,
+            start_index=int(getattr(msg, "start_index", 0)),
+            start_waypoint_label=str(getattr(msg, "start_waypoint_label", "")),
+        )
         self.core.update_route(route)
+        if self.start_immediately:
+            self.get_logger().info("start_immediately が有効のため自動開始を指示します。")
+            self.core.update_control_inputs(manual_start=True)
 
     def _on_pose(self, msg: PoseWithCovarianceStamped) -> None:
-        """/amcl_pose 受信."""
+        """現在位置Poseトピック受信時の処理."""
         # PoseWithCovarianceStampedをPoseStampedに変換
         pose_stamped = PoseStamped()
         pose_stamped.header = msg.header
@@ -156,13 +226,13 @@ class RouteFollowerNode(Node):
         self.core.update_pose(pose)
 
     def _on_hint(self, msg: ObstacleAvoidanceHint) -> None:
-        """/obstacle_avoidance_hint 受信."""
+        """障害物回避ヒントトピック受信時の処理."""
         sample = HintSample(
             t=time.time(),
             front_blocked=bool(msg.front_blocked),
-            front_range=float(msg.front_range),
-            left_open=float(msg.left_is_open),
-            right_open=float(msg.right_is_open),
+            front_clearance=float(msg.front_clearance_m),
+            left_offset=float(msg.left_offset_m),
+            right_offset=float(msg.right_offset_m),
         )
         self.core.update_hint(sample)
 
@@ -180,7 +250,7 @@ class RouteFollowerNode(Node):
     # ========================================================
 
     def _on_timer(self) -> None:
-        """20Hz周期でCore.tick()実行."""
+        """設定された制御周期ごとに Core.tick() を実行する."""
         output = self.core.tick()
 
         # active_target 出力
@@ -209,10 +279,11 @@ class RouteFollowerNode(Node):
             return
 
         self.get_logger().info(
-            f"report_stuck result: decision={res.decision}, note='{res.note}', offset_hint={res.offset_hint:.2f}"
+            f"{self.report_stuck_service_name} result: decision_code={res.decision_code}, "
+            f"note='{res.note}', offset_hint={res.offset_hint:.2f}"
         )
 
-        if res.decision == 3:
+        if res.decision_code == ReportStuck.Response.DECISION_FAILED:
             note = res.note or "avoidance_failed"
             self.core.notify_reroute_failed(note)
 
@@ -235,7 +306,7 @@ class RouteFollowerNode(Node):
         pose_msg = PoseStamped()
         pose_msg.header = Header()
         pose_msg.header.stamp = now_ros.to_msg()
-        pose_msg.header.frame_id = "map"
+        pose_msg.header.frame_id = self.target_frame
         pose_msg.pose = self._pose_to_msg(pose)
         self.pub_target.publish(pose_msg)
         self._last_pub_target_pose = pose
@@ -252,19 +323,34 @@ class RouteFollowerNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.route_version = int(state["route_version"])
         msg.state = str(state["status"])
-        msg.current_index = int(state["index"])
+        msg.active_waypoint_index = int(state["active_waypoint_index"])
+        msg.active_waypoint_label = str(state.get("active_waypoint_label", ""))
+        msg.front_blocked = bool(state.get("front_blocked", False))
+        msg.front_clearance_m = float(state.get("front_clearance_m", 0.0))
+        msg.left_offset_m = float(state.get("left_offset_m", 0.0))
+        msg.right_offset_m = float(state.get("right_offset_m", 0.0))
         msg.avoidance_attempt_count = int(state["avoid_count"])
         msg.last_stagnation_reason = str(state["reason"])
+        msg.segment_length_m = float(state.get("segment_length_m", 0.0))
+        msg.active_target_distance_m = float(self._compute_active_target_distance(output))
         self.pub_state.publish(msg)
+
+        now_sec = time.monotonic()
+        if now_sec - self._last_state_log_time >= 1.0:
+            self.get_logger().info(
+                f"[Node] publish {self.follower_state_topic}: state={msg.state}, index={msg.active_waypoint_index}, "
+                f"route_ver={msg.route_version}, avoid_count={msg.avoidance_attempt_count}"
+            )
+            self._last_state_log_time = now_sec
 
     # ========================================================
     # stuck報告
     # ========================================================
 
     def _handle_stuck_report(self) -> None:
-        """WAITING_REROUTE遷移時に /report_stuck 呼び出し."""
+        """WAITING_REROUTE遷移時に report_stuck サービスを呼び出す."""
         if not self.cli_report_stuck.service_is_ready():
-            self.get_logger().warn("/report_stuck not ready.")
+            self.get_logger().warn(f"{self.report_stuck_service_name} not ready.")
             return
 
         with self._report_lock:
@@ -292,7 +378,7 @@ class RouteFollowerNode(Node):
                     raise RuntimeError("report_stuck timeout or cancelled")
                 res: ReportStuck.Response = fut.result()
             except Exception as exc:  # noqa: BLE001
-                self.get_logger().error(f"report_stuck call failed: {exc}")
+                self.get_logger().error(f"{self.report_stuck_service_name} call failed: {exc}")
                 res = None
             with self._report_lock:
                 self._report_stuck_pending = False
@@ -304,6 +390,14 @@ class RouteFollowerNode(Node):
     # ========================================================
     # ユーティリティ
     # ========================================================
+
+    def _compute_active_target_distance(self, output) -> float:
+        """現在位置とアクティブターゲット間の距離を算出する。"""
+        current_pose = self.core.get_current_pose()
+        target_pose = output.target_pose or self.core.last_target or self._last_pub_target_pose
+        if current_pose is None or target_pose is None:
+            return 0.0
+        return float(self._euclid_diff(current_pose, target_pose))
 
     def _yaw_from_quat(self, q: Quaternion) -> float:
         x, y, z, w = q.x, q.y, q.z, q.w

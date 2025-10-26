@@ -79,7 +79,7 @@ route_managerは、外部から観測可能な以下の4状態を持つ。
 
 | フィールド | 型 | 意味 |
 |-------------|----|------|
-| `reason` | string | followerが検知した滞留要因（"stagnation","no_hint","no_space","avoidance_failed"等） |
+| `reason` | string | followerが検知した滞留要因（"front_blocked","no_hint","no_space","avoidance_failed"等） |
 | `current_wp_label` | string | 現在のwaypointラベル |
 | `avoid_trial_count` | uint32 | followerが行った局所回避試行回数 |
 | `last_hint_blocked` | bool | 最後に受信したobstacle_hintが閉塞を示しているか |
@@ -89,7 +89,7 @@ route_managerは、外部から観測可能な以下の4状態を持つ。
 
 | フィールド | 型 | 意味 |
 |-------------|----|------|
-| `decision` | uint8 | 1=REPLAN, 2=SKIP, 3=FAILED(HOLD) |
+| `decision_code` | uint8 | 1=REPLAN, 2=SKIP, 3=FAILED(HOLD) |
 | `waiting_deadline` | Duration | followerがWAITING_REROUTEで待機する上限時間 |
 | `offset_hint` | float32 | ±値で左右オフセット提案（m）。0ならオフセットなし |
 | `note` | string | ログ／GUI向け説明メッセージ |
@@ -106,14 +106,14 @@ route_managerは、外部から観測可能な以下の4状態を持つ。
 経路上にまだ左右いずれかの空間余裕があるかを確認し、再計画を指示する。
 
 **判定条件**  
-- `reason` ∈ {"stagnation","avoidance_failed"}  
+- `reason` ∈ {"front_blocked","avoidance_failed"}
 - `avoid_trial_count < avoid_max_retry`  
 - `last_hint_blocked == True`  
 
 **判定結果**
 ```
-if has_left_space and last_applied_offset_m <= 0 → offset_hint = -offset_step
-elif has_right_space and last_applied_offset_m >= 0 → offset_hint = +offset_step
+if has_left_space and last_applied_offset_m <= 0 → offset_hint = -min(left_open, offset_step_max_m)
+elif has_right_space and last_applied_offset_m >= 0 → offset_hint = +min(right_open, offset_step_max_m)
 else → 第2層へ
 ```
 
@@ -134,7 +134,7 @@ plannerは「左右寄せルート」再生成を実施する（Phase3対応想�
 - 経路曲率が急変（90°超）でない
 
 **判定結果**
-- OK → `decision=SKIP`、新ルートをスライスして `/active_route` 配信  
+- OK → `decision_code=SKIP`、新ルートをスライスして `/active_route` 配信  
 - NG → 第3層へ
 
 ---
@@ -177,7 +177,7 @@ plannerは「左右寄せルート」再生成を実施する（Phase3対応想�
 
 ## 8. manager状態遷移と判断結果の対応
 
-| 状態 | 発生イベント | decision | 出力動作 |
+| 状態 | 発生イベント | decision_code | 出力動作 |
 |-------|---------------|-----------|-----------|
 | RUNNING | followerから通報受信 | offset／skip／replan／failed | /report_stuck 応答送信 |
 | UPDATING_ROUTE | 再計画またはスキップ実行中 | replan or skip | /active_route配信 |
@@ -204,11 +204,15 @@ def handle_report_stuck(req):
     wp = self.route_table.find(req.current_wp_label)
 
     # Layer1: offset judgment
-    if req.reason in ["stagnation", "avoidance_failed"]        and req.avoid_trial_count < self.param.avoid_max_retry        and req.last_hint_blocked:
+    if (
+        req.reason in ["front_blocked", "avoidance_failed"]
+        and req.avoid_trial_count < self.param.avoid_max_retry
+        and req.last_hint_blocked
+    ):
         if wp.has_left_space and req.last_applied_offset_m <= 0:
-            return Decision(REPLAN, offset_hint=-self.param.offset_step)
+            return Decision(REPLAN, offset_hint=-min(wp.left_open, self.param.offset_step_max_m))
         elif wp.has_right_space and req.last_applied_offset_m >= 0:
-            return Decision(REPLAN, offset_hint=+self.param.offset_step)
+            return Decision(REPLAN, offset_hint=+min(wp.right_open, self.param.offset_step_max_m))
 
     # Layer2: skip judgment
     if wp.skippable and wp.dist_to_next < self.param.skip_threshold_m:

@@ -6,17 +6,16 @@ std_msgs/Header header
 
 int32 route_version
 string state
-int32 current_index
+int32 active_waypoint_index
+string active_waypoint_label
 
-geometry_msgs/Pose current_pose
-float32 distance_to_target
+float32 active_target_distance_m
+float32 segment_length_m
 
 int32 avoidance_attempt_count
 string last_stagnation_reason
 
-bool front_blocked_majority
-float32 hint_left_open_m_median
-float32 hint_right_open_m_median
-
-string current_waypoint_label
-string next_waypoint_label
+bool front_blocked
+float32 front_clearance_m
+float32 left_offset_m
+float32 right_offset_m

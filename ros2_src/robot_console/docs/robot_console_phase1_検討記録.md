@@ -17,24 +17,25 @@
   - `current_index`／`total_waypoints`：走破率をパーセントと進捗バーで表示し、ラベル表示はフォロワカードへ集約する。
   - `route_version`：再計画発生を検出する指標とし、直近3回の変化履歴をタイムライン化する。
 - `follower_state`（`route_follower_node.py` の `_handle_state_publish`）は以下を統合する。
-  - `state`（`FollowerStatus` 列挙名）と `current_index`／`current_waypoint_label`：ルート進捗カードと同列で並べ、インデックス差を視認しやすくする。
+  - `state`（`FollowerStatus` 列挙名）と `active_waypoint_index`／`active_waypoint_label`：ルート進捗カードと同列で並べ、インデックス差を視認しやすくする。
+  - `segment_length_m`：目標距離カードの分母に用い、進捗ゲージと連動させる。
   - `avoidance_attempt_count` と `last_stagnation_reason`：滞留対処状況をアラートカードで示す。
-  - `front_blocked_majority`・`left_offset_m_median`・`right_offset_m_median`：障害物統計値として画像オーバレイに利用する。
-  - `route_version` および `next_waypoint_label`：ルート更新と次目標の整合チェックに活用する。
+  - `front_blocked`・`left_offset_m`・`right_offset_m`：障害物統計値として画像オーバレイに利用する。
 
 ### 4. ダッシュボード中心の表示・操作方針
 0. **モック整合性**
    - 実装時はフェーズ2で承認済みのモックUIとウィジェット構成・配置・サイズ比率を完全一致させる。変更が必要な場合は事前にユーザーへ仕様調整を提案し承認を得る。
 1. **状態サマリ**
    - 上段は 3 カラム構成で、左から `route_state`、`follower_state`、ロボット速度／目標距離のスタックカードを配置する。各カラムは固定比率で幅を揃え、上端が水平にそろうよう uniform 設定を適用する。
-   - `route_state` の「状態」欄には `route_manager` の `manager_status.state` を併記し、進捗バーと `current_index`／`total_waypoints` の数値を組み合わせて遅延を検知する。再計画要因と遷移時刻は「遷移要因」欄へまとめ、専用カードを廃止して情報を集約する。
+  - `route_state` の「状態」欄には `route_manager` の `manager_status.state` を併記し、進捗バーと `current_index`／`total_waypoints` の数値を組み合わせて遅延を検知する。再計画要因と遷移時刻は「遷移要因」欄へまとめ、専用カードを廃止して情報を集約する。
+    - 遷移要因欄は `RouteState.message` を Ev プレフィックスで、`ManagerStatus.decision` / `last_cause` を Mgr プレフィックスで1行に圧縮表示し、縦方向の行数を増やさず視認性を確保する。
    - 右カラムは `cmd_vel` を上段、`active_target` までの距離ゲージを下段に縦積みし、常時視界に入る形で速度と到達見込みを提示する。
 
 2. **障害物状況（画像重畳）**
    - `sensor_viewer` 画像左上に透過パネルを設け、以下の数値を重畳表示する。
-     - 「前方遮蔽: YES/NO」（`front_blocked_majority`）
+     - 「前方遮蔽: YES/NO」（`front_blocked`）
      - 「前方余裕: X.X m」（`obstacle_avoidance_hint.front_clearance_m`）
-     - 「左/右回避中央値: ±X.XX m」（`left_offset_m_median`・`right_offset_m_median`）
+     - 「左/右回避中央値: ±X.XX m」（`left_offset_m`・`right_offset_m`）
    - ゲージ表現は廃止し、小数1～2桁で統一するとともに、最新受信時刻も同パネル内に併記する。
 
 3. **手動・信号・封鎖イベント**

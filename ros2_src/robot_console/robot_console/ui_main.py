@@ -38,6 +38,14 @@ from .utils import GuiSnapshot, NodeLaunchState, NodeLaunchStatus, resize_with_l
 
 LOGGER = logging.getLogger(__name__)
 
+FOLLOWER_CARD_KEYS = (
+    'state',
+    'index',
+    'label',
+    'stagnation',
+    'offsets',
+)
+
 
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
@@ -216,23 +224,8 @@ class UiMain:
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
-        self._route_state_vars: Dict[str, tk.Variable] = {
-            'manager': tk.StringVar(value='unknown'),
-            'route_status': tk.StringVar(value='unknown'),
-            'version': tk.StringVar(value='--'),
-            'progress': tk.DoubleVar(value=0.0),
-            'progress_percent': tk.StringVar(value='0.0%'),
-            'progress_counter': tk.StringVar(value='0 / 0'),
-        }
-        follower_label = tk.StringVar(value='現在: -')
-        self._follower_vars: Dict[str, tk.StringVar] = {
-            'state': tk.StringVar(value='unknown'),
-            'index': tk.StringVar(value='Index: 0'),
-            'label': follower_label,
-            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
-            'stagnation': tk.StringVar(value='滞留なし'),
-            'offsets': tk.StringVar(value='左:+0.00m / 右:+0.00m'),
-        }
+        self._route_state_vars = self._create_route_state_vars()
+        self._follower_vars = self._create_follower_vars()
         self._velocity_vars = {
             'linear': tk.StringVar(value='0.00 m/s'),
             'angular': tk.StringVar(value='0.0 deg/s'),
@@ -249,6 +242,36 @@ class UiMain:
         self._build_layout()
         self._on_obstacle_params_changed()
         self._schedule_update()
+
+    def _create_route_state_vars(self) -> Dict[str, tk.Variable]:
+        """ルートカードで利用する tk 変数を生成する。"""
+
+        return {
+            'manager': tk.StringVar(value='unknown'),
+            'route_status': tk.StringVar(value='unknown'),
+            'progress': tk.DoubleVar(value=0.0),
+            'progress_text': tk.StringVar(value='0 / 0'),
+            'version': tk.StringVar(value='バージョン: 0'),
+            'detail': tk.StringVar(value=''),
+        }
+
+    def _create_follower_vars(self) -> Dict[str, tk.StringVar]:
+        """フォロワ状態カードで利用する tk 変数を生成する。"""
+
+        follower_label = tk.StringVar(value='現在: -')
+        follower_vars: Dict[str, tk.StringVar] = {
+            'state': tk.StringVar(value='unknown'),
+            'index': tk.StringVar(value='Index: 0'),
+            'label': follower_label,
+            'stagnation': tk.StringVar(value='滞留なし'),
+            'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
+        }
+        if 'target_label' in follower_vars:
+            raise AssertionError('target_label は廃止済みのキーです。')
+        missing = set(FOLLOWER_CARD_KEYS) - set(follower_vars.keys())
+        if missing:
+            raise AssertionError(f'フォロワカードのキーが不足しています: {missing}')
+        return follower_vars
 
     def _build_layout(self) -> None:
         self._notebook = ttk.Notebook(self._root)

@@ -276,3 +276,9 @@ def test_target_distance_prefers_pose_when_available() -> None:
     core.update_follower_state(follower_msg)
     snapshot = core.snapshot()
     assert math.isclose(snapshot.target_distance.current_distance_m, 6.0)
+
+
+def test_ui_main_source_no_legacy_target_label_binding() -> None:
+    ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
+    source = ui_path.read_text(encoding='utf-8')
+    assert "['target_label']" not in source

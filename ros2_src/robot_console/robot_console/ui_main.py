@@ -7,7 +7,8 @@ import base64
 from datetime import datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
 
 try:
     from PIL import Image, ImageTk  # type: ignore
@@ -185,6 +186,18 @@ class ImagePanel(ttk.LabelFrame):
             self._canvas.itemconfigure(self._text_item, width=max(width - 24, 50))
 
 
+@dataclass
+class RouteCardVars:
+    """ルート進捗カードで利用する tk 変数群。"""
+
+    manager: tk.StringVar
+    route_status: tk.StringVar
+    progress: tk.DoubleVar
+    progress_text: tk.StringVar
+    version: tk.StringVar
+    detail: tk.StringVar
+
+
 class UiMain:
     """GuiCore のスナップショットを可視化する tkinter アプリ。"""
 
@@ -224,7 +237,7 @@ class UiMain:
         self._image_warning_label: Optional[ttk.Label] = None
         self._image_warning_parent: Optional[ttk.Frame] = None
 
-        self._route_state_vars = self._create_route_state_vars()
+        self._route_state_vars: RouteCardVars = self._create_route_state_vars()
         self._follower_vars = self._create_follower_vars()
         self._velocity_vars = {
             'linear': tk.StringVar(value='0.00 m/s'),
@@ -243,17 +256,17 @@ class UiMain:
         self._on_obstacle_params_changed()
         self._schedule_update()
 
-    def _create_route_state_vars(self) -> Dict[str, tk.Variable]:
-        """ルートカードで利用する tk 変数を生成する。"""
+    def _create_route_state_vars(self) -> RouteCardVars:
+        """ルート進捗カードで利用する tk 変数を生成する。"""
 
-        return {
-            'manager': tk.StringVar(value='unknown'),
-            'route_status': tk.StringVar(value='unknown'),
-            'progress': tk.DoubleVar(value=0.0),
-            'progress_text': tk.StringVar(value='0 / 0'),
-            'version': tk.StringVar(value='バージョン: 0'),
-            'detail': tk.StringVar(value=''),
-        }
+        return RouteCardVars(
+            manager=tk.StringVar(value='unknown'),
+            route_status=tk.StringVar(value='unknown'),
+            progress=tk.DoubleVar(value=0.0),
+            progress_text=tk.StringVar(value='0 / 0'),
+            version=tk.StringVar(value='バージョン: 0'),
+            detail=tk.StringVar(value=''),
+        )
 
     def _create_follower_vars(self) -> Dict[str, tk.StringVar]:
         """フォロワ状態カードで利用する tk 変数を生成する。"""
@@ -406,13 +419,13 @@ class UiMain:
         route_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         route_frame.columnconfigure(1, weight=1)
         ttk.Label(route_frame, text='マネージャ状態').grid(row=0, column=0, sticky='w')
-        ttk.Label(route_frame, textvariable=self._route_state_vars['manager']).grid(
+        ttk.Label(route_frame, textvariable=self._route_state_vars.manager).grid(
             row=0,
             column=1,
             sticky='w',
         )
         ttk.Label(route_frame, text='ルート状態').grid(row=1, column=0, sticky='w')
-        ttk.Label(route_frame, textvariable=self._route_state_vars['route_status']).grid(
+        ttk.Label(route_frame, textvariable=self._route_state_vars.route_status).grid(
             row=1,
             column=1,
             sticky='w',
@@ -430,20 +443,26 @@ class UiMain:
         ttk.Progressbar(
             progress_frame,
             maximum=100,
-            variable=self._route_state_vars['progress'],
-        ).grid(row=0, column=0, sticky='ew')
-        ttk.Label(progress_frame, textvariable=self._route_state_vars['progress_percent']).grid(
-            row=0,
+            variable=self._route_state_vars.progress,
+        ).grid(row=2, column=1, sticky='ew', pady=2)
+        ttk.Label(route_frame, textvariable=self._route_state_vars.progress_text).grid(
+            row=3,
             column=1,
             sticky='e',
             padx=(8, 0),
         )
-        ttk.Label(route_frame, text='進捗カウンタ').grid(row=4, column=0, sticky='w')
-        ttk.Label(route_frame, textvariable=self._route_state_vars['progress_counter']).grid(
+        ttk.Label(route_frame, textvariable=self._route_state_vars.version).grid(
             row=4,
             column=1,
             sticky='w',
         )
+        ttk.Label(route_frame, text='最終イベント').grid(row=5, column=0, sticky='nw')
+        ttk.Label(
+            route_frame,
+            textvariable=self._route_state_vars.detail,
+            justify='left',
+            wraplength=220,
+        ).grid(row=5, column=1, sticky='w')
 
         follower_frame = ttk.LabelFrame(
             summary,
@@ -940,9 +959,8 @@ class UiMain:
     def _apply_snapshot(self, snapshot: GuiSnapshot) -> None:
         route = snapshot.route_state
         follower = snapshot.follower_state
-        self._route_state_vars['manager'].set(route.manager_state or 'unknown')
-        self._route_state_vars['route_status'].set(route.route_status or 'unknown')
-        self._route_state_vars['version'].set(str(route.route_version))
+        self._route_state_vars.manager.set(route.manager_state)
+        self._route_state_vars.route_status.set(route.route_status)
         total_waypoints = max(route.total_waypoints, 0)
         follower_index = max(follower.current_index, -1)
         progress_count = 0
@@ -950,15 +968,14 @@ class UiMain:
             progress_count = min(max(follower_index + 1, 0), total_waypoints)
         progress_ratio = 0.0
         if total_waypoints > 0:
-            progress_ratio = progress_count / total_waypoints
-        progress_ratio = max(min(progress_ratio, 1.0), 0.0)
-        self._route_state_vars['progress'].set(progress_ratio * 100.0)
+            progress_ratio = max(min(route.current_index / total_waypoints, 1.0), 0.0)
+        self._route_state_vars.progress.set(progress_ratio * 100.0)
         display_index = 0
         if total_waypoints > 0:
             follower_index = max(follower.active_waypoint_index, 0)
             display_index = min(max(follower_index + 1, 1), total_waypoints)
-        self._route_state_vars['progress_text'].set(f"{display_index} / {route.total_waypoints}")
-        self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
+        self._route_state_vars.progress_text.set(f"{display_index} / {route.total_waypoints}")
+        self._route_state_vars.version.set(f"バージョン: {route.route_version}")
         detail_entries = []
         if route.last_replan_reason:
             event_text = route.last_replan_reason
@@ -975,7 +992,7 @@ class UiMain:
             if route.manager_updated_at:
                 manager_text = f"{manager_text} @ {_format_time(route.manager_updated_at)}"
             detail_entries.append(f"Mgr: {manager_text}")
-        self._route_state_vars['detail'].set(' | '.join(detail_entries) or '最新イベントなし')
+        self._route_state_vars.detail.set(' | '.join(detail_entries) or '最新イベントなし')
         self._follower_vars['state'].set(follower.state)
         self._follower_vars['index'].set(f"Index: {follower.active_waypoint_index}")
         current_label = follower.active_waypoint_label or route.current_label or '-'

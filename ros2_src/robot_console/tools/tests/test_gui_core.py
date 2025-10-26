@@ -282,3 +282,9 @@ def test_ui_main_source_no_legacy_target_label_binding() -> None:
     ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
     source = ui_path.read_text(encoding='utf-8')
     assert "['target_label']" not in source
+
+
+def test_ui_main_source_no_legacy_progress_percent_binding() -> None:
+    ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
+    source = ui_path.read_text(encoding='utf-8')
+    assert "['progress_percent']" not in source

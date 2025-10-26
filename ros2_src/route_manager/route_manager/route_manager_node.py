@@ -264,6 +264,20 @@ class RouteManagerNode(Node):
         self.get_logger().info("route_manager (Phase2: 5-step handling, Node/Core/FSM split) started.")
         self._publish_mission_info()
 
+        # Publishログの間引き用タイムスタンプおよび最新状態を保持する。
+        self._last_status_log_time: float = 0.0
+        self._last_route_state_log_time: float = 0.0
+        self._last_status_publish_time: float = 0.0
+        self._last_route_state_publish_time: float = 0.0
+        self._latest_status_payload: Optional[
+            tuple[str, str, str, int]
+        ] = None
+        self._latest_route_state_payload: Optional[
+            tuple[int, str, int, int, str, str]
+        ] = None
+        # 1Hzで最新状態を再送するためのタイマーを追加する。
+        self._state_snapshot_timer = self.create_timer(0.2, self._publish_state_snapshots)
+
     def _resolve_topic_name(self, name: str) -> str:
         """リマップ適用後のトピック名を返す補助関数."""
         try:
@@ -290,18 +304,9 @@ class RouteManagerNode(Node):
         self.pub_active_route.publish(ros_route)
 
     def _publish_status_from_core(self, state: str, decision: str, cause: str, route_version: int) -> None:
-        msg = ManagerStatus()
-        msg.header = Header()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.state = state
-        msg.decision = decision
-        msg.last_cause = cause
-        msg.route_version = int(route_version)
-        self.get_logger().info(
-            f"[Node] publish {self.manager_status_topic}: state={state}, decision={decision}, "
-            f"cause={cause}, ver={int(route_version)}"
-        )
-        self.pub_manager_status.publish(msg)
+        payload = (state, decision, cause, int(route_version))
+        self._latest_status_payload = payload
+        self._emit_manager_status(payload, force_log=True)
 
     @staticmethod
     def _normalize_route_state_status(status: str) -> int:
@@ -325,18 +330,99 @@ class RouteManagerNode(Node):
         }
         return mapping.get(normalized, RouteState.STATUS_UNKNOWN)
 
-    def _publish_route_state_from_core(self, idx: int, label: str, ver: int, total: int, status: str) -> None:
+    def _publish_route_state_from_core(
+        self,
+        idx: int,
+        label: str,
+        ver: int,
+        total: int,
+        status: str,
+        message: str,
+    ) -> None:
+        payload = (
+            int(idx),
+            str(label),
+            int(ver),
+            int(total),
+            str(status),
+            str(message or ""),
+        )
+        self._latest_route_state_payload = payload
+        self._emit_route_state(payload, force_log=True)
+
+    @staticmethod
+    def _should_log(now_sec: float, last_log_time: float) -> bool:
+        """1秒間隔でログ出力するべきかを判定する。"""
+        if last_log_time == 0.0:
+            return True
+        return now_sec - last_log_time >= 1.0
+
+    def _log_manager_status(self, payload: tuple[str, str, str, int]) -> None:
+        """ManagerStatusの内容をinfoログとして出力する。"""
+        state, decision, cause, route_version = payload
+        self.get_logger().info(
+            f"[Node] publish {self.manager_status_topic}: state={state}, decision={decision}, "
+            f"cause={cause}, ver={route_version}"
+        )
+
+    def _log_route_state(self, payload: tuple[int, str, int, int, str, str]) -> None:
+        """RouteStateの内容をinfoログとして出力する。"""
+        idx, label, ver, total, status, message = payload
+        self.get_logger().info(
+            f"[Node] publish {self.route_state_topic}: idx={idx}, label='{label}', "
+            f"ver={ver}, total={total}, status={status}, message='{message}'"
+        )
+
+    def _emit_manager_status(
+        self, payload: tuple[str, str, str, int], force_log: bool = False
+    ) -> None:
+        """ManagerStatusをpublishし、ログを1Hzに間引く。"""
+        msg = ManagerStatus()
+        msg.header = Header()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.state, msg.decision, msg.last_cause, msg.route_version = payload
+        now_sec = time.monotonic()
+        self.pub_manager_status.publish(msg)
+        if force_log or self._should_log(now_sec, self._last_status_log_time):
+            self._log_manager_status(payload)
+            self._last_status_log_time = now_sec
+        self._last_status_publish_time = now_sec
+
+    def _emit_route_state(
+        self, payload: tuple[int, str, int, int, str, str], force_log: bool = False
+    ) -> None:
+        """RouteStateをpublishし、ログを1Hzに間引く。"""
         msg = RouteState()
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
+        idx, label, ver, total, status, message = payload
         msg.status = self._normalize_route_state_status(status)
-        msg.current_index = int(idx)
-        msg.current_label = str(label)
-        msg.route_version = int(ver)
-        msg.total_waypoints = int(total)
-        #self.get_logger().info(f"[Node] publish /route_state: idx={idx}, label='{label}', ver={ver}, total={total}, status={status}")
+        msg.current_index = idx
+        msg.current_label = label
+        msg.route_version = ver
+        msg.total_waypoints = total
+        msg.message = message
+        now_sec = time.monotonic()
         self.pub_route_state.publish(msg)
+        if force_log or self._should_log(now_sec, self._last_route_state_log_time):
+            self._log_route_state(payload)
+            self._last_route_state_log_time = now_sec
+        self._last_route_state_publish_time = now_sec
+
+    def _publish_state_snapshots(self) -> None:
+        """最新状態を1Hz間隔で再送してログとpublish回数を一致させる。"""
+        now_sec = time.monotonic()
+        if (
+            self._latest_status_payload is not None
+            and self._should_log(now_sec, self._last_status_publish_time)
+        ):
+            self._emit_manager_status(self._latest_status_payload)
+        if (
+            self._latest_route_state_payload is not None
+            and self._should_log(now_sec, self._last_route_state_publish_time)
+        ):
+            self._emit_route_state(self._latest_route_state_payload)
 
     # ------------------------------------------------------------------
     # Service Server: report_stuck（Core+FSMで4段階ロジックを維持）

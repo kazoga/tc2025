@@ -315,8 +315,6 @@ class UiMain:
         self._stagnation_display_reason: str = '滞留なし'
         self._stagnation_ignored_reason: Optional[str] = None
         self._obstacle_override_active = False
-        self._overlay_font: Optional[object] = None
-        self._overlay_font_supports_wide: bool = False
         self._sig_value_initialized: bool = False
         self._sig_last_command: Optional[int] = None
 
@@ -1316,10 +1314,6 @@ class UiMain:
 
         obstacle_source = snapshot.images.obstacle_view
         obstacle_placeholder = self._is_placeholder_image(obstacle_source)
-        if obstacle_source is not None and snapshot.images.obstacle_overlay:
-            obstacle_source = self._draw_overlay(
-                obstacle_source.copy(), snapshot.images.obstacle_overlay
-            )
         obstacle_photo = _build_photo(obstacle_source, self._obstacle_panel)
         self._obstacle_panel.update_image(obstacle_photo, alt_text='画像未取得')
         self._obstacle_panel.update_overlay('')
@@ -1368,98 +1362,6 @@ class UiMain:
             return None
         data = base64.b64encode(buffer.tobytes()).decode('ascii')
         return tk.PhotoImage(data=data, format='png')
-
-    def _get_overlay_font(self) -> Tuple[Optional[object], bool]:
-        """オーバレイ描画に利用するフォントと対応状況を取得する。"""
-
-        if Image is None:
-            return None, False
-        if self._overlay_font is not None:
-            return self._overlay_font, self._overlay_font_supports_wide
-        try:
-            from PIL import ImageFont
-        except ImportError:  # pragma: no cover - Pillow 無し環境では未使用
-            self._overlay_font = None
-            self._overlay_font_supports_wide = False
-            return None, False
-
-        candidates = [
-            ('NotoSansCJK-Regular.ttc', 20),
-            ('NotoSansCJKjp-Regular.otf', 20),
-            ('IPAGothic.ttf', 20),
-            ('DejaVuSans.ttf', 20),
-            ('DejaVuSans-Bold.ttf', 20),
-        ]
-        search_roots = [None]
-        try:
-            search_roots.append(Path(ImageFont.__file__).resolve().parent)
-        except (AttributeError, TypeError, ValueError):  # pragma: no cover - パス取得失敗時
-            pass
-
-        for name, size in candidates:
-            for root in search_roots:
-                try:
-                    font_path = str(root / name) if root is not None else name
-                    font = ImageFont.truetype(font_path, size)
-                except (OSError, ValueError):
-                    continue
-                self._overlay_font = font
-                self._overlay_font_supports_wide = True
-                return font, True
-
-        self._overlay_font = ImageFont.load_default()
-        self._overlay_font_supports_wide = False
-        return self._overlay_font, False
-
-    def _draw_overlay(self, image: Image.Image, text: str) -> Image.Image:
-        if Image is None or not text:
-            return image
-        base = image.convert('RGBA')
-        canvas = Image.new('RGBA', base.size, (0, 0, 0, 0))
-        from PIL import ImageDraw
-
-        font, supports_wide = self._get_overlay_font()
-        if font is None:
-            return image
-
-        raw_lines = text.split('\n')
-        if not supports_wide:
-            lines = [line.encode('latin-1', 'replace').decode('latin-1') for line in raw_lines]
-        else:
-            lines = raw_lines
-
-        draw = ImageDraw.Draw(canvas)
-        padding = 6
-        line_spacing = 4
-        line_metrics = []
-        max_width = 0
-        for line in lines:
-            display_line = line or ' '
-            if hasattr(draw, 'textbbox'):
-                bbox = draw.textbbox((0, 0), display_line, font=font)
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-            else:
-                width, height = draw.textsize(display_line, font=font)
-            line_metrics.append((display_line, width, height))
-            if width > max_width:
-                max_width = width
-
-        rect_height = padding * 2
-        if line_metrics:
-            rect_height += sum(height for _, _, height in line_metrics)
-            rect_height += line_spacing * (len(line_metrics) - 1)
-
-        draw.rectangle((0, 0, max_width + padding * 2, rect_height), fill=(0, 0, 0, 160))
-        y = padding
-        for index, (display_line, _, height) in enumerate(line_metrics):
-            draw.text((padding, y), display_line, fill=(255, 255, 255, 255), font=font)
-            if index < len(line_metrics) - 1:
-                y += height + line_spacing
-            else:
-                y += height
-        composed = Image.alpha_composite(base, canvas)
-        return composed.convert(image.mode)
 
     def _update_launch_states(self, snapshot: GuiSnapshot) -> None:
         for profile_id, widgets in self._launch_widgets.items():

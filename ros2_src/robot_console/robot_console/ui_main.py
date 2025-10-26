@@ -53,7 +53,7 @@ FOLLOWER_CARD_KEYS = (
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 REFRESH_INTERVAL_MS = 200
-SIDEBAR_WIDTH = 248
+SIDEBAR_WIDTH = 200
 JST = timezone(timedelta(hours=9))
 EVENT_BANNER_TTL = timedelta(seconds=60)
 STICKY_BANNER_TEXTS = {'信号: STOP', '停止線: STOP'}
@@ -89,15 +89,18 @@ def compute_route_progress(
     """
 
     total_waypoints = max(route.total_waypoints, 0)
-    route_index = max(route.current_index, -1)
-    progress_ratio = 0.0
-    if total_waypoints > 0:
-        progress_ratio = max(min(route_index / total_waypoints, 1.0), 0.0)
+    if total_waypoints <= 0:
+        return 0.0, 0, 0
 
-    display_index = 0
-    if total_waypoints > 0:
-        follower_index = max(follower.active_waypoint_index, -1)
-        display_index = min(max(follower_index + 1, 1), total_waypoints)
+    follower_index = max(follower.active_waypoint_index, -1)
+    route_index = max(route.current_index, -1)
+
+    progress_source = follower_index
+    if progress_source < 0 and route_index >= 0:
+        progress_source = route_index
+
+    display_index = min(max(progress_source + 1, 0), total_waypoints)
+    progress_ratio = display_index / total_waypoints if total_waypoints else 0.0
 
     return progress_ratio, display_index, total_waypoints
 
@@ -725,8 +728,14 @@ class UiMain:
         obstacle_tab.columnconfigure(0, weight=1)
         value_row = ttk.Frame(obstacle_tab)
         value_row.grid(row=0, column=0, sticky='ew')
-        value_row.columnconfigure(5, weight=1)
-        ttk.Label(value_row, text='余裕距離[m]').grid(row=0, column=0, sticky='e')
+        value_row.columnconfigure(7, weight=1)
+        ttk.Checkbutton(
+            value_row,
+            text='front_blocked',
+            variable=self._obstacle_blocked,
+            command=self._on_obstacle_params_changed,
+        ).grid(row=0, column=0, sticky='w', padx=(0, 12))
+        ttk.Label(value_row, text='前方距離[m]').grid(row=0, column=1, sticky='e')
         clearance_spin = ttk.Spinbox(
             value_row,
             from_=0.1,
@@ -736,8 +745,8 @@ class UiMain:
             width=6,
             command=self._on_obstacle_params_changed,
         )
-        clearance_spin.grid(row=0, column=1, sticky='w', padx=(4, 12))
-        ttk.Label(value_row, text='左[m]').grid(row=0, column=2, sticky='e')
+        clearance_spin.grid(row=0, column=2, sticky='w', padx=(4, 12))
+        ttk.Label(value_row, text='左[m]').grid(row=0, column=3, sticky='e')
         left_spin = ttk.Spinbox(
             value_row,
             from_=-5.0,
@@ -747,8 +756,8 @@ class UiMain:
             width=6,
             command=self._on_obstacle_params_changed,
         )
-        left_spin.grid(row=0, column=3, sticky='w', padx=(4, 12))
-        ttk.Label(value_row, text='右[m]').grid(row=0, column=4, sticky='e')
+        left_spin.grid(row=0, column=4, sticky='w', padx=(4, 12))
+        ttk.Label(value_row, text='右[m]').grid(row=0, column=5, sticky='e')
         right_spin = ttk.Spinbox(
             value_row,
             from_=-5.0,
@@ -758,34 +767,25 @@ class UiMain:
             width=6,
             command=self._on_obstacle_params_changed,
         )
-        right_spin.grid(row=0, column=5, sticky='w', padx=(4, 0))
+        right_spin.grid(row=0, column=6, sticky='w', padx=(4, 0))
+
+        self._obstacle_toggle_btn = ttk.Button(
+            value_row,
+            command=self._on_toggle_obstacle_override,
+        )
+        self._obstacle_toggle_btn.grid(row=0, column=8, sticky='e', padx=(12, 0))
+        self._update_obstacle_override_button()
 
         for spin in (clearance_spin, left_spin, right_spin):
             spin.bind('<FocusOut>', self._on_obstacle_params_changed)
             spin.bind('<Return>', self._on_obstacle_params_changed)
-
-        control_row = ttk.Frame(obstacle_tab)
-        control_row.grid(row=1, column=0, sticky='ew', pady=(6, 0))
-        control_row.columnconfigure(1, weight=1)
-        ttk.Checkbutton(
-            control_row,
-            text='front_blocked',
-            variable=self._obstacle_blocked,
-            command=self._on_obstacle_params_changed,
-        ).grid(row=0, column=0, sticky='w')
-        self._obstacle_toggle_btn = ttk.Button(
-            control_row,
-            command=self._on_toggle_obstacle_override,
-        )
-        self._obstacle_toggle_btn.grid(row=0, column=2, sticky='e', padx=(12, 0))
-        self._update_obstacle_override_button()
         ttk.Label(
             obstacle_tab,
             textvariable=self._obstacle_override_state,
             anchor='w',
             justify='left',
         ).grid(
-            row=2,
+            row=1,
             column=0,
             sticky='w',
             pady=(6, 0),

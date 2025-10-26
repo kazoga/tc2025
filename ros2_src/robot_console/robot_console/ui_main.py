@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Optional, Tuple, TypedDict
+from typing import Dict, Optional, Tuple
 
 try:
     from PIL import Image, ImageTk  # type: ignore
@@ -43,6 +43,7 @@ FOLLOWER_CARD_KEYS = (
     'state',
     'index',
     'label',
+    'target_label',
     'stagnation',
     'offsets',
 )
@@ -53,19 +54,6 @@ REFRESH_INTERVAL_MS = 200
 SIDEBAR_WIDTH = 288
 JST = timezone(timedelta(hours=9))
 EVENT_BANNER_TTL = timedelta(seconds=60)
-
-
-
-class RouteCardVars(TypedDict):
-    """ルート進捗カードで使用する tk 変数群の型ヒント。"""
-
-    manager: tk.StringVar
-    route_status: tk.StringVar
-    progress: tk.DoubleVar
-    progress_text: tk.StringVar
-    version: tk.StringVar
-    detail: tk.StringVar
-
 
 def _format_time(value: Optional[datetime]) -> str:
     """日時をHH:MM:SS形式の文字列に変換する。"""
@@ -270,14 +258,14 @@ class UiMain:
     def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""
 
-        return {
-            'manager': tk.StringVar(value='unknown'),
-            'route_status': tk.StringVar(value='unknown'),
-            'progress': tk.DoubleVar(value=0.0),
-            'progress_text': tk.StringVar(value='0 / 0'),
-            'version': tk.StringVar(value='バージョン: 0'),
-            'detail': tk.StringVar(value='最新イベントなし'),
-        }
+        return RouteCardVars(
+            manager=tk.StringVar(value='unknown'),
+            route_status=tk.StringVar(value='unknown'),
+            progress=tk.DoubleVar(value=0.0),
+            progress_text=tk.StringVar(value='0 / 0'),
+            version=tk.StringVar(value='バージョン: 0'),
+            detail=tk.StringVar(value='最新イベントなし'),
+        )
 
     def _create_follower_vars(self) -> Dict[str, tk.StringVar]:
         """フォロワ状態カードで利用する tk 変数を生成する。"""
@@ -287,11 +275,10 @@ class UiMain:
             'state': tk.StringVar(value='unknown'),
             'index': tk.StringVar(value='Index: 0'),
             'label': follower_label,
+            'target_label': follower_label,
             'stagnation': tk.StringVar(value='滞留なし'),
             'offsets': tk.StringVar(value='左:+0.0m / 右:+0.0m'),
         }
-        if 'target_label' in follower_vars:
-            raise AssertionError('target_label は廃止済みのキーです。')
         missing = set(FOLLOWER_CARD_KEYS) - set(follower_vars.keys())
         if missing:
             raise AssertionError(f'フォロワカードのキーが不足しています: {missing}')
@@ -442,7 +429,7 @@ class UiMain:
             sticky='w',
         )
         ttk.Label(route_frame, text='バージョン').grid(row=2, column=0, sticky='w')
-        ttk.Label(route_frame, textvariable=self._route_state_vars['version']).grid(
+        ttk.Label(route_frame, textvariable=self._route_state_vars.version).grid(
             row=2,
             column=1,
             sticky='w',
@@ -985,10 +972,10 @@ class UiMain:
         if total_waypoints > 0:
             follower_index = max(follower.active_waypoint_index, 0)
             display_index = min(max(follower_index + 1, 1), total_waypoints)
-        self._route_state_vars['progress_text'].set(
+        self._route_state_vars.progress_text.set(
             f"{display_index} / {route.total_waypoints}"
         )
-        self._route_state_vars['version'].set(f"バージョン: {route.route_version}")
+        self._route_state_vars.version.set(f"バージョン: {route.route_version}")
         detail_entries = []
         if route.last_replan_reason:
             event_text = route.last_replan_reason
@@ -1005,7 +992,7 @@ class UiMain:
             if route.manager_updated_at:
                 manager_text = f"{manager_text} @ {_format_time(route.manager_updated_at)}"
             detail_entries.append(f"Mgr: {manager_text}")
-        self._route_state_vars['detail'].set(
+        self._route_state_vars.detail.set(
             ' | '.join(detail_entries) or '最新イベントなし'
         )
         self._follower_vars['state'].set(follower.state)

@@ -51,6 +51,15 @@
 
   <!-- Waypoint input ノード -->
   <node pkg="tc2025" type="waypoint_input.py" name="waypoint_input" output="screen" launch-prefix="xterm -e" />
+  
+  
+<node pkg="urg_node" type="urg_node" name="urg_node" respawn="true">
+	<param name="serial_port" value="/dev/ttyACM1" />
+	<param name="angle_min" value="-2" />
+	<param name="angle_max" value="2" />
+	<remap from="scan" to="scan"/>
+
+</node>
 
   <!-- ublox GPS -->
   <include file="$(find ublox_gps)/launch/ublox_device.launch">

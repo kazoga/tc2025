@@ -12,10 +12,12 @@ PGWの座標単位を自動的に判定し、必要に応じて投影変換（We
 """
 
 from __future__ import annotations
-import sys
+
 import math
-from typing import List, Tuple
+import sys
 from pathlib import Path
+from typing import List, Sequence, Tuple
+
 from PIL import Image, ImageDraw
 
 
@@ -68,7 +70,9 @@ def webmercator_to_latlon(x: float, y: float) -> Tuple[float, float]:
 def latlon_to_pixel(
     image_path: str,
     worldfile_path: str,
-    latlon_list: List[Tuple[float, float]],
+    latlon_list: Sequence[Tuple[float, float]],
+    *,
+    verbose: bool = False,
 ) -> List[Tuple[int | None, int | None]]:
     """
     緯度経度を画像ピクセル座標に変換する。
@@ -88,10 +92,11 @@ def latlon_to_pixel(
     with Image.open(image_path) as img:
         width, height = img.size
 
-    print("=== PGW parameters ===")
-    print(f"A={A}, D={D}, B={B}, E={E}, C={C}, F={F}")
-    print(f"Image size: width={width}, height={height}")
-    print(f"PGW interpreted as {'Projected (m)' if projected else 'Geographic (deg)'}\n")
+    if verbose:
+        print("=== PGW parameters ===")
+        print(f"A={A}, D={D}, B={B}, E={E}, C={C}, F={F}")
+        print(f"Image size: width={width}, height={height}")
+        print(f"PGW interpreted as {'Projected (m)' if projected else 'Geographic (deg)'}\n")
 
     det = A * E - B * D
     if abs(det) < 1e-12:
@@ -117,19 +122,21 @@ def latlon_to_pixel(
 
         inside = 0 <= x_pix < width and 0 <= y_pix < height
 
-        print(
-            f"lat={lat:.6f}, lon={lon:.6f} -> "
-            f"mapX={mapx:.3f}, mapY={mapy:.3f}, "
-            f"x_img={x_img:.3f}, y_img={y_img:.3f}, "
-            f"x_pix={x_pix}, y_pix={y_pix}, inside={inside}"
-        )
+        if verbose:
+            print(
+                f"lat={lat:.6f}, lon={lon:.6f} -> "
+                f"mapX={mapx:.3f}, mapY={mapy:.3f}, "
+                f"x_img={x_img:.3f}, y_img={y_img:.3f}, "
+                f"x_pix={x_pix}, y_pix={y_pix}, inside={inside}"
+            )
 
         if inside:
             results.append((x_pix, y_pix))
         else:
             results.append((None, None))
 
-    print("")  # 改行を入れて見やすく
+    if verbose:
+        print("")  # 改行を入れて見やすく
     return results
 
 def _draw_points(image_path: str, points: List[Tuple[int | None, int | None]], output_path: str) -> None:
@@ -171,7 +178,7 @@ def main() -> None:
 
     # 変換実行
     try:
-        pixels = latlon_to_pixel(image_path, worldfile_path, latlon_pairs)
+        pixels = latlon_to_pixel(image_path, worldfile_path, latlon_pairs, verbose=True)
     except Exception as e:
         print(f"エラー: {e}")
         sys.exit(1)

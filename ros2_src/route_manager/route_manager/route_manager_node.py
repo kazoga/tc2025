@@ -98,6 +98,7 @@ def ros_route_to_core(route: Route) -> RouteModel:
             not_skip=bool(getattr(wp, "not_skip", False)),
             right_open=float(getattr(wp, "right_open", 0.0) or 0.0),
             left_open=float(getattr(wp, "left_open", 0.0) or 0.0),
+            segment_is_fixed=bool(getattr(wp, "segment_is_fixed", False)),
         )
         rm_wps.append(w)
     start_index = int(getattr(route, "start_index", 0))
@@ -151,6 +152,7 @@ def core_route_to_ros(route: RouteModel) -> Route:
             # 開放長
             wp.right_open = float(w.right_open)
             wp.left_open = float(w.left_open)
+            wp.segment_is_fixed = bool(w.segment_is_fixed)
         except Exception:
             pass
         msg.waypoints.append(wp)

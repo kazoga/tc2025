@@ -4,6 +4,7 @@
 # - pose: 位置・姿勢（geometry_msgs/Pose）。yaw 専用フィールドは用いない。
 # - right_open/left_open: 路側開放度など、走行判断に寄与するスカラー（拡張属性）。
 # - line_stop/signal_stop/not_skip: 停止・スキップに関する制御フラグ。
+# - segment_is_fixed: TrueならこのWaypointへ向かう直前区間が固定ルート由来であることを示す。
 
 int32 index
 string label
@@ -15,4 +16,5 @@ float32 left_open
 bool line_stop
 bool signal_stop
 bool not_skip
+bool segment_is_fixed
 

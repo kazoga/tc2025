@@ -85,6 +85,7 @@ class WaypointLite:
     not_skip: bool = False
     right_open: float = 0.0
     left_open: float = 0.0
+    segment_is_fixed: bool = False
 
 
 
@@ -251,6 +252,7 @@ class RouteManagerCore:
         self.current_index: int = -1
         self.current_label: str = ""
         self.current_status: str = "IDLE"
+        self.current_segment_is_fixed: bool = False
         self._skip_history: Dict[str, int] = {}
         self._skipped_indices: Set[int] = set()
         # 1回のローカル再計画シーケンスで許可するSKIP回数は1回のみ。
@@ -324,6 +326,7 @@ class RouteManagerCore:
                     f"report={int(report.route_version)}"
                 )
             self.route_model.advance_to(index=self.current_index, label=self.current_label)
+        self._update_current_segment_flag()
 
         self._log(
             f"[Core] _sync_from_stuck_report: idx={self.current_index}, label='{self.current_label}', "
@@ -338,9 +341,23 @@ class RouteManagerCore:
             status=str(self.current_status),
         )
 
+    def _update_current_segment_flag(self) -> None:
+        """現在ターゲットのWaypointが固定区間かどうかのフラグを更新する。"""
+        fixed = False
+        if self.route_model is not None:
+            idx = int(getattr(self.route_model, "current_index", -1))
+            if 0 <= idx < len(self.route_model.waypoints):
+                cur_wp = self.route_model.waypoints[idx]
+                fixed = bool(getattr(cur_wp, "segment_is_fixed", False))
+        self.current_segment_is_fixed = fixed
+
     def get_last_offset_hint(self) -> float:
         """直近の再計画で決定した横シフト量（ヒント）を返す。"""
         return float(self._last_replan_offset_hint)
+
+    def is_current_segment_fixed(self) -> bool:
+        """現在ターゲットの区間が固定ルートかどうかを返す。"""
+        return bool(self.current_segment_is_fixed)
 
     async def request_initial_route(self, start_label: str, goal_label: str, checkpoint_labels: List[str]) -> ServiceResult:
         """初期ルートをFSM経由で要求する。"""
@@ -705,6 +722,7 @@ class RouteManagerCore:
         # 現在インデックス同期
         if self.current_index >= 0:
             self.route_model.advance_to(index=self.current_index, label=self.current_label or "")
+        self._update_current_segment_flag()
         # publish（Node層へ委譲）。非ROSだが、Node側のpublish関数は変換を担保する。
         self._publish_active_route(self.route_model)
         self._emit_route_state(message=event_message or None)

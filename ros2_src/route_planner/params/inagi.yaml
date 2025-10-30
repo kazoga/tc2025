@@ -1,0 +1,4 @@
+route_planner:
+  ros__parameters:
+    config_yaml_path: "routes/inagi/route_config.yaml"
+    csv_base_dir: "routes/inagi"

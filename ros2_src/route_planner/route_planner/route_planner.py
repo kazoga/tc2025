@@ -161,6 +161,45 @@ def concat_with_dedup(base: List[Waypoint], ext: List[Waypoint], eps: float = 1e
     return base + ext
 
 
+def apply_segment_fixed_flags(
+    wps: List[Waypoint], origins: List[WaypointOrigin], blocks: List[Dict[str, Any]]
+) -> None:
+    """Waypointごとに「直前区間が固定かどうか」のフラグを設定する。"""
+    if not wps:
+        return
+    block_type_map: Dict[Tuple[str, int], str] = {}
+    for block in blocks:
+        name = block.get("name")
+        index = block.get("index")
+        btype = block.get("type")
+        if name is None or index is None:
+            continue
+        block_type_map[(str(name), int(index))] = str(btype or "")
+
+    for wp in wps:
+        wp.segment_is_fixed = False
+
+    count = min(len(wps), len(origins))
+    for i in range(count):
+        origin = origins[i]
+        wp = wps[i]
+        block_name = getattr(origin, "block_name", None)
+        block_index = getattr(origin, "block_index", None)
+        if block_name is None or block_index is None:
+            wp.segment_is_fixed = False
+            continue
+        try:
+            block_key = (str(block_name), int(block_index))
+        except (TypeError, ValueError):
+            wp.segment_is_fixed = False
+            continue
+        block_type = block_type_map.get(block_key, "")
+        is_fixed = block_type == "fixed"
+        if getattr(origin, "segment_id", None) == "__virtual__":
+            is_fixed = False
+        wp.segment_is_fixed = bool(is_fixed)
+
+
 def stamp_edge_end_labels(wps: List[Waypoint], src_label: str, dst_label: str) -> None:
     """エッジ両端の waypoint にノードラベルを刻印（境界識別・スライス用）。"""
     if not wps:
@@ -890,6 +929,7 @@ class RoutePlannerNode(Node):
 
             # 姿勢補正（逆走区間 + ブロック末尾 + ルート末尾）
             adjust_orientations(sliced, recalc_ranges, shifted_block_tails)
+            apply_segment_fixed_flags(sliced, origins, self.blocks)
 
             # 画像を選択（可変あり & 読み込み成功時はsolver画像）
             if has_variable and last_route_image is not None:
@@ -1210,6 +1250,7 @@ class RoutePlannerNode(Node):
 
             # 11) finalize（姿勢補正・採番・距離・画像・version++）
             adjust_orientations(new_wps, recalc_ranges, block_tail_indices)
+            apply_segment_fixed_flags(new_wps, new_origins, self.blocks)
             indexing(new_wps)
             total_distance = calc_total_distance(new_wps)
             route_image = img_solver if img_solver is not None else make_text_png_image("variable part image (placeholder)")
@@ -1265,6 +1306,8 @@ class RoutePlannerNode(Node):
         wp.label = label
         wp.index = 0
         wp.pose = _copy_pose(pose_stamped.pose)
+        if hasattr(wp, "segment_is_fixed"):
+            wp.segment_is_fixed = False
         return wp
 
     def _make_virtual_edge_waypoints(

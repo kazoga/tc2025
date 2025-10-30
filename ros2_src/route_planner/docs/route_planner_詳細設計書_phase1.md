@@ -8,14 +8,15 @@
 ## 第1章 概要
 
 ### 1.1 ノードの目的
-`route_planner` は、静的に定義された**固定ブロック**と**可変ブロック**から構成される経路を、要求に応じて生成・返却する**ルート配布サーバ**である。  
-- `/get_route` : 指定された開始ラベル・終了ラベル・チェックポイントをもとに**経路を新規生成**する。  
-- `/update_route` : 現行経路に対して、**可変ブロックの封鎖**（エッジクローズ）等を反映し、**再探索**を行う。  
-- `graph_solver.solve_variable_route()` を呼び出し、**PNG画像**を生成した上で `sensor_msgs/Image(bgr8)` に積み替えて返す。
+`route_planner` は、静的に定義された**固定ブロック**と**可変ブロック**から構成される経路を、要求に応じて生成・返却する**ルート配布サーバ**である。
+- `/get_route` : 指定された開始ラベル・終了ラベル・チェックポイントをもとに**経路を新規生成**する。
+- `/update_route` : 現行経路に対して、**可変ブロックの封鎖**（エッジクローズ）等を反映し、**再探索**を行う。
+- `graph_solver.solve_variable_route()` を呼び出し、可変ブロック探索を行う。地図重畳画像は `graph_solver.render_route_on_map()` で別途生成し、必要に応じてファイルへ保存する。
+- 地図画像と Worldfile のパラメータを**相対パス**で受け取り、パッケージ共有ディレクトリ配下の実ファイルへ解決する。
 
 ### 1.2 phase1 での実装範囲
 - サービス：`/get_route`, `/update_route` を実装済み（同期実行）
-- 画像：`graph_solver` が生成した PNG を読み込み `bgr8` で返却
+- 画像：`graph_solver.render_route_on_map()` で生成した `bgr8` 配列を `sensor_msgs/Image` へ変換して返却。地図画像・ワールドファイルが指定されている場合のみ重畳を実施する。
 - 状態保持：現行経路・訪問履歴・封鎖エッジ集合・version をノード内に保持
 - 並行性：`MutuallyExclusiveCallbackGroup` により**サービス実行は直列化**
 - タイムアウト：**phase1では未実装**（呼び出しは同期完了まで待機）
@@ -27,7 +28,7 @@
 ### 2.1 責務
 - **経路計画**：固定/可変ブロックを組み合わせた経路生成
 - **再計画**：封鎖情報に応じた可変ブロックの再探索と経路再構成
-- **画像提供**：探索結果の**地図重畳画像**（PNG起点→`bgr8`）を返却
+- **画像提供**：探索結果を `graph_solver.solve_variable_route()` から受領後、`graph_solver.render_route_on_map()` で生成した地図重畳画像を `bgr8` で返却。緯度経度→画像座標変換は `latlon_to_pixel_mapper` に統一。
 
 ### 2.2 スコープ（phase1）
 - 入力：YAML 構成（blocks 定義）＋ CSV 群（nodes/edges/segment）
@@ -45,7 +46,7 @@
 
 | フェーズ | 実装内容（本ノードに関する要点） |
 |:--|:--|
-| phase1 | `/get_route` と `/update_route` の同期サーバ。現行経路・履歴・封鎖集合の保持。graph_solver 連携で PNG→`bgr8`。 |
+| phase1 | `/get_route` と `/update_route` の同期サーバ。現行経路・履歴・封鎖集合の保持。graph_solver 連携で別関数により地図重畳画像を生成し `bgr8` へ変換。 |
 | phase2 | 外部イベント起点の再計画、manager 連携の強化、パラメータ拡張（予定）。 |
 | phase3 | 統合可視化・高度最適化指標など（予定）。 |
 
@@ -76,7 +77,7 @@
 
 ### 4.3 画像（`sensor_msgs/Image`）
 - エンコーディング：**`bgr8` 固定**
-- 生成方法：`graph_solver` が出力した PNG を**読み込み**、`bgr8` に変換して格納
+- 生成方法：`graph_solver.render_route_on_map()` で得られた `numpy.ndarray`（BGR）を `sensor_msgs/Image` に詰め替える。地図画像とワールドファイルが揃っていない場合は、従来通り Matplotlib の標準背景で描画する。
 - 失敗時：**ダミー画像**（テキストPNG）を生成して返却
 
 ---
@@ -87,8 +88,11 @@
 |:--|:--|:--|:--|
 | `config_yaml_path` | `string` | `""` | ルート構成 YAML（blocks 定義）への絶対/相対パス |
 | `csv_base_dir` | `string` | `""` | CSV（nodes/edges/segment）基準ディレクトリ |
+| `map_image_path` | `string` | `None` | 地図画像（PNG 等）へのパッケージ相対パス。`None` の場合は地図重畳を行わない。 |
+| `map_worldfile_path` | `string` | `None` | 上記画像に対応する Worldfile（PGW）へのパッケージ相対パス。`map_image_path` と同時指定が必要。 |
 
 > **運用**：いずれも起動時に `declare_parameter()` で宣言。空値の場合はエラーログを出す。
+> `map_*` 系は `None` を既定とし、`get_package_share_directory("route_planner")` を基点に連結して絶対パス化する。
 
 ---
 
@@ -161,38 +165,53 @@
 - **引数/戻り値**：`wps: List[Waypoint]`／（戻り値なし、**副作用**で `index` を更新）
 
 ### 9.4 `adjust_orientations(wps)`（モジュール関数）
-- **目的**：各 `Waypoint.pose.orientation` を**隣接点の方位**に基づいて補正する。  
-- **引数/戻り値**：`wps: List[Waypoint]`／（副作用で更新）  
+- **目的**：各 `Waypoint.pose.orientation` を**隣接点の方位**に基づいて補正する。
+- **引数/戻り値**：`wps: List[Waypoint]`／（副作用で更新）
 - **仕様**：`yaw_to_quaternion(yaw)` を用い、2点間の `atan2(dy, dx)` を yaw として反映。
 
-### 9.5 `pack_route_msg(wps, image_png_path)`（モジュール関数）
-- **目的**：`Route` メッセージを**構築**する。  
-- **引数**：`wps: List[Waypoint]`, `image_png_path: Optional[str]`  
-- **戻り値**：`Route`  
-- **仕様**：PNG を読み込めた場合は `bgr8` に変換し `Image` を設定。失敗時は**テキストPNG**を生成して代入。
+### 9.5 `_resolve_map_resource_paths()`（ノード内メソッド）
+- **目的**：パラメータで指定された地図画像・ワールドファイルのパスをパッケージ共有ディレクトリ基準で絶対パス化する。
+- **引数/戻り値**：なし／`Tuple[Optional[str], Optional[str]]`
+- **仕様**：`map_image_path`・`map_worldfile_path` がともに `None` でない場合に限り、`get_package_share_directory("route_planner")` を基点として `os.path.join()` で連結する。いずれか一方のみ設定された場合は警告ログを出し、両方とも `None` を返す。
 
-### 9.6 `solve_variable_route()`（外部：graph_solver.py）
-- **目的**：無向グラフ上で `start`→`checkpoints群`→`goal` の最短経路（順序最適化）を解く。  
-- **引数**：`nodes`, `edges`, `start`, `goal`, `checkpoints`  
-- **戻り値**：`Dict[str, Any]`  
-  - `edge_sequence: List[Dict]` … `segment_id` を含む区間列  
-  - `node_sequence: List[str]` … ノード通過列  
-  - `visit_order: List[str]` … 端点訪問順  
-  - `stats: Dict` … JSON直列化可能な統計（行列は文字列キー化済み）  
-  - `route_image_path: str` … 生成 PNG の実パス（`/tmp/route_solver_<pid>.png` など）
+### 9.6 `pack_route_msg(wps, route_image_bgr)`（モジュール関数）
+- **目的**：`Route` メッセージを**構築**する。
+- **引数**：`wps: List[Waypoint]`, `route_image_bgr: Optional[np.ndarray]`
+- **戻り値**：`Route`
+- **仕様**：NumPy 配列（BGR, `dtype=uint8`）が与えられた場合は `sensor_msgs/Image` を `bgr8` で生成する。`None` の場合や変換失敗時は**テキストPNG**を生成して代入する。
+
+### 9.7 `solve_variable_route()`（外部：graph_solver.py）
+- **目的**：無向グラフ上で `start`→`checkpoints群`→`goal` の最短経路（順序最適化）を解く。
+- **引数**：
+  - `nodes`, `edges`, `start`, `goal`, `checkpoints`
+- **戻り値**：`Dict[str, Any]`
+  - `edge_sequence: List[Dict]` … `segment_id` を含む区間列
+  - `node_sequence: List[str]` … ノード通過列
+  - `visit_order: List[str]` … 端点訪問順
+  - `stats: Dict` … JSON直列化可能な統計（行列は文字列キー化済み）
+
+### 9.8 `render_route_on_map()`（外部：graph_solver.py）
+- **目的**：地図画像上にノード・エッジ・訪問順序を重畳した可視化画像を生成する。
+- **引数**：
+  - `map_image_path: str`
+  - `map_worldfile_path: str`
+  - `solve_result: Dict[str, Any]` … `solve_variable_route()` の戻り値
+  - `route_image_output_path: Optional[str]`
+- **戻り値**：`Optional[np.ndarray]`
+- **仕様**：`latlon_to_pixel_mapper.latlon_to_pixel()` を用いて緯度経度をピクセル座標へ変換し、Matplotlib の Axes に地図画像を貼り付けた上でノード・エッジを描画する。画像外と判定された点は描画対象から除外する。完成した Figure をバッファへ書き出し、`np.array(Image.open(buffer))[:, :, ::-1]` により BGR 配列へ変換する。`route_image_output_path` が指定された場合は `savefig()` でファイルへ出力し、戻り値は描画成功時のみ `np.ndarray` を返す。
 
 ---
 
 ## 第10章 サービス処理フロー
 
 ### 10.1 `/get_route`
-1. **設定読込**：`load_config()` で `blocks` を準備
+1. **設定読込**：`load_config()` で `blocks` を準備し、併せて `_resolve_map_resource_paths()` で地図関連パラメータを絶対パス化
 2. **ブロック順の展開**：固定ブロックは**CSV の順**を採用。可変ブロックは `graph_solver` で探索
 3. **チェックポイント統合**：YAML 定義＋リクエストを**和集合**化し、**当該ブロックに存在するもの**へ限定。履歴から**訪問済みは除外**
 4. **ウェイポイント連結**：重複端点は `concat_with_dedup()` で**重複除去結合**（位置がほぼ等しい場合に 1 点化）
 5. **ラベルスライス**：`slice_by_labels()` により start/goal 範囲で切出し
 6. **採番/姿勢補正**：`indexing()` → `adjust_orientations()`
-7. **画像**：可変ブロック探索結果の `route_image_path` を**優先**して読み込み、`bgr8` で格納
+7. **画像**：地図リソースが解決できた場合は `graph_solver.render_route_on_map()` を呼び出し、得られた `route_image_bgr` を `pack_route_msg()` で `sensor_msgs/Image` へ変換。画像生成に失敗した場合やリソース未指定時はテキストPNGを生成
 8. **状態更新**：`current_route`, `current_route_origins`, `visited_checkpoints_hist` を更新。`route_version` を**加算**
 9. **応答**：`Route` を返却
 
@@ -202,7 +221,7 @@
 3. **境界接続**：現在位置 `current_pose` を**先頭**に置いた**仮想エッジ**（`current → prev → U`）で**可変ブロック**の探索入力を構成
 4. **再探索**：閉塞を除いた **可変ブロック**のみ `graph_solver` で再計算
 5. **連結/補正**：元ルートの非対象区間＋再探索区間を**連結**し、`indexing()` と `adjust_orientations()` を適用
-6. **画像**：`route_image_path` を読み込み（不可時はテキストPNG）
+6. **画像**：必要に応じて `graph_solver.render_route_on_map()` を呼び出し、成功時のみ `sensor_msgs/Image` を生成（未指定/失敗時はテキストPNG）
 7. **状態更新/応答**：`current_route` 等を更新し、`Route` を返却（`version` 加算）
 
 ---
@@ -221,11 +240,11 @@
 
 ## 第12章 動作シーケンス（テキスト）
 
-- **通常（/get_route）**：  
-  `load_config → 各ブロック処理（固定=直結, 可変=solver） → 重複結合 → ラベルスライス → 採番 → 姿勢補正 → 画像読込 → 状態更新 → 応答`
+- **通常（/get_route）**：
+  `load_config → 各ブロック処理（固定=直結, 可変=solver） → 重複結合 → ラベルスライス → 採番 → 姿勢補正 → 画像変換 → 状態更新 → 応答`
 
-- **再計画（/update_route）**：  
-  `前提確認 → 封鎖適用（可変のみ） → 仮想エッジを含む再探索入力生成 → solver 再計算 → ルート連結 → 採番/補正 → 画像読込 → 状態更新 → 応答`
+- **再計画（/update_route）**：
+  `前提確認 → 封鎖適用（可変のみ） → 仮想エッジを含む再探索入力生成 → solver 再計算 → ルート連結 → 採番/補正 → 画像変換 → 状態更新 → 応答`
 
 ---
 
@@ -234,7 +253,7 @@
 | 観点 | 代表テスト |
 |:--|:--|
 | 経路生成 | 正常系：固定+可変ブロックを含む構成で `/get_route` が成功し、`index` が 0..N-1 連番である。 |
-| 画像 | `route_image_path` による PNG 読込が成功し、`bgr8` で返却される。失敗時はテキストPNG。 |
+| 画像 | `graph_solver.render_route_on_map()` が成功し、`pack_route_msg()` で `sensor_msgs/Image` 化される。失敗/未指定時はテキストPNG。 |
 | 再訪/ラベル | 同一ラベルの再訪時に `index` は別値になる。 |
 | スライス | start/goal 未指定時のデフォルト（先頭/末尾）が適用される。 |
 | 再計画 | 可変ブロック封鎖時に `/update_route` が成功し、固定ブロック封鎖では失敗する。 |
@@ -244,10 +263,10 @@
 
 ## 第14章 保守・拡張の留意事項
 
-- `graph_solver` の**入力/出力I/F**（特に `route_image_path`）の**互換維持**  
+- `graph_solver` の**入力/出力I/F**（`solve_variable_route()` と `render_route_on_map()` の責務分離）を明確に維持すること
 - `Waypoint` の**index再採番**は**副作用関数**であり、戻り値を用いない前提で実装すること  
 - データ互換：`edges.csv` の `reversible` は複数表記（0/1, true/false, yes/no）を許容  
-- 画像ファイル名は `graph_solver` に依存（`/tmp/route_solver_<pid>.png` など）。同一プロセスは上書き、別プロセスは別名。
+- 画像ファイル名は `graph_solver.render_route_on_map()` の `route_image_output_path` 指定に依存する（未指定時はメモリ上で完結）。
 
 ---
 

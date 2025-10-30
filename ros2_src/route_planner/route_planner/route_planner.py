@@ -20,13 +20,15 @@ import sys
 import traceback
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import yaml
 import rclpy
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+
+import numpy as np
 
 from std_msgs.msg import Header
 from geometry_msgs.msg import PoseStamped, Quaternion, Pose
@@ -40,7 +42,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR) not in sys.path:
     sys.path.append(str(_THIS_DIR))
 
-from graph_solver import solve_variable_route  # 実プロジェクトの配置に合わせて import 経路を調整すること
+from graph_solver import render_route_on_map, solve_variable_route  # 実プロジェクトの配置に合わせて import 経路を調整すること
 
 def _copy_pose(src: Pose) -> Pose:
     p = Pose()
@@ -54,19 +56,22 @@ def _copy_pose(src: Pose) -> Pose:
     return p
 
 
-def _load_png_as_image(path: str) -> Image:
-    """PNG画像をバイト読み込みして sensor_msgs/Image に変換"""
-    import cv2
+def convert_rgb_array_to_image(rgb_array: np.ndarray) -> Image:
+    """RGB配列を sensor_msgs/Image に変換する。"""
+
+    if rgb_array.ndim != 3 or rgb_array.shape[2] != 3:
+        raise ValueError("RGB配列は (height, width, 3) の形状である必要があります。")
+
+    rgb_uint8 = np.clip(rgb_array, 0, 255).astype(np.uint8)
     img = Image()
     img.header = Header()
     img.header.frame_id = "map"
-    cv_img = cv2.imread(path, cv2.IMREAD_COLOR)
-    if cv_img is None:
-        raise FileNotFoundError(f"Cannot read PNG file: {path}")
-    img.height, img.width, _ = cv_img.shape
-    img.encoding = "bgr8"
-    img.step = cv_img.shape[1] * 3
-    img.data = cv_img.tobytes()
+    height, width, _ = rgb_uint8.shape
+    img.height = int(height)
+    img.width = int(width)
+    img.encoding = "rgb8"
+    img.step = int(width) * 3
+    img.data = rgb_uint8.tobytes()
     return img
 
 
@@ -120,15 +125,6 @@ def yaw_to_quaternion(yaw: float) -> Quaternion:
     return q
 
 
-def load_route_image_from_solver(result: Dict[str, Any]) -> Optional[Image]:
-    """solve_variable_route の戻り値に含まれる画像ファイルパスから Image を生成する。"""
-    img_path = result.get("route_image_path")
-    if not img_path or not os.path.exists(img_path):
-        print(f"[WARN] route_image_path not found or missing: {img_path}")
-        return None
-    return _load_png_as_image(img_path)
-
-
 def make_text_png_image(text: str = "No variable route in this plan") -> Image:
     """最小1x1の有効Imageを返す。"""
     img = Image()
@@ -180,6 +176,32 @@ def resolve_path(base_dir: Optional[str], path_str: str) -> str:
     if os.path.isabs(path_str):
         return path_str
     return os.path.normpath(os.path.join(base_dir, path_str))
+
+
+def normalize_nodes(nodes_data: Union[Dict[str, Tuple[float, float]], List[Dict[str, Any]]]) -> Dict[str, Tuple[float, float]]:
+    """solve_variable_route と同等の形式でノード情報を辞書化する。"""
+
+    if isinstance(nodes_data, dict):
+        normalized: Dict[str, Tuple[float, float]] = {}
+        for nid, coords in nodes_data.items():
+            if not isinstance(coords, (list, tuple)) or len(coords) != 2:
+                raise ValueError(f"ノード座標の形式が不正です: {nid}")
+            lat, lon = coords
+            normalized[str(nid)] = (float(lat), float(lon))
+        return normalized
+
+    normalized: Dict[str, Tuple[float, float]] = {}
+    for item in nodes_data:
+        nid = str(item.get("id"))
+        if not nid:
+            raise ValueError("ノードIDが存在しません。")
+        try:
+            lat = float(item.get("lat"))
+            lon = float(item.get("lon"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"ノード {nid} の緯度経度が数値に変換できません: {exc}")
+        normalized[nid] = (lat, lon)
+    return normalized
 
 
 def parse_waypoint_csv(csv_path: str) -> List[Waypoint]:
@@ -393,6 +415,8 @@ class RoutePlannerNode(Node):
         # --- 起動時パラメータ ---
         self.declare_parameter("config_yaml_path", "routes/config.yaml")
         self.declare_parameter("csv_base_dir", "routes")
+        self.declare_parameter("map_image_path", None)
+        self.declare_parameter("map_worldfile_path", None)
 
         try:
             pkg_share = get_package_share_directory("route_planner")
@@ -402,11 +426,15 @@ class RoutePlannerNode(Node):
 
         config_yaml_raw = str(self.get_parameter("config_yaml_path").value)
         csv_base_dir_raw = str(self.get_parameter("csv_base_dir").value)
+        map_image_raw = self.get_parameter("map_image_path").value
+        map_worldfile_raw = self.get_parameter("map_worldfile_path").value
         get_service_name = 'get_route'
         update_service_name = 'update_route'
 
         self.config_yaml_path: str = resolve_path(pkg_share, config_yaml_raw) if config_yaml_raw else ""
         self.csv_base_dir: str = resolve_path(pkg_share, csv_base_dir_raw) if csv_base_dir_raw else ""
+        self.map_image_path: Optional[str] = self._resolve_map_resource(map_image_raw, pkg_share, "map_image_path")
+        self.map_worldfile_path: Optional[str] = self._resolve_map_resource(map_worldfile_raw, pkg_share, "map_worldfile_path")
 
         if not self.config_yaml_path:
             self.get_logger().error("config_yaml_path is required.")
@@ -414,6 +442,14 @@ class RoutePlannerNode(Node):
             self.get_logger().info(f"Using config_yaml_path: {self.config_yaml_path}")
         if self.csv_base_dir:
             self.get_logger().info(f"Using csv_base_dir: {self.csv_base_dir}")
+
+        if self.map_image_path and self.map_worldfile_path:
+            self.get_logger().info(f"Using map_image_path: {self.map_image_path}")
+            self.get_logger().info(f"Using map_worldfile_path: {self.map_worldfile_path}")
+        elif map_image_raw or map_worldfile_raw:
+            self.get_logger().warn(
+                "地図画像またはワールドファイルの解決に失敗したため、地図描画を無効化します。"
+            )
 
         # --- メンバ（状態） ---
         self.blocks: List[Dict[str, Any]] = []                  # YAMLのブロック原義（固定/可変）
@@ -450,6 +486,69 @@ class RoutePlannerNode(Node):
             return self.resolve_service_name(name)
         except AttributeError:
             return name
+
+    def _resolve_map_resource(
+        self,
+        raw_value: Optional[Any],
+        pkg_share: Optional[str],
+        param_name: str,
+    ) -> Optional[str]:
+        """地図関連パラメータをパッケージ相対パスから絶対パスへ解決する。"""
+
+        if raw_value is None:
+            return None
+        value = str(raw_value).strip()
+        if not value:
+            return None
+
+        candidates = []
+        if os.path.isabs(value):
+            candidates.append(os.path.normpath(value))
+        if pkg_share:
+            candidates.append(resolve_path(pkg_share, value))
+        package_root = str(_THIS_DIR.parent)
+        candidates.append(resolve_path(package_root, value))
+
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+
+        self.get_logger().warn(f"{param_name} で指定されたファイルが見つかりません: {value}")
+        return None
+
+    def _render_route_overlay(
+        self,
+        nodes: Dict[str, Tuple[float, float]],
+        solver_result: Dict[str, Any],
+    ) -> Optional[Image]:
+        """solve_variable_route の結果から地図描画を生成する。"""
+
+        if not (self.map_image_path and self.map_worldfile_path):
+            return None
+
+        node_sequence = solver_result.get("node_sequence", [])
+        visit_order = solver_result.get("visit_order", [])
+
+        if not node_sequence or not visit_order:
+            return None
+
+        try:
+            rgb_array = render_route_on_map(
+                nodes,
+                node_sequence,
+                visit_order,
+                self.map_image_path,
+                self.map_worldfile_path,
+            )
+        except Exception as exc:
+            self.get_logger().warn(f"地図描画の生成に失敗しました: {exc}")
+            return None
+
+        try:
+            return convert_rgb_array_to_image(rgb_array)
+        except Exception as exc:
+            self.get_logger().warn(f"地図描画のメッセージ変換に失敗しました: {exc}")
+            return None
 
     # ===== YAML/CSV ロード ============================================================
 
@@ -687,22 +786,29 @@ class RoutePlannerNode(Node):
                     merged_cps = list(dict.fromkeys((block.get("checkpoints", []) or []) + list(request.checkpoint_labels)))
 
                     # 可変ルート探索を実行
-                    nodes = block.get("nodes") or []
+                    nodes_raw = block.get("nodes") or []
                     edges = block.get("edges") or []
                     start = block.get("start")
                     goal = block.get("goal")
-                    if not nodes or not edges:
+                    if not nodes_raw or not edges:
                         raise RuntimeError(f"[variable:{bname}] nodes/edges not loaded.")
                     if not start or not goal:
                         raise RuntimeError(f"[variable:{bname}] start/goal not set.")
 
-                    solve_result = solve_variable_route(nodes=nodes, edges=edges, start=start, goal=goal, checkpoints=merged_cps)
+                    nodes_dict = normalize_nodes(nodes_raw)
+
+                    solve_result = solve_variable_route(
+                        nodes=nodes_dict,
+                        edges=edges,
+                        start=start,
+                        goal=goal,
+                        checkpoints=merged_cps,
+                    )
                     edge_seq: List[Dict[str, Any]] = solve_result.get("edge_sequence", [])
                     if not edge_seq:
                         raise RuntimeError(f"[variable:{bname}] solver returned empty edge_sequence.")
 
-                    # route_image 読み込みを試行
-                    img = load_route_image_from_solver(solve_result)
+                    img = self._render_route_overlay(nodes_dict, solve_result)
                     if img is not None:
                         last_route_image = img  # 最新の可変ブロック画像を保持
 
@@ -966,12 +1072,19 @@ class RoutePlannerNode(Node):
             block_tail_indices: List[int] = []  # 末尾補正用
 
             # 8) solver 実行（start=U, goal=block.goal, checkpoints=remaining_cps）
-            result = solve_variable_route(nodes=nodes, edges=edges, start=u_node, goal=goal, checkpoints=remaining_cps)
+            nodes_dict = normalize_nodes(nodes)
+            result = solve_variable_route(
+                nodes=nodes_dict,
+                edges=edges,
+                start=u_node,
+                goal=goal,
+                checkpoints=remaining_cps,
+            )
             edge_seq: List[Dict[str, Any]] = result.get("edge_sequence", [])
             if not edge_seq:
                 raise RuntimeError("No route found after applying closures.")
             # 画像取得
-            img_solver = load_route_image_from_solver(result)
+            img_solver = self._render_route_overlay(nodes_dict, result)
 
             # 9) 可変結果を連結（__virtual__ は solver から基本返さない前提。返ってきても無視）
             for e in edge_seq:
@@ -1049,8 +1162,15 @@ class RoutePlannerNode(Node):
                     node_ids2 = {nd["id"] for nd in nodes2}
                     cps2 = [c for c in merged_cps2 if c in node_ids2]
 
-                    res2 = solve_variable_route(nodes=nodes2, edges=edges2, start=start2, goal=goal2, checkpoints=cps2)
-                    img_extra = load_route_image_from_solver(res2)
+                    nodes_dict2 = normalize_nodes(nodes2)
+                    res2 = solve_variable_route(
+                        nodes=nodes_dict2,
+                        edges=edges2,
+                        start=start2,
+                        goal=goal2,
+                        checkpoints=cps2,
+                    )
+                    img_extra = self._render_route_overlay(nodes_dict2, res2)
                     if img_extra is not None and img_solver is None:
                         img_solver = img_extra
                     es2: List[Dict[str, Any]] = res2.get("edge_sequence", [])

@@ -279,14 +279,27 @@ def test_target_distance_prefers_pose_when_available() -> None:
     assert math.isclose(snapshot.target_distance.current_distance_m, 6.0)
 
 
+def test_follower_finished_marks_route_and_manager_completed() -> None:
+    core = GuiCore(launch_profiles=[])
+    core.update_route_state(_make_route_state(status=2))
+    core.update_manager_status(
+        types.SimpleNamespace(state='running', decision='none', last_cause='', route_version=1)
+    )
+    follower_msg = _make_follower_state(state='FINISHED')
+    core.update_follower_state(follower_msg)
+    snapshot = core.snapshot()
+    assert snapshot.route_state.route_status == 'completed'
+    assert snapshot.route_state.manager_state == 'finished'
+
+
 def test_compute_route_progress_uses_route_index() -> None:
     """ルート進捗計算が RouteState のインデックスを基準にすることを確認する。"""
 
     route_state = RouteStateView(total_waypoints=5, current_index=2)
-    follower_state = FollowerStateView(active_waypoint_index=3)
+    follower_state = FollowerStateView(active_waypoint_index=-1)
     ratio, display_index, total = compute_route_progress(route_state, follower_state)
-    assert math.isclose(ratio, 0.4)
-    assert display_index == 4  # フォロワの1始まり表示
+    assert math.isclose(ratio, 0.6)
+    assert display_index == 3  # RouteStateのインデックスを1始まりで表示
     assert total == 5
 
 
@@ -306,6 +319,13 @@ def test_ui_main_source_aliases_target_label_to_label() -> None:
     source = ui_path.read_text(encoding='utf-8')
     assert "'target_label': follower_label" in source
     assert "self._follower_vars['target_label']" in source
+
+
+def test_ui_main_waiting_stop_appends_reason_suffix() -> None:
+    ui_path = Path(__file__).resolve().parents[2] / 'robot_console' / 'ui_main.py'
+    source = ui_path.read_text(encoding='utf-8')
+    assert "(信号)" in source
+    assert "(停止線)" in source
 
 
 def test_ui_main_source_defines_progress_percent_var() -> None:

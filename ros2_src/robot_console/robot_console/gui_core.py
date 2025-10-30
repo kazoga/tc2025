@@ -467,6 +467,13 @@ class GuiCore:
             self._follower_state.line_stop_active = line_stop_active
             if msg.state == 'WAITING_STOP' and signal_stop_active:
                 self._camera_signal_forced = True
+            if msg.state == 'FINISHED':
+                current_status = (self._route_state.route_status or '').lower()
+                if current_status not in {'completed', 'finished'}:
+                    self._route_state.route_status = 'completed'
+                manager_state = (self._route_state.manager_state or '').lower()
+                if manager_state in {'running', 'updating_route', 'holding'}:
+                    self._route_state.manager_state = 'finished'
             self._update_camera_frame_locked()
 
     def update_obstacle_hint(self, msg) -> None:

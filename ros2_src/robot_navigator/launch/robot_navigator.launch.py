@@ -22,7 +22,9 @@ def generate_launch_description() -> LaunchDescription:
         'scan_topic', default_value='/scan', description='LaserScan 入力トピック'
     )
     odom_topic_arg = DeclareLaunchArgument(
-        'odom_topic', default_value='/odom', description='オドメトリ入力トピック'
+        'odom_topic',
+        default_value='/ypspur_ros/odom',
+        description='オドメトリ入力トピック',
     )
     amcl_pose_topic_arg = DeclareLaunchArgument(
         'amcl_pose_topic', default_value='/amcl_pose', description='現在姿勢入力トピック'

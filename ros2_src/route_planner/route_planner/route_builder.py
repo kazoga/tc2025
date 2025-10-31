@@ -65,6 +65,8 @@ class WaypointRecord:
     signal_stop: bool = False
     not_skip: bool = False
     segment_is_fixed: bool = False
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
     def clone(self) -> "WaypointRecord":
         """ディープコピーを生成する."""
@@ -216,6 +218,24 @@ def parse_waypoint_csv(csv_path: str) -> List[WaypointRecord]:
                 row.get("not_skip", row.get("isnot_skipnum", 0))
             )
 
+            lat_raw = row.get("lat")
+            if lat_raw in (None, ""):
+                lat_raw = row.get("latitude")
+            try:
+                if lat_raw not in (None, ""):
+                    wp.latitude = float(lat_raw)
+            except (TypeError, ValueError):
+                wp.latitude = None
+
+            lon_raw = row.get("lon")
+            if lon_raw in (None, ""):
+                lon_raw = row.get("longitude")
+            try:
+                if lon_raw not in (None, ""):
+                    wp.longitude = float(lon_raw)
+            except (TypeError, ValueError):
+                wp.longitude = None
+
             waypoints.append(wp)
     return waypoints
 
@@ -245,6 +265,53 @@ def concat_records_with_dedup(
     else:
         result.extend(ext_clones)
     return result
+
+
+def _latlon_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """緯度経度のユークリッド距離を概算する."""
+
+    return math.hypot(lat1 - lat2, lon1 - lon2)
+
+
+def infer_first_matches_source(
+    waypoints: List[WaypointRecord],
+    src_label: str,
+    dst_label: str,
+    nodes: Dict[str, Tuple[float, float]],
+) -> Optional[bool]:
+    """セグメント先頭がsrc_labelに対応しているかを推定する."""
+
+    if not waypoints:
+        return None
+
+    first = waypoints[0]
+    last = waypoints[-1]
+    if first.label == src_label or last.label == dst_label:
+        return True
+    if first.label == dst_label or last.label == src_label:
+        return False
+
+    src_pos = nodes.get(src_label)
+    dst_pos = nodes.get(dst_label)
+    if not src_pos or not dst_pos:
+        return None
+
+    if first.latitude is None or first.longitude is None:
+        return None
+    if last.latitude is None or last.longitude is None:
+        return None
+
+    first_to_src = _latlon_distance(first.latitude, first.longitude, src_pos[0], src_pos[1])
+    first_to_dst = _latlon_distance(first.latitude, first.longitude, dst_pos[0], dst_pos[1])
+    last_to_src = _latlon_distance(last.latitude, last.longitude, src_pos[0], src_pos[1])
+    last_to_dst = _latlon_distance(last.latitude, last.longitude, dst_pos[0], dst_pos[1])
+
+    tol = 1e-6
+    if first_to_src + tol < first_to_dst and last_to_dst + tol < last_to_src:
+        return True
+    if first_to_dst + tol < first_to_src and last_to_src + tol < last_to_dst:
+        return False
+    return None
 
 
 def stamp_edge_end_labels_records(
@@ -746,6 +813,13 @@ class RouteBuilder:
                     )
                 last_solver_info = VariableSolverInfo(nodes_dict, solve_result)
 
+                edge_lookup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+                for edge_def in edges:
+                    seg_key = edge_def.get("segment_id") or edge_def.get("waypoint_list")
+                    if not seg_key:
+                        continue
+                    edge_lookup[(edge_def["source"], edge_def["target"], str(seg_key))] = edge_def
+
                 for entry in edge_seq:
                     seg_id = entry["segment_id"]
                     direction = entry["direction"]
@@ -756,7 +830,32 @@ class RouteBuilder:
                         raise RuntimeError(
                             f"[variable:{bname}] segmentが未ロードです: {seg_id}"
                         )
-                    u_first = True if direction == "forward" else False
+                    edge_meta = edge_lookup.get((src, dst, seg_id))
+                    if edge_meta is None:
+                        edge_meta = edge_lookup.get((dst, src, seg_id))
+                    row_src = src
+                    row_dst = dst
+                    if edge_meta is not None:
+                        row_src = edge_meta.get("source", src)
+                        row_dst = edge_meta.get("target", dst)
+
+                    alignment = infer_first_matches_source(
+                        cache.waypoints, src_label=src, dst_label=dst, nodes=nodes_dict
+                    )
+                    # reversible=1 でCSVの記述向きがsource/targetと逆転している場合に備え、
+                    # セグメント先頭がどちらのノードに近いかを確認して向きを決定する。
+                    if alignment is None:
+                        if edge_meta is not None:
+                            if src == row_src and dst == row_dst:
+                                u_first = True
+                            elif src == row_dst and dst == row_src:
+                                u_first = False
+                            else:
+                                u_first = True if direction == "forward" else False
+                        else:
+                            u_first = True if direction == "forward" else False
+                    else:
+                        u_first = alignment
                     seg_wps = [wp.clone() for wp in cache.waypoints]
                     if not u_first:
                         seg_wps.reverse()

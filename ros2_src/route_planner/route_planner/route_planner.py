@@ -13,7 +13,6 @@ route_planner ノード（GetRoute 完了 + UpdateRoute 完了：仮想エッジ
 
 from __future__ import annotations
 
-import csv
 import math
 import os
 import sys
@@ -22,7 +21,6 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-import yaml
 import rclpy
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from rclpy.node import Node
@@ -42,7 +40,15 @@ _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR) not in sys.path:
     sys.path.append(str(_THIS_DIR))
 
-from graph_solver import render_route_on_map, solve_variable_route  # 実プロジェクトの配置に合わせて import 経路を調整すること
+from graph_solver import render_route_on_map  # 実プロジェクトの配置に合わせて import 経路を調整すること
+from .route_builder import (
+    RouteBuilder,
+    RouteBuildResult,
+    WaypointOrigin,
+    WaypointRecord,
+    normalize_nodes,
+    resolve_path,
+)
 
 def _copy_pose(src: Pose) -> Pose:
     p = Pose()
@@ -87,29 +93,6 @@ class SegmentCacheEntry:
     """
     segment_id: str
     waypoints: List[Waypoint]
-
-
-@dataclass
-class WaypointOrigin:
-    """waypoint の由来情報（UpdateRoute の prev/next 判定・仮想エッジ生成に利用）。
-
-    Attributes:
-        block_name: 所属ブロック名。
-        block_index: 所属ブロックのインデックス（YAML読み込み時に付与）。
-        segment_id: 固定CSV or 可変エッジCSV（仮想は None）。
-        edge_u: 可変エッジの source（端点U）。固定ブロックでは None。
-        edge_v: 可変エッジの target（端点V）。固定ブロックでは None。
-        index_in_edge: エッジ内のローカルインデックス（可変エッジ連結時の“採用した向き”でのindex）。
-        u_first: True なら「このWaypointOriginを生成した時のエッジ向きが U→V」であったことを示す。
-                 False なら V→U 向き（= CSVを reverse して使用）。
-    """
-    block_name: str
-    block_index: int
-    segment_id: Optional[str]
-    edge_u: Optional[str]
-    edge_v: Optional[str]
-    index_in_edge: Optional[int]
-    u_first: Optional[bool]
 
 
 # ===== ユーティリティ関数 =============================================================
@@ -206,113 +189,6 @@ def stamp_edge_end_labels(wps: List[Waypoint], src_label: str, dst_label: str) -
         return
     wps[0].label = src_label
     wps[-1].label = dst_label
-
-
-def resolve_path(base_dir: Optional[str], path_str: str) -> str:
-    """相対パスを base_dir 起点で解決。base_dir 未指定なら path_str をそのまま返す。"""
-    if not base_dir:
-        return path_str
-    if os.path.isabs(path_str):
-        return path_str
-    return os.path.normpath(os.path.join(base_dir, path_str))
-
-
-def normalize_nodes(nodes_data: Union[Dict[str, Tuple[float, float]], List[Dict[str, Any]]]) -> Dict[str, Tuple[float, float]]:
-    """solve_variable_route と同等の形式でノード情報を辞書化する。"""
-
-    if isinstance(nodes_data, dict):
-        normalized: Dict[str, Tuple[float, float]] = {}
-        for nid, coords in nodes_data.items():
-            if not isinstance(coords, (list, tuple)) or len(coords) != 2:
-                raise ValueError(f"ノード座標の形式が不正です: {nid}")
-            lat, lon = coords
-            normalized[str(nid)] = (float(lat), float(lon))
-        return normalized
-
-    normalized: Dict[str, Tuple[float, float]] = {}
-    for item in nodes_data:
-        nid = str(item.get("id"))
-        if not nid:
-            raise ValueError("ノードIDが存在しません。")
-        try:
-            lat = float(item.get("lat"))
-            lon = float(item.get("lon"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"ノード {nid} の緯度経度が数値に変換できません: {exc}")
-        normalized[nid] = (lat, lon)
-    return normalized
-
-
-def parse_waypoint_csv(csv_path: str) -> List[Waypoint]:
-    """waypoint CSV を読み込み、Waypoint 配列へ変換する。
-
-    CSV定義（新仕様）:
-      label,latitude,longitude,x,y,z,q1,q2,q3,q4,right_is_open,left_is_open,line_is_stop,signal_is_stop,isnot_skipnum
-
-    注意:
-      - 後方互換のため label が無い場合は id もしくは num を文字列化して label とする。
-      - longitude の綴りは正しいもののみ対応（longuitude は非対応）。
-    """
-    waypoints: List[Waypoint] = []
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for i, row in enumerate(reader):
-            wp = Waypoint()
-
-            # ラベル: label 無しなら id もしくは num を文字列化して使用
-            label_val = row.get("label")
-            if label_val is None or label_val == "":
-                label_val = row.get("id") or row.get("num") or ""
-            wp.label = str(label_val)
-
-            # index は後で再採番するが、ここではCSV内の行番号を仮設定
-            wp.index = i
-
-            # 位置
-            try:
-                wp.pose.position.x = float(row.get("x", 0.0))
-                wp.pose.position.y = float(row.get("y", 0.0))
-                wp.pose.position.z = float(row.get("z", 0.0))
-            except ValueError:
-                raise ValueError(f"Invalid XYZ in {csv_path} at row {i+1}")
-
-            # 姿勢（CSV記録値。後段で必要に応じて再計算する）
-            try:
-                wp.pose.orientation.x = float(row.get("q1", 0.0))
-                wp.pose.orientation.y = float(row.get("q2", 0.0))
-                wp.pose.orientation.z = float(row.get("q3", 0.0))
-                wp.pose.orientation.w = float(row.get("q4", 1.0))
-            except ValueError:
-                raise ValueError(f"Invalid quaternion in {csv_path} at row {i+1}")
-
-            # 緯度経度（存在しない場合もある）
-            # 各種属性（旧カラム名との互換を確保）
-            def _bool_from_int(s: Any) -> bool:
-                try:
-                    return bool(int(str(s)))
-                except Exception:
-                    return False
-
-            def _float_from_any(value: Any) -> float:
-                try:
-                    return float(value)
-                except Exception:
-                    return 0.0
-
-            wp.right_open = _float_from_any(
-                row.get("right_open", row.get("right_is_open", 0.0))
-            )
-            wp.left_open = _float_from_any(
-                row.get("left_open", row.get("left_is_open", 0.0))
-            )
-            wp.line_stop = _bool_from_int(row.get("line_stop", row.get("line_is_stop", 0)))
-            wp.signal_stop = _bool_from_int(
-                row.get("signal_stop", row.get("signal_is_stop", 0))
-            )
-            wp.not_skip = _bool_from_int(row.get("not_skip", row.get("isnot_skipnum", 0)))
-
-            waypoints.append(wp)
-    return waypoints
 
 
 def indexing(wps: List[Waypoint]) -> None:
@@ -501,9 +377,21 @@ class RoutePlannerNode(Node):
         self.last_request_checkpoints: Set[str] = set()         # GetRoute時に追加されたチェックポイント
         self.visited_checkpoints_hist: Dict[str, Set[str]] = {} # ブロック名 -> 訪問済みチェックポイント（永続）
 
-        # --- ロード処理 ---
-        self._load_blocks_from_yaml()
-        self._load_csv_segments()
+        # --- ルート定義のロード ---
+        self.route_builder = RouteBuilder(
+            config_yaml_path=self.config_yaml_path,
+            csv_base_dir=self.csv_base_dir,
+            logger=self.get_logger(),
+        )
+        try:
+            self.route_builder.load()
+            self.csv_base_dir = self.route_builder.csv_base_dir
+            self.blocks = list(self.route_builder.blocks)
+            self._refresh_segment_cache()
+        except Exception as exc:
+            self.get_logger().error(f"ルート設定の読み込みに失敗しました: {exc}")
+            self.blocks = []
+            self.segments = {}
 
         # --- サービス登録（逐次処理: MutuallyExclusive） ---
         cb_group = MutuallyExclusiveCallbackGroup()
@@ -589,227 +477,35 @@ class RoutePlannerNode(Node):
             self.get_logger().warn(f"地図描画のメッセージ変換に失敗しました: {exc}")
             return None
 
-    # ===== YAML/CSV ロード ============================================================
+    def _record_to_waypoint(self, record: WaypointRecord) -> Waypoint:
+        """WaypointRecordをRoute用のWaypointメッセージへ変換する。"""
 
-    def _load_blocks_from_yaml(self) -> None:
-        """YAMLファイルを読み込み、self.blocks を初期化する。"""
-        if not self.config_yaml_path:
-            self.get_logger().warn("No config_yaml_path specified.")
-            return
-        try:
-            with open(self.config_yaml_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-        except Exception as e:
-            self.get_logger().error(f"Failed to load YAML: {e}")
-            self.blocks = []
-            return
+        wp = Waypoint()
+        wp.label = record.label
+        wp.index = int(record.index)
+        wp.pose.position.x = float(record.pose.position.x)
+        wp.pose.position.y = float(record.pose.position.y)
+        wp.pose.position.z = float(record.pose.position.z)
+        wp.pose.orientation.x = float(record.pose.orientation.x)
+        wp.pose.orientation.y = float(record.pose.orientation.y)
+        wp.pose.orientation.z = float(record.pose.orientation.z)
+        wp.pose.orientation.w = float(record.pose.orientation.w)
+        wp.right_open = float(record.right_open)
+        wp.left_open = float(record.left_open)
+        wp.line_stop = bool(record.line_stop)
+        wp.signal_stop = bool(record.signal_stop)
+        wp.not_skip = bool(record.not_skip)
+        if hasattr(wp, "segment_is_fixed"):
+            wp.segment_is_fixed = bool(record.segment_is_fixed)
+        return wp
 
-        # blocks の取得（route_planner/ros__parameters/blocks か、root直下blocks の両対応）
-        blocks = None
-        if isinstance(data, dict):
-            rp = data.get("route_planner", {})
-            if isinstance(rp, dict):
-                params = rp.get("ros__parameters", {})
-                if isinstance(params, dict):
-                    blocks = params.get("blocks")
-            if blocks is None:
-                blocks = data.get("blocks")
-        if not isinstance(blocks, list):
-            self.get_logger().warn("No valid 'blocks' list found in YAML.")
-            self.blocks = []
-            return
+    def _refresh_segment_cache(self) -> None:
+        """RouteBuilderのキャッシュからROSメッセージ形式のセグメントを再構築する。"""
 
-        # csv_base_dir が未指定なら、YAMLのあるディレクトリを基準にする
-        if not self.csv_base_dir:
-            self.csv_base_dir = os.path.dirname(os.path.abspath(self.config_yaml_path))
-
-        # ブロックを正規化しつつ格納
-        norm_blocks: List[Dict[str, Any]] = []
-        for i, b in enumerate(blocks):
-            if not isinstance(b, dict):
-                self.get_logger().error(f"Block[{i}] is not a dict.")
-                continue
-            btype = b.get("type")
-            name = b.get("name", f"block_{i}")
-            if btype == "fixed":
-                seg = b.get("segment_id")
-                if not seg:
-                    self.get_logger().error(f"Fixed block '{name}' missing 'segment_id'.")
-                    continue
-                norm_blocks.append({
-                    "type": "fixed",
-                    "name": name,
-                    "segment_id": seg,
-                    "index": len(norm_blocks),
-                })
-            elif btype == "variable":
-                nodes_file = b.get("nodes_file")
-                edges_file = b.get("edges_file")
-                start = b.get("start")
-                goal = b.get("goal")
-                checkpoints = b.get("checkpoints", [])
-                # 必須項目チェック
-                missing = [k for k, v in [
-                    ("nodes_file", nodes_file),
-                    ("edges_file", edges_file),
-                    ("start", start),
-                    ("goal", goal),
-                ] if not v]
-                if missing:
-                    self.get_logger().error(f"Variable block '{name}' missing fields: {missing}")
-                    continue
-                # checkpoints は >=1 必須
-                if not isinstance(checkpoints, list) or len(checkpoints) < 1:
-                    self.get_logger().error(f"Variable block '{name}' requires >=1 checkpoints.")
-                    continue
-                norm_blocks.append({
-                    "type": "variable",
-                    "name": name,
-                    "nodes_file": nodes_file,
-                    "edges_file": edges_file,
-                    "start": start,
-                    "goal": goal,
-                    "checkpoints": checkpoints,
-                    "nodes": None,   # List[Dict{id,lat,lon}]
-                    "edges": None,   # List[Dict{source,target,waypoint_list,reversible}]
-                    "index": len(norm_blocks),
-                })
-            else:
-                self.get_logger().error(f"Unknown block type: {btype}")
-                continue
-
-        self.blocks = norm_blocks
-
-    def _load_csv_segments(self) -> None:
-        """固定ブロックと可変ブロックの CSV をロードし、キャッシュや原義を整える。"""
-        if not self.blocks:
-            return
-
-        for b in self.blocks:
-            btype = b["type"]
-            bname = b["name"]
-
-            if btype == "fixed":
-                # 固定CSVをキャッシュ
-                seg_path = resolve_path(self.csv_base_dir, b["segment_id"])
-                try:
-                    wps = parse_waypoint_csv(seg_path)
-                    self.segments[b["segment_id"]] = SegmentCacheEntry(b["segment_id"], wps)
-                except Exception as e:
-                    self.get_logger().error(f"[fixed:{bname}] failed to load segment '{seg_path}': {e}")
-                    continue
-
-            elif btype == "variable":
-                # nodes.csv をロード（id,lat,lon）
-                nodes_file = resolve_path(self.csv_base_dir, b["nodes_file"])
-                nodes: List[Dict[str, Any]] = []
-                try:
-                    with open(nodes_file, newline="", encoding="utf-8") as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
-                            nid = row.get("id")
-                            if nid is None or nid == "":
-                                raise ValueError("nodes.csv: 'id' is required.")
-                            try:
-                                lat = float(row.get("lat"))
-                                lon = float(row.get("lon"))
-                            except Exception:
-                                raise ValueError("nodes.csv: 'lat'/'lon' must be float.")
-                            nodes.append({"id": str(nid), "lat": lat, "lon": lon})
-                    b["nodes"] = nodes
-                except Exception as e:
-                    self.get_logger().error(f"[variable:{bname}] failed to load nodes '{nodes_file}': {e}")
-                    b["nodes"] = []
-                    continue
-
-                # edges.csv をロード（source,target,waypoint_list,reversible）
-                edges_file = resolve_path(self.csv_base_dir, b["edges_file"])
-                edges: List[Dict[str, Any]] = []
-                try:
-                    with open(edges_file, newline="", encoding="utf-8") as f:
-                        reader = csv.DictReader(f)
-                        for i, row in enumerate(reader):
-                            source = row.get("source")
-                            target = row.get("target")
-                            seg_rel = row.get("waypoint_list")
-                            rev_raw = row.get("reversible", "1")
-
-                            if not source or not target or not seg_rel:
-                                raise ValueError(f"edges.csv row {i+1}: source/target/waypoint_list are required.")
-                            try:
-                                reversible = int(str(rev_raw))
-                            except Exception:
-                                raise ValueError(f"edges.csv row {i+1}: reversible must be 0 or 1.")
-                            if reversible not in (0, 1):
-                                raise ValueError(f"edges.csv row {i+1}: reversible must be 0 or 1.")
-
-                            edge = {
-                                "source": str(source),
-                                "target": str(target),
-                                "waypoint_list": seg_rel,  # 相対のまま保持（キャッシュは別）
-                                "reversible": reversible,
-                            }
-                            edges.append(edge)
-
-                            # waypoint CSV をキャッシュ
-                            seg_path = resolve_path(self.csv_base_dir, seg_rel)
-                            try:
-                                if seg_rel not in self.segments:
-                                    wps = parse_waypoint_csv(seg_path)
-                                    self.segments[seg_rel] = SegmentCacheEntry(seg_rel, wps)
-                            except Exception as e:
-                                raise RuntimeError(f"failed to load segment '{seg_path}': {e}")
-
-                    b["edges"] = edges
-                except Exception as e:
-                    self.get_logger().error(f"[variable:{bname}] failed to load edges '{edges_file}': {e}")
-                    b["edges"] = []
-                    continue
-
-            else:
-                continue
-
-    def _prepare_edges_for_solver(
-        self,
-        edges: List[Dict[str, Any]],
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
-        """solver に渡すエッジ情報を絶対パスへ展開し、復元用マッピングを返す。"""
-
-        solver_edges: List[Dict[str, Any]] = []
-        abs_to_rel: Dict[str, str] = {}
-
-        for edge in edges:
-            seg_key = edge.get("segment_id") or edge.get("waypoint_list")
-            if not seg_key:
-                raise ValueError("エッジ定義に 'segment_id' もしくは 'waypoint_list' が含まれていません。")
-
-            seg_rel = str(seg_key)
-            seg_abs = resolve_path(self.csv_base_dir, seg_rel)
-            abs_to_rel[seg_abs] = seg_rel
-
-            solver_edges.append({
-                "source": edge.get("source"),
-                "target": edge.get("target"),
-                "segment_id": seg_abs,
-                "reversible": edge.get("reversible", 0),
-            })
-
-        return solver_edges, abs_to_rel
-
-    @staticmethod
-    def _restore_segment_ids(
-        edge_sequence: List[Dict[str, Any]],
-        abs_to_rel: Dict[str, str],
-    ) -> None:
-        """edge_sequence の segment_id を相対パスへ戻す（self.segments のキーに一致させる）。"""
-
-        for entry in edge_sequence:
-            seg_abs = entry.get("segment_id")
-            if seg_abs is None:
-                continue
-            seg_rel = abs_to_rel.get(str(seg_abs))
-            if seg_rel:
-                entry["segment_id"] = seg_rel
+        self.segments = {}
+        for seg_id, entry in self.route_builder.segments.items():
+            waypoints = [self._record_to_waypoint(wp) for wp in entry.waypoints]
+            self.segments[seg_id] = SegmentCacheEntry(seg_id, waypoints)
 
     def _run_variable_solver(
         self,
@@ -819,19 +515,16 @@ class RoutePlannerNode(Node):
         goal: str,
         checkpoints: List[str],
     ) -> Dict[str, Any]:
-        """solve_variable_route を呼び出し、segment_id を相対パスへ整形した結果を返す。"""
+        """RouteBuilder経由で可変ルート探索を実行する。"""
 
-        solver_edges, abs_to_rel = self._prepare_edges_for_solver(edges)
-        result = solve_variable_route(
+        return self.route_builder.run_variable_solver(
             nodes=nodes,
-            edges=solver_edges,
+            edges=edges,
             start=start,
             goal=goal,
             checkpoints=checkpoints,
         )
-        edge_sequence = result.get("edge_sequence", [])
-        self._restore_segment_ids(edge_sequence, abs_to_rel)
-        return result
+
 
     # ===== GetRoute / UpdateRoute =====================================================
 
@@ -842,175 +535,46 @@ class RoutePlannerNode(Node):
             start_label = getattr(request, "start_label", None)
             goal_label = getattr(request, "goal_label", None)
             checkpoint_labels = getattr(request, "checkpoint_labels", [])
-            last_route_image: Optional[Image] = None
-            self.get_logger().info(f"Get route: start_label='{start_label}', goal_label='{goal_label}', checkpoints='{checkpoint_labels}'")
-            if not self.blocks:
+            self.get_logger().info(
+                f"Get route: start_label='{start_label}', goal_label='{goal_label}', checkpoints='{checkpoint_labels}'"
+            )
+            if not self.route_builder.blocks:
                 raise RuntimeError("No blocks configuration loaded.")
 
-            # ルート構築の作業配列
-            route_wps: List[Waypoint] = []
-            origins: List[WaypointOrigin] = []
-            reversed_ranges: List[Tuple[int, int]] = []   # 姿勢補正の完全再計算対象（逆走区間）
-            block_tail_indices: List[int] = []            # ブロック末尾（端点補正用）
-            has_variable: bool = False
+            result: RouteBuildResult = self.route_builder.build_route(
+                start_label=str(start_label or ""),
+                goal_label=str(goal_label or ""),
+                checkpoint_labels=list(checkpoint_labels),
+            )
+            # builder側でブロック情報が更新されている可能性があるため反映しておく。
+            self.blocks = list(self.route_builder.blocks)
 
-            # YAML定義のブロック順に連結していく
-            for block in self.blocks:
-                btype = block["type"]
-                bname = block["name"]
-                bindex = block["index"]
+            route_wps: List[Waypoint] = [
+                self._record_to_waypoint(record) for record in result.waypoints
+            ]
+            origins: List[WaypointOrigin] = list(result.origins)
+            total_distance = result.total_distance
 
-                if btype == "fixed":
-                    seg_id = block["segment_id"]
-                    entry = self.segments.get(seg_id)
-                    if entry is None:
-                        raise RuntimeError(f"[fixed:{bname}] segment not loaded: {seg_id}")
-
-                    # 連結（重複境界は除去）
-                    before_len = len(route_wps)
-                    route_wps = concat_with_dedup(route_wps, entry.waypoints)
-                    # origin を付与（固定: edge_u/v なし、segment_id は固定CSV）
-                    added = len(route_wps) - before_len
-                    for _ in range(added):
-                        origins.append(WaypointOrigin(
-                            block_name=bname,
-                            block_index=bindex,
-                            segment_id=seg_id,
-                            edge_u=None,
-                            edge_v=None,
-                            index_in_edge=None,
-                            u_first=None,
-                        ))
-                    block_tail_indices.append(len(route_wps) - 1)
-
-                elif btype == "variable":
-                    has_variable = True
-                    # YAMLチェックポイントとリクエスト追加チェックポイントを順序保持で集合和（重複は除去）
-                    merged_cps = list(dict.fromkeys((block.get("checkpoints", []) or []) + list(request.checkpoint_labels)))
-
-                    # 可変ルート探索を実行
-                    nodes_raw = block.get("nodes") or []
-                    edges = block.get("edges") or []
-                    start = block.get("start")
-                    goal = block.get("goal")
-                    if not nodes_raw or not edges:
-                        raise RuntimeError(f"[variable:{bname}] nodes/edges not loaded.")
-                    if not start or not goal:
-                        raise RuntimeError(f"[variable:{bname}] start/goal not set.")
-
-                    nodes_dict = normalize_nodes(nodes_raw)
-
-                    solve_result = self._run_variable_solver(
-                        nodes=nodes_dict,
-                        edges=edges,
-                        start=start,
-                        goal=goal,
-                        checkpoints=merged_cps,
+            route_image: Optional[Image] = None
+            if result.has_variable_block:
+                solver_info = result.solver_info
+                if solver_info is not None:
+                    img = self._render_route_overlay(
+                        solver_info.nodes, solver_info.solver_result
                     )
-                    edge_seq: List[Dict[str, Any]] = solve_result.get("edge_sequence", [])
-                    if not edge_seq:
-                        raise RuntimeError(f"[variable:{bname}] solver returned empty edge_sequence.")
-
-                    img = self._render_route_overlay(nodes_dict, solve_result)
                     if img is not None:
-                        last_route_image = img  # 最新の可変ブロック画像を保持
-
-                    # edge_sequence を辿ってセグメントを連結
-                    for e in edge_seq:
-                        seg_id = e["segment_id"]
-                        direction = e["direction"]  # "forward" | "reverse"
-                        src = e["source"]
-                        dst = e["target"]
-                        entry = self.segments.get(seg_id)
-                        if entry is None:
-                            raise RuntimeError(f"[variable:{bname}] segment not loaded: {seg_id}")
-
-                        # U→V 向きに合わせるか判定（direction == "forward" を U→V と定義）
-                        u_first = True if direction == "forward" else False
-                        seg_wps = entry.waypoints if u_first else list(reversed(entry.waypoints))
-                        stamp_edge_end_labels(seg_wps, src_label=src, dst_label=dst)
-
-                        # 連結しつつ、origin を並行して構築
-                        start_idx = len(route_wps)
-                        route_wps = concat_with_dedup(route_wps, seg_wps)
-                        end_idx = len(route_wps) - 1
-
-                        # origin 付与（可変: edge_u/v と index_in_edge を設定。u_first も記録。）
-                        local_len = end_idx - start_idx + 1
-                        for i_local in range(local_len):
-                            origins.append(WaypointOrigin(
-                                block_name=bname,
-                                block_index=bindex,
-                                segment_id=seg_id,
-                                edge_u=src,
-                                edge_v=dst,
-                                index_in_edge=i_local,
-                                u_first=u_first,
-                            ))
-
-                        if not u_first:
-                            # 逆走（V→U）で採用された区間は完全再計算リストに入れる
-                            reversed_ranges.append((start_idx, end_idx))
-
-                    block_tail_indices.append(len(route_wps) - 1)
-
-                else:
-                    self.get_logger().warn(f"Unknown block type: {btype}")
-
-            if not route_wps:
-                raise RuntimeError("No waypoints generated from blocks configuration.")
-
-            # start/goal でスライス（スライス開始オフセットを取得）
-            sliced, start_offset = slice_by_labels(route_wps, request.start_label, request.goal_label)
-            # origins も同じ範囲に揃える
-            origins = origins[start_offset:start_offset + len(sliced)]
-            # インデックスを0..N-1で再採番
-            indexing(sliced)
-            # 総距離を算出
-            total_distance = calc_total_distance(sliced)
-            # スライス後のインデックス系に合わせて補正
-            def _shift_inside(r: Tuple[int, int], offset: int, n: int) -> Optional[Tuple[int, int]]:
-                s, e = r[0] - offset, r[1] - offset
-                if e < 0 or s >= n:
-                    return None
-                s = max(s, 0)
-                e = min(e, n - 1)
-                if s >= e:
-                    return None
-                return (s, e)
-
-            recalc_ranges: List[Tuple[int, int]] = []
-            for r in reversed_ranges:
-                rr = _shift_inside(r, start_offset, len(sliced))
-                if rr is not None:
-                    recalc_ranges.append(rr)
-
-            shifted_block_tails: List[int] = []
-            for idx in block_tail_indices:
-                j = idx - start_offset
-                if 0 <= j < len(sliced):
-                    shifted_block_tails.append(j)
-
-            # 姿勢補正（逆走区間 + ブロック末尾 + ルート末尾）
-            adjust_orientations(sliced, recalc_ranges, shifted_block_tails)
-            apply_segment_fixed_flags(sliced, origins, self.blocks)
-
-            # 画像を選択（可変あり & 読み込み成功時はsolver画像）
-            if has_variable and last_route_image is not None:
-                route_image = last_route_image
-            elif has_variable:
-                route_image = make_text_png_image("variable part image (placeholder)")
+                        route_image = img
+                if route_image is None:
+                    route_image = make_text_png_image("variable part image (placeholder)")
             else:
                 route_image = make_text_png_image("No variable route in this plan")
 
-            # バージョン更新・応答
             self.route_version = 1
-            route = pack_route_msg(sliced, self.route_version, total_distance, route_image)
+            route = pack_route_msg(route_wps, self.route_version, total_distance, route_image)
 
-            # 状態を保持（UpdateRoute が参照）
             self.current_route = route
             self.current_route_origins = origins
-            self.last_request_checkpoints = set(request.checkpoint_labels)
+            self.last_request_checkpoints = set(checkpoint_labels)
             self.visited_checkpoints_hist.clear()  # 初期ルート生成時に訪問履歴をリセット
 
             response.success = True

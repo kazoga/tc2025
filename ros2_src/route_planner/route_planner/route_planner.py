@@ -769,6 +769,70 @@ class RoutePlannerNode(Node):
             else:
                 continue
 
+    def _prepare_edges_for_solver(
+        self,
+        edges: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+        """solver に渡すエッジ情報を絶対パスへ展開し、復元用マッピングを返す。"""
+
+        solver_edges: List[Dict[str, Any]] = []
+        abs_to_rel: Dict[str, str] = {}
+
+        for edge in edges:
+            seg_key = edge.get("segment_id") or edge.get("waypoint_list")
+            if not seg_key:
+                raise ValueError("エッジ定義に 'segment_id' もしくは 'waypoint_list' が含まれていません。")
+
+            seg_rel = str(seg_key)
+            seg_abs = resolve_path(self.csv_base_dir, seg_rel)
+            abs_to_rel[seg_abs] = seg_rel
+
+            solver_edges.append({
+                "source": edge.get("source"),
+                "target": edge.get("target"),
+                "segment_id": seg_abs,
+                "reversible": edge.get("reversible", 0),
+            })
+
+        return solver_edges, abs_to_rel
+
+    @staticmethod
+    def _restore_segment_ids(
+        edge_sequence: List[Dict[str, Any]],
+        abs_to_rel: Dict[str, str],
+    ) -> None:
+        """edge_sequence の segment_id を相対パスへ戻す（self.segments のキーに一致させる）。"""
+
+        for entry in edge_sequence:
+            seg_abs = entry.get("segment_id")
+            if seg_abs is None:
+                continue
+            seg_rel = abs_to_rel.get(str(seg_abs))
+            if seg_rel:
+                entry["segment_id"] = seg_rel
+
+    def _run_variable_solver(
+        self,
+        nodes: Dict[str, Tuple[float, float]],
+        edges: List[Dict[str, Any]],
+        start: str,
+        goal: str,
+        checkpoints: List[str],
+    ) -> Dict[str, Any]:
+        """solve_variable_route を呼び出し、segment_id を相対パスへ整形した結果を返す。"""
+
+        solver_edges, abs_to_rel = self._prepare_edges_for_solver(edges)
+        result = solve_variable_route(
+            nodes=nodes,
+            edges=solver_edges,
+            start=start,
+            goal=goal,
+            checkpoints=checkpoints,
+        )
+        edge_sequence = result.get("edge_sequence", [])
+        self._restore_segment_ids(edge_sequence, abs_to_rel)
+        return result
+
     # ===== GetRoute / UpdateRoute =====================================================
 
     def handle_get_route(self, request: GetRoute.Request, response: GetRoute.Response) -> GetRoute.Response:
@@ -836,7 +900,7 @@ class RoutePlannerNode(Node):
 
                     nodes_dict = normalize_nodes(nodes_raw)
 
-                    solve_result = solve_variable_route(
+                    solve_result = self._run_variable_solver(
                         nodes=nodes_dict,
                         edges=edges,
                         start=start,
@@ -1113,7 +1177,7 @@ class RoutePlannerNode(Node):
 
             # 8) solver 実行（start=U, goal=block.goal, checkpoints=remaining_cps）
             nodes_dict = normalize_nodes(nodes)
-            result = solve_variable_route(
+            result = self._run_variable_solver(
                 nodes=nodes_dict,
                 edges=edges,
                 start=u_node,
@@ -1203,7 +1267,7 @@ class RoutePlannerNode(Node):
                     cps2 = [c for c in merged_cps2 if c in node_ids2]
 
                     nodes_dict2 = normalize_nodes(nodes2)
-                    res2 = solve_variable_route(
+                    res2 = self._run_variable_solver(
                         nodes=nodes_dict2,
                         edges=edges2,
                         start=start2,

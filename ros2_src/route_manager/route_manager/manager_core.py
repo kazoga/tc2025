@@ -88,6 +88,23 @@ class WaypointLite:
     segment_is_fixed: bool = False
 
 
+@dataclass
+class FollowerStateUpdate:
+    """RouteFollower からの進捗通知を非ROS構造体として保持する。"""
+
+    route_version: int = 0
+    state: str = ""
+    active_waypoint_index: int = -1
+    active_waypoint_label: str = ""
+
+
+@dataclass
+class FollowerEvent:
+    """FSMへ渡すフォロワ状態更新イベント."""
+
+    finished: bool = False
+
+
 
 @dataclass
 class RouteModel:
@@ -373,6 +390,43 @@ class RouteManagerCore:
         self._log("[Core] on_report_stuck: received")
         self._sync_from_stuck_report(report)
         return await self.fsm.handle_event(RouteManagerFSM.E_REPORT_STUCK, report)
+
+    async def on_follower_state_update(self, update: FollowerStateUpdate) -> ServiceResult:
+        """RouteFollower からの進捗更新を反映し、完了時はFSMへ通知する。"""
+
+        self._log(
+            "[Core] on_follower_state_update: state=%s, index=%d, label='%s', ver=%d"
+            % (
+                str(update.state),
+                int(update.active_waypoint_index),
+                str(update.active_waypoint_label),
+                int(update.route_version),
+            )
+        )
+
+        route_version = int(update.route_version)
+        self.current_index = int(update.active_waypoint_index)
+        self.current_label = str(update.active_waypoint_label or "")
+
+        if self.route_model is not None:
+            local_version = int(self.route_model.version.to_int())
+            if route_version > 0 and local_version != route_version:
+                self._log(
+                    f"[Core] on_follower_state_update: version mismatch local={local_version} follower={route_version}"
+                )
+            self.route_model.advance_to(index=self.current_index, label=self.current_label or "")
+
+        emit_version: Optional[int] = route_version if route_version > 0 else None
+        self._emit_route_state(index=self.current_index, label=self.current_label, version=emit_version)
+
+        normalized_state = (update.state or "").strip().upper()
+        if normalized_state == "FINISHED":
+            self._log("[Core] follower reported FINISHED -> notify FSM")
+            self._set_status("completed", decision="none", cause="", route_version=emit_version)
+            event = FollowerEvent(finished=True)
+            return await self.fsm.handle_event(RouteManagerFSM.E_FOLLOWER_UPDATE, event)
+
+        return SimpleServiceResult(True, "Follower update consumed")
 
     # ------------------------------------------------------------------
     # FSM用コールバック（Get/Update/Replan）

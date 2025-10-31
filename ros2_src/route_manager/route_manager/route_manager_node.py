@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 import asyncio
 import time
+from concurrent.futures import Future
 from typing import Any, List, Optional
 
 import rclpy
@@ -35,7 +36,7 @@ from std_msgs.msg import Header
 from sensor_msgs.msg import Image
 
 # route_msgs はユーザ環境のメッセージ/サービスに準拠
-from route_msgs.msg import ManagerStatus, MissionInfo, Route, RouteState  # type: ignore
+from route_msgs.msg import FollowerState, ManagerStatus, MissionInfo, Route, RouteState  # type: ignore
 from route_msgs.msg import Waypoint  # type: ignore
 from route_msgs.srv import GetRoute, ReportStuck, UpdateRoute  # type: ignore
 
@@ -52,6 +53,7 @@ from manager_core import (
     Pose2D,
     VersionMM,
     StuckReport,
+    FollowerStateUpdate,
 )
 
 # -----------------------------------------------------------------------------
@@ -210,6 +212,7 @@ class RouteManagerNode(Node):
         route_state_topic = 'route_state'
         mission_info_topic = 'mission_info'
         manager_status_topic = 'manager_status'
+        follower_state_topic = 'follower_state'
         report_stuck_service = 'report_stuck'
 
         # ---------------- QoS ----------------
@@ -221,6 +224,14 @@ class RouteManagerNode(Node):
         self.pub_route_state = self.create_publisher(RouteState, route_state_topic, self.qos_stream)
         self.pub_mission_info = self.create_publisher(MissionInfo, mission_info_topic, self.qos_tl)
         self.pub_manager_status = self.create_publisher(ManagerStatus, manager_status_topic, self.qos_stream)
+
+        # ---------------- Subscriber ----------------
+        self.sub_follower_state = self.create_subscription(
+            FollowerState,
+            follower_state_topic,
+            self._on_follower_state,
+            self.qos_stream,
+        )
 
         # ---------------- Service Clients ----------------
         self.cb_cli = MutuallyExclusiveCallbackGroup()
@@ -240,6 +251,7 @@ class RouteManagerNode(Node):
         self.route_state_topic = self._resolve_topic_name(route_state_topic)
         self.mission_info_topic = self._resolve_topic_name(mission_info_topic)
         self.manager_status_topic = self._resolve_topic_name(manager_status_topic)
+        self.follower_state_topic = self._resolve_topic_name(follower_state_topic)
         self.report_stuck_service_name = self._resolve_service_name(report_stuck_service)
 
         # ---------------- Core 構築 ----------------
@@ -293,6 +305,35 @@ class RouteManagerNode(Node):
             return self.resolve_service_name(name)
         except AttributeError:
             return name
+
+    def _add_future_logging(self, future: Future, context: str) -> None:
+        """Future完了時に例外を検知してログ出力する補助関数."""
+
+        def _done_callback(done_future: Future) -> None:
+            try:
+                done_future.result()
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f"[Node] {context} で例外が発生しました: {exc}")
+
+        future.add_done_callback(_done_callback)
+
+    def _on_follower_state(self, msg: FollowerState) -> None:
+        """RouteFollower からの状態通知を受け取りCoreへ伝搬する."""
+
+        update = FollowerStateUpdate(
+            route_version=int(getattr(msg, "route_version", 0)),
+            state=str(getattr(msg, "state", "")),
+            active_waypoint_index=int(getattr(msg, "active_waypoint_index", -1)),
+            active_waypoint_label=str(getattr(msg, "active_waypoint_label", "")),
+        )
+
+        if (update.state or "").strip().upper() == "FINISHED":
+            self.get_logger().info(
+                f"[Node] {self.follower_state_topic}: FINISHED を検知しました。FSMへ完了通知を送ります。"
+            )
+
+        future = self.core.run_async(self.core.on_follower_state_update(update))
+        self._add_future_logging(future, "core.on_follower_state_update")
 
     # ------------------------------------------------------------------
     # Core -> Node: Publish 実装（ROSメッセージへ変換して配信）

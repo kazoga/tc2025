@@ -40,12 +40,12 @@ _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR) not in sys.path:
     sys.path.append(str(_THIS_DIR))
 
-from graph_solver import render_route_on_map  # 実プロジェクトの配置に合わせて import 経路を調整すること
 from .route_builder import (
     RouteBuilder,
     RouteBuildResult,
     WaypointOrigin,
     WaypointRecord,
+    render_variable_route_overlay,
     normalize_nodes,
     resolve_path,
 )
@@ -443,37 +443,29 @@ class RoutePlannerNode(Node):
         self.get_logger().warn(f"{param_name} で指定されたファイルが見つかりません: {value}")
         return None
 
-    def _render_route_overlay(
+    def _render_variable_route_image(
         self,
         nodes: Dict[str, Tuple[float, float]],
         solver_result: Dict[str, Any],
     ) -> Optional[Image]:
-        """solve_variable_route の結果から地図描画を生成する。"""
+        """solve_variable_routeの結果を用いて地図画像を生成する。"""
 
         if not (self.map_image_path and self.map_worldfile_path):
             return None
 
-        node_sequence = solver_result.get("node_sequence", [])
-        visit_order = solver_result.get("visit_order", [])
-
-        if not node_sequence or not visit_order:
-            return None
-
-        try:
-            rgb_array = render_route_on_map(
-                nodes,
-                node_sequence,
-                visit_order,
-                self.map_image_path,
-                self.map_worldfile_path,
-            )
-        except Exception as exc:
-            self.get_logger().warn(f"地図描画の生成に失敗しました: {exc}")
+        rgb_array = render_variable_route_overlay(
+            nodes,
+            solver_result,
+            self.map_image_path,
+            self.map_worldfile_path,
+            logger=self.get_logger(),
+        )
+        if rgb_array is None:
             return None
 
         try:
             return convert_rgb_array_to_image(rgb_array)
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-except
             self.get_logger().warn(f"地図描画のメッセージ変換に失敗しました: {exc}")
             return None
 
@@ -559,7 +551,7 @@ class RoutePlannerNode(Node):
             if result.has_variable_block:
                 solver_info = result.solver_info
                 if solver_info is not None:
-                    img = self._render_route_overlay(
+                    img = self._render_variable_route_image(
                         solver_info.nodes, solver_info.solver_result
                     )
                     if img is not None:
@@ -752,7 +744,7 @@ class RoutePlannerNode(Node):
             if not edge_seq:
                 raise RuntimeError("No route found after applying closures.")
             # 画像取得
-            img_solver = self._render_route_overlay(nodes_dict, result)
+            img_solver = self._render_variable_route_image(nodes_dict, result)
 
             # 9) 可変結果を連結（__virtual__ は solver から基本返さない前提。返ってきても無視）
             for e in edge_seq:
@@ -838,7 +830,7 @@ class RoutePlannerNode(Node):
                         goal=goal2,
                         checkpoints=cps2,
                     )
-                    img_extra = self._render_route_overlay(nodes_dict2, res2)
+                    img_extra = self._render_variable_route_image(nodes_dict2, res2)
                     if img_extra is not None and img_solver is None:
                         img_solver = img_extra
                     es2: List[Dict[str, Any]] = res2.get("edge_sequence", [])

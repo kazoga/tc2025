@@ -20,9 +20,9 @@ if __package__ in (None, ""):
     PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
     if PACKAGE_DIR not in sys.path:
         sys.path.insert(0, PACKAGE_DIR)
-    from graph_solver import solve_variable_route
+    from graph_solver import render_route_on_map, solve_variable_route
 else:
-    from .graph_solver import solve_variable_route
+    from .graph_solver import render_route_on_map, solve_variable_route
 
 
 @dataclass
@@ -112,6 +112,75 @@ class RouteBuildResult:
     total_distance: float
     has_variable_block: bool
     solver_info: Optional[VariableSolverInfo]
+
+
+def _log_with_logger(logger: Optional[Any], level: str, message: str) -> None:
+    """任意のロガーへログを送出する補助関数."""
+
+    if logger is None:
+        return
+    log_func = getattr(logger, level, None)
+    if not callable(log_func):
+        # logging.Logger 互換の warning() しか持たない場合に備える。
+        if level == "warn":
+            log_func = getattr(logger, "warning", None)
+    if callable(log_func):
+        log_func(message)
+
+
+def render_variable_route_overlay(
+    nodes: Dict[str, Tuple[float, float]],
+    solver_result: Dict[str, Any],
+    map_image_path: str,
+    map_worldfile_path: str,
+    *,
+    output_path: Optional[str] = None,
+    logger: Optional[Any] = None,
+) -> Optional[Any]:
+    """solve_variable_route結果を地図画像へ描画しRGB配列を返す."""
+
+    if not map_image_path or not map_worldfile_path:
+        return None
+
+    node_sequence = solver_result.get("node_sequence", [])
+    visit_order = solver_result.get("visit_order", [])
+    if not node_sequence or not visit_order:
+        return None
+
+    try:
+        return render_route_on_map(
+            nodes,
+            node_sequence,
+            visit_order,
+            map_image_path,
+            map_worldfile_path,
+            output_path=output_path,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        _log_with_logger(logger, "warn", f"地図描画の生成に失敗しました: {exc}")
+        return None
+
+
+def render_variable_route_overlay_from_info(
+    solver_info: Optional[VariableSolverInfo],
+    map_image_path: str,
+    map_worldfile_path: str,
+    *,
+    output_path: Optional[str] = None,
+    logger: Optional[Any] = None,
+) -> Optional[Any]:
+    """VariableSolverInfoを入力として地図描画を生成するラッパー."""
+
+    if solver_info is None:
+        return None
+    return render_variable_route_overlay(
+        solver_info.nodes,
+        solver_info.solver_result,
+        map_image_path,
+        map_worldfile_path,
+        output_path=output_path,
+        logger=logger,
+    )
 
 
 def resolve_path(base_dir: Optional[str], path_str: str) -> str:
@@ -1078,16 +1147,58 @@ def main() -> None:
         default=None,
         help="CSV探索の基準ディレクトリ（省略時はYAMLの配置場所）",
     )
+    parser.add_argument(
+        "--map-image",
+        default=None,
+        help="可変ブロックを地図上へ描画する際の背景画像パス",
+    )
+    parser.add_argument(
+        "--map-worldfile",
+        default=None,
+        help="背景画像に対応するワールドファイル（tfw等）のパス",
+    )
+    parser.add_argument(
+        "--map-output",
+        default=None,
+        help="生成した地図画像の保存先（省略時はCSVと同じ接頭辞）",
+    )
     args = parser.parse_args()
 
-    result = build_waypoints_from_config(
-        config_yaml_path=args.config,
+    builder = RouteBuilder(args.config, csv_base_dir=args.csv_base_dir)
+    builder.load()
+    result = builder.build_route(
         start_label=args.start,
         goal_label=args.goal,
-        checkpoints=list(args.checkpoint or []),
-        csv_base_dir=args.csv_base_dir,
+        checkpoint_labels=list(args.checkpoint or []),
     )
     write_waypoints_to_csv(args.output, result.waypoints)
+
+    map_args_provided = any(
+        value is not None for value in [args.map_image, args.map_worldfile, args.map_output]
+    )
+    if map_args_provided:
+        if not args.map_image or not args.map_worldfile:
+            print(
+                "地図画像を生成する場合は --map-image と --map-worldfile を両方指定してください。",
+                file=sys.stderr,
+            )
+        elif not result.has_variable_block or result.solver_info is None:
+            print("可変ブロックが存在しないため地図画像は生成されませんでした。")
+        else:
+            output_path = args.map_output
+            if not output_path:
+                base, _ = os.path.splitext(os.path.abspath(args.output))
+                output_path = base + "_map.png"
+            rgb_array = render_variable_route_overlay_from_info(
+                result.solver_info,
+                args.map_image,
+                args.map_worldfile,
+                output_path=output_path,
+            )
+            if rgb_array is None:
+                print("地図画像の生成に失敗しました。", file=sys.stderr)
+            else:
+                print(f"地図画像を保存しました: {output_path}")
 
 
 if __name__ == "__main__":

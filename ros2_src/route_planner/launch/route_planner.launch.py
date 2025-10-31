@@ -8,18 +8,12 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description() -> LaunchDescription:
     pkg_share = FindPackageShare('route_planner')
     default_param = PathJoinSubstitution([pkg_share, 'params', 'default.yaml'])
-    default_config = PathJoinSubstitution([pkg_share, 'routes', 'config.yaml'])
     default_csv_dir = PathJoinSubstitution([pkg_share, 'routes'])
 
     param_arg = DeclareLaunchArgument(
         'param_file',
         default_value=default_param,
         description='route_plannerノードの既定パラメータファイル',
-    )
-    config_yaml_arg = DeclareLaunchArgument(
-        'config_yaml_path',
-        default_value=default_config,
-        description='ルート構成YAMLファイルのパス (デフォルト: <pkg_share>/routes/config.yaml)',
     )
     csv_base_dir_arg = DeclareLaunchArgument(
         'csv_base_dir',
@@ -43,7 +37,6 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     param_file = LaunchConfiguration('param_file')
-    config_yaml_path = LaunchConfiguration('config_yaml_path')
     csv_base_dir = LaunchConfiguration('csv_base_dir')
     node_name = LaunchConfiguration('node_name')
     get_route_service = LaunchConfiguration('get_route_service')
@@ -58,7 +51,6 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             param_file,
             {
-                'config_yaml_path': config_yaml_path,
                 'csv_base_dir': csv_base_dir,
             },
         ],
@@ -70,7 +62,6 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription([
         param_arg,
-        config_yaml_arg,
         csv_base_dir_arg,
         node_name_arg,
         get_service_arg,

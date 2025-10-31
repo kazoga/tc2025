@@ -240,6 +240,60 @@ def parse_waypoint_csv(csv_path: str) -> List[WaypointRecord]:
     return waypoints
 
 
+def _distance_between_records(a: WaypointRecord, b: WaypointRecord) -> float:
+    """2つのwaypoint間の平面距離を返却する."""
+
+    return math.hypot(
+        a.pose.position.x - b.pose.position.x,
+        a.pose.position.y - b.pose.position.y,
+    )
+
+
+def _calc_link_cost(
+    prev_wp: Optional[WaypointRecord],
+    candidate_wp: WaypointRecord,
+    next_wp: Optional[WaypointRecord],
+) -> float:
+    """共有端点の候補を利用した際の接続コストを見積もる."""
+
+    cost = 0.0
+    if prev_wp is not None:
+        cost += _distance_between_records(prev_wp, candidate_wp)
+    if next_wp is not None:
+        cost += _distance_between_records(candidate_wp, next_wp)
+    return cost
+
+
+def _merge_endpoint_records(
+    base_wp: WaypointRecord,
+    new_wp: WaypointRecord,
+    prefer_new: bool,
+) -> None:
+    """重複した端点の属性を統合する."""
+
+    if not base_wp.label:
+        base_wp.label = new_wp.label
+
+    if prefer_new:
+        base_wp.pose = copy.deepcopy(new_wp.pose)
+    else:
+        if base_wp.pose.position.x == 0.0 and base_wp.pose.position.y == 0.0:
+            base_wp.pose.position = copy.deepcopy(new_wp.pose.position)
+        if base_wp.pose.orientation.w == 0.0:
+            base_wp.pose.orientation = copy.deepcopy(new_wp.pose.orientation)
+
+    base_wp.right_open = max(base_wp.right_open, new_wp.right_open)
+    base_wp.left_open = max(base_wp.left_open, new_wp.left_open)
+    base_wp.line_stop = base_wp.line_stop or new_wp.line_stop
+    base_wp.signal_stop = base_wp.signal_stop or new_wp.signal_stop
+    base_wp.not_skip = base_wp.not_skip or new_wp.not_skip
+    base_wp.segment_is_fixed = base_wp.segment_is_fixed or new_wp.segment_is_fixed
+    if new_wp.latitude is not None:
+        base_wp.latitude = new_wp.latitude
+    if new_wp.longitude is not None:
+        base_wp.longitude = new_wp.longitude
+
+
 def concat_records_with_dedup(
     base: List[WaypointRecord],
     ext: List[WaypointRecord],
@@ -254,13 +308,23 @@ def concat_records_with_dedup(
     if not ext_clones:
         return result
 
-    bx = result[-1].pose.position.x
-    by = result[-1].pose.position.y
-    ex = ext_clones[0].pose.position.x
-    ey = ext_clones[0].pose.position.y
-    if math.hypot(bx - ex, by - ey) <= eps:
-        if ext_clones[0].label and not result[-1].label:
-            result[-1].label = ext_clones[0].label
+    last_wp = result[-1]
+    first_wp = ext_clones[0]
+    duplicate = False
+    prefer_new = False
+
+    if _distance_between_records(last_wp, first_wp) <= eps:
+        duplicate = True
+    elif last_wp.label and first_wp.label and last_wp.label == first_wp.label:
+        duplicate = True
+        prev_wp = result[-2] if len(result) >= 2 else None
+        next_wp = ext_clones[1] if len(ext_clones) >= 2 else None
+        cost_keep = _calc_link_cost(prev_wp, last_wp, next_wp)
+        cost_new = _calc_link_cost(prev_wp, first_wp, next_wp)
+        prefer_new = cost_new < cost_keep
+
+    if duplicate:
+        _merge_endpoint_records(last_wp, first_wp, prefer_new)
         result.extend(ext_clones[1:])
     else:
         result.extend(ext_clones)

@@ -9,12 +9,20 @@ import copy
 import csv
 import math
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .graph_solver import solve_variable_route
+if __package__ in (None, ""):
+    # 単体実行時はパッケージ相対インポートが利用できないため、実行ファイル直下をパスへ追加する。
+    PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+    if PACKAGE_DIR not in sys.path:
+        sys.path.insert(0, PACKAGE_DIR)
+    from graph_solver import solve_variable_route
+else:
+    from .graph_solver import solve_variable_route
 
 
 @dataclass

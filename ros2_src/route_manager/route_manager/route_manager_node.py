@@ -20,6 +20,7 @@ Phase2 準拠・正式版（4段階 replan/shift/skip/failed を統合）。
 from __future__ import annotations
 
 import sys
+from array import array
 from pathlib import Path
 import asyncio
 import time
@@ -49,6 +50,7 @@ if str(_THIS_DIR) not in sys.path:
 from manager_core import (
     RouteManagerCore,
     RouteModel,
+    RouteImageData,
     WaypointLite,
     Pose2D,
     VersionMM,
@@ -82,12 +84,47 @@ def qos_vol(depth: int = 10) -> QoSProfile:
 # -----------------------------------------------------------------------------
 # 変換ヘルパ：ROS <-> Core（非ROS）
 # -----------------------------------------------------------------------------
+def _image_msg_to_route_image_data(image: Optional[Image]) -> Optional[RouteImageData]:
+    """sensor_msgs/Image を RouteImageData へ変換する。"""
+
+    if image is None:
+        return None
+    try:
+        height = int(getattr(image, "height", 0))
+        width = int(getattr(image, "width", 0))
+    except Exception:
+        return None
+    raw_data = getattr(image, "data", b"")
+    data_bytes: bytes
+    try:
+        data_bytes = bytes(raw_data)
+    except Exception:
+        try:
+            data_bytes = raw_data.tobytes()  # type: ignore[call-arg]
+        except Exception:
+            data_bytes = b""
+    if height <= 0 or width <= 0 or not data_bytes:
+        return None
+    encoding = str(getattr(image, "encoding", ""))
+    step = int(getattr(image, "step", 0) or 0)
+    is_bigendian = int(getattr(image, "is_bigendian", 0) or 0)
+    return RouteImageData(
+        height=height,
+        width=width,
+        encoding=encoding,
+        step=step,
+        is_bigendian=is_bigendian,
+        data=data_bytes,
+    )
+
+
 def ros_route_to_core(route: Route) -> RouteModel:
     """ROS Route -> Core RouteLite へ最小限の情報を移す。"""
     rm_wps = []
     version_int = int(getattr(route, "version", 0))
     frame_id = getattr(getattr(route, "header", None), "frame_id", "map") or "map"
-    has_image = getattr(route, "route_image", None) is not None
+    route_image = _image_msg_to_route_image_data(getattr(route, "route_image", None))
+    has_image = route_image is not None
     for wp in getattr(route, "waypoints", []):
         w = WaypointLite(
             label=str(getattr(wp, "label", "")),
@@ -122,6 +159,7 @@ def ros_route_to_core(route: Route) -> RouteModel:
         has_image=has_image,
         current_index=current_index,
         current_label=current_label,
+        route_image=route_image,
     )
 
 
@@ -133,9 +171,20 @@ def core_route_to_ros(route: RouteModel) -> Route:
     msg.version = int(route.version.to_int())
     msg.start_index = route.current_index
     msg.start_waypoint_label = route.current_label
-    # route_image の実体はplanner応答から受領する前提。ここでは有無のみを尊重。
-    if route.has_image:
-        msg.route_image = Image()  # encodingなどはplanner実装に依存
+    if route.route_image is not None and route.route_image.is_valid():
+        img = Image()
+        img.header = Header()
+        img.header.frame_id = route.frame_id or "map"
+        img.height = int(route.route_image.height)
+        img.width = int(route.route_image.width)
+        img.encoding = route.route_image.encoding
+        img.step = int(route.route_image.step)
+        img.is_bigendian = int(route.route_image.is_bigendian)
+        img.data = array("B", route.route_image.data)
+        msg.route_image = img
+    elif route.has_image:
+        # has_image が真だが実体が無い場合は後段で空画像とならないように空メッセージを置く。
+        msg.route_image = Image()
     msg.waypoints = []
     for w in route.waypoints:
         # Waypoint の詳細フィールドはユーザ環境の定義に依存、代表的なもののみ移送

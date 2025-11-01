@@ -3,7 +3,6 @@ route_manager:
     start_label: ""
     goal_label: ""
     checkpoint_labels: []
-    auto_request_on_startup: true
     planner_timeout_sec: 5.0
     planner_retry_count: 2
     planner_connect_timeout_sec: 10.0

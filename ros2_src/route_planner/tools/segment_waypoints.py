@@ -185,7 +185,7 @@ def iter_endpoint_indices(node_series: Sequence[object]) -> Iterable[int]:
             yield i
 
 
-def relabel_segment_labels_inplace(seg_df: pd.DataFrame, start_node_value: str) -> None:
+def relabel_segment_labels_inplace(seg_df: pd.DataFrame) -> None:
     """セグメント内の label を仕様に従い書き換える."""
     if seg_df.empty:
         return
@@ -195,10 +195,11 @@ def relabel_segment_labels_inplace(seg_df: pd.DataFrame, start_node_value: str) 
     seg_df.at[seg_df.index[0], "label"] = start_node_str
     if len(seg_df) > 1:
         seg_df.at[seg_df.index[-1], "label"] = end_node_str
-    # 中間点を nodeID_n に連番付与
+    # 中間点のラベルは start-end の組み合わせに連番を付ける
+    base_label = f"{start_node_str}-{end_node_str}"
     counter = 1
     for ridx in seg_df.index[1:-1]:
-        seg_df.at[ridx, "label"] = f"{start_node_value}_{counter}"
+        seg_df.at[ridx, "label"] = f"{base_label}_{counter}"
         counter += 1
 
 
@@ -229,7 +230,7 @@ def slice_and_save_segments(wp_df: pd.DataFrame, out_dir_segments: Path) -> List
 
         # ラベル書き換え
         start_node_value = str(seg_df.iloc[0]["node"])
-        relabel_segment_labels_inplace(seg_df, start_node_value=start_node_value)
+        relabel_segment_labels_inplace(seg_df)
 
         # 保存用に node 列を削除
         if "node" in seg_df.columns:

@@ -62,6 +62,23 @@ class Pose2D:
 
 
 @dataclass
+class RouteImageData:
+    """Route に埋め込む画像データをROS非依存で保持する。"""
+
+    height: int = 0
+    width: int = 0
+    encoding: str = ""
+    step: int = 0
+    is_bigendian: int = 0
+    data: bytes = field(default_factory=bytes)
+
+    def is_valid(self) -> bool:
+        """画像データが有効かどうかを判定する。"""
+
+        return self.height > 0 and self.width > 0 and bool(self.data)
+
+
+@dataclass
 class StuckReport:
     """/report_stuck で受け取る情報をCore内部で扱いやすい形にしたもの。"""
 
@@ -118,6 +135,15 @@ class RouteModel:
     has_image: bool = True
     current_index: int = 0
     current_label: str = ""
+    route_image: Optional[RouteImageData] = None
+
+    def __post_init__(self) -> None:
+        """画像有無フラグを保持している画像と同期する。"""
+
+        if self.route_image is not None and not self.route_image.is_valid():
+            # 無効な画像は破棄し、フラグを整合させる。
+            self.route_image = None
+        self.has_image = self.route_image is not None
 
     @classmethod
     def from_route(cls, route_like) -> "RouteModel":
@@ -129,9 +155,10 @@ class RouteModel:
                 waypoints=list(getattr(rm, "waypoints", [])),
                 version=VersionMM(major=int(getattr(rm.version, "major", 0)), minor=int(getattr(rm.version, "minor", 0))),
                 frame_id=str(getattr(rm, "frame_id", "map")),
-                has_image=bool(getattr(rm, "has_image", True)),
+                has_image=bool(getattr(rm, "route_image", None) is not None or getattr(rm, "has_image", False)),
                 current_index=int(getattr(rm, "current_index", 0)),
                 current_label=str(getattr(rm, "current_label", "")),
+                route_image=copy.deepcopy(getattr(rm, "route_image", None)),
             )
         # route_likeがRouteLite相当（version:int, waypoints:List）ならそこから生成
         wps = list(getattr(route_like, "waypoints", []))
@@ -143,7 +170,53 @@ class RouteModel:
         ver = VersionMM.from_int(ver_int)
         cur_idx = 0
         cur_lbl = wps[0].label if wps else ""
-        return cls(waypoints=wps, version=ver, frame_id=str(getattr(getattr(route_like, "header", None), "frame_id", getattr(route_like, "frame_id", "map"))), has_image=bool(getattr(route_like, "has_image", True)), current_index=cur_idx, current_label=cur_lbl)
+        route_image = cls._extract_route_image(getattr(route_like, "route_image", None))
+        return cls(
+            waypoints=wps,
+            version=ver,
+            frame_id=str(
+                getattr(
+                    getattr(route_like, "header", None), "frame_id", getattr(route_like, "frame_id", "map")
+                )
+            ),
+            has_image=route_image is not None,
+            current_index=cur_idx,
+            current_label=cur_lbl,
+            route_image=route_image,
+        )
+
+    @staticmethod
+    def _extract_route_image(image_obj: Any) -> Optional["RouteImageData"]:
+        """Route互換オブジェクトに含まれる画像をRouteImageDataへ変換する。"""
+
+        if image_obj is None:
+            return None
+        try:
+            height = int(getattr(image_obj, "height", 0))
+            width = int(getattr(image_obj, "width", 0))
+        except Exception:
+            return None
+        raw_data = getattr(image_obj, "data", b"")
+        try:
+            if hasattr(raw_data, "tobytes"):
+                data_bytes = raw_data.tobytes()  # type: ignore[call-arg]
+            else:
+                data_bytes = bytes(raw_data)
+        except Exception:
+            data_bytes = b""
+        if height <= 0 or width <= 0 or not data_bytes:
+            return None
+        encoding = str(getattr(image_obj, "encoding", ""))
+        step = int(getattr(image_obj, "step", 0) or 0)
+        is_bigendian = int(getattr(image_obj, "is_bigendian", 0) or 0)
+        return RouteImageData(
+            height=height,
+            width=width,
+            encoding=encoding,
+            step=step,
+            is_bigendian=is_bigendian,
+            data=data_bytes,
+        )
 
     def total(self) -> int:
         return len(self.waypoints)
@@ -184,6 +257,7 @@ class RouteModel:
             has_image=self.has_image,
             current_index=0 if new_wps else -1,
             current_label=(new_wps[0].label if new_wps else ""),
+            route_image=copy.deepcopy(self.route_image),
         )
 
     def is_completed(self) -> bool:
@@ -661,6 +735,7 @@ class RouteManagerCore:
             has_image=self.route_model.has_image,
             current_index=self.route_model.current_index,
             current_label=self.route_model.current_label,
+            route_image=copy.deepcopy(self.route_model.route_image),
         )
         event_message = f"shift_{'right' if right_side else 'left'}({shift_d:.1f}m)"
         self._accept_route(
@@ -735,6 +810,7 @@ class RouteManagerCore:
             has_image=self.route_model.has_image,
             current_index=nxt_idx,
             current_label=new_cur_label,
+            route_image=copy.deepcopy(self.route_model.route_image),
         )
         if new_cur_label:
             event_message = f"skip->{new_cur_label}"
@@ -797,7 +873,7 @@ class RouteManagerCore:
         if n_wp <= 0:
             self._log("Route has no waypoints.")
             return False
-        if not getattr(rm, "has_image", False):
+        if getattr(rm, "route_image", None) is None or not rm.route_image.is_valid():
             self._log("Route has no route_image.")
             return False
         return True

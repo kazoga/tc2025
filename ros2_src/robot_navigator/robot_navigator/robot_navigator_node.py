@@ -424,7 +424,8 @@ class RobotNavigator(Node):
         if self._road_block_stop_until is not None and now < self._road_block_stop_until:
             return True
 
-        if not (self._has_goal_release_candidate() or self._has_route_release_candidate()):
+        # active_route の更新有無にかかわらず、active_target の再受信を必須条件とする。
+        if not self._has_goal_release_candidate():
             return True
 
         self._reset_road_block_state()

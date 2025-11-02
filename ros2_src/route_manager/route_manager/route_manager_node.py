@@ -226,7 +226,6 @@ class RouteManagerNode(Node):
         self.declare_parameter("start_label", "")
         self.declare_parameter("goal_label", "")
         self.declare_parameter("checkpoint_labels", [])
-        self.declare_parameter("auto_request_on_startup", True)
         self.declare_parameter("planner_timeout_sec", 5.0)
         self.declare_parameter("planner_retry_count", 2)
         self.declare_parameter("planner_connect_timeout_sec", 10.0)
@@ -241,7 +240,6 @@ class RouteManagerNode(Node):
         self.checkpoint_labels: List[str] = list(
             self.get_parameter("checkpoint_labels").get_parameter_value().string_array_value
         )
-        self.auto_request: bool = self.get_parameter("auto_request_on_startup").get_parameter_value().bool_value
         self.timeout_sec: float = float(self.get_parameter("planner_timeout_sec").get_parameter_value().double_value)
         self.retry_count: int = int(self.get_parameter("planner_retry_count").get_parameter_value().integer_value)
         self.connect_timeout_sec: float = float(
@@ -576,10 +574,6 @@ class RouteManagerNode(Node):
         if getattr(self, '_once_done', False):
             return
         self._once_done = True
-
-        if not getattr(self, 'auto_request', True):
-            self.get_logger().info("[Node] auto_request=False -> skip initial route request")
-            return
 
         # ROSサービス接続待ち
         start = time.time()

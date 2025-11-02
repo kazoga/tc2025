@@ -34,6 +34,8 @@ YAML 設定、CSV キャッシュ、グラフ探索を組み合わせて再計�
 |------|----|--------|------|
 | `config_yaml_path` | string | `routes/config.yaml` | ルート構成 YAML ファイルへのパス。`FindPackageShare` で解決。 |
 | `csv_base_dir` | string | `routes` | CSV 探索基準ディレクトリ。空文字時は YAML の所在ディレクトリを使用。 |
+| `map_image_path` | string | `""` | 可変ブロック描画用の地図画像パス。パッケージルートからの相対パスを指定可能。 |
+| `map_worldfile_path` | string | `""` | 地図画像に対応するワールドファイルのパス。パッケージルートからの相対パスを指定可能。 |
 
 ## 状態管理・処理フロー
 ### YAML `blocks` の構成

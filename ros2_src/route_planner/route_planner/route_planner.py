@@ -348,8 +348,28 @@ class RoutePlannerNode(Node):
 
         self.config_yaml_path: str = resolve_path(pkg_share, config_yaml_raw) if config_yaml_raw else ""
         self.csv_base_dir: str = resolve_path(pkg_share, csv_base_dir_raw) if csv_base_dir_raw else ""
-        self.map_image_path: Optional[str] = self._resolve_map_resource(map_image_raw, pkg_share, "map_image_path")
-        self.map_worldfile_path: Optional[str] = self._resolve_map_resource(map_worldfile_raw, pkg_share, "map_worldfile_path")
+        self.map_image_path: Optional[str] = self._resolve_map_resource(
+            map_image_raw,
+            pkg_share,
+            "map_image_path",
+        )
+        self.map_worldfile_path: Optional[str] = self._resolve_map_resource(
+            map_worldfile_raw,
+            pkg_share,
+            "map_worldfile_path",
+        )
+
+        if self.map_image_path and self.map_worldfile_path:
+            self.get_logger().info(f"Using map_image_path: {self.map_image_path}")
+            self.get_logger().info(f"Using map_worldfile_path: {self.map_worldfile_path}")
+        elif self.map_image_path or self.map_worldfile_path:
+            self.get_logger().warn(
+                "map_image_path と map_worldfile_path の片方しか解決できませんでした。地図描画は無効化されます。"
+            )
+            self.map_image_path = None
+            self.map_worldfile_path = None
+        else:
+            self.get_logger().info("可変ブロック描画用の地図リソースは指定されていません。")
 
         if not self.config_yaml_path:
             self.get_logger().error("config_yaml_path is required.")
@@ -357,14 +377,6 @@ class RoutePlannerNode(Node):
             self.get_logger().info(f"Using config_yaml_path: {self.config_yaml_path}")
         if self.csv_base_dir:
             self.get_logger().info(f"Using csv_base_dir: {self.csv_base_dir}")
-
-        if self.map_image_path and self.map_worldfile_path:
-            self.get_logger().info(f"Using map_image_path: {self.map_image_path}")
-            self.get_logger().info(f"Using map_worldfile_path: {self.map_worldfile_path}")
-        elif map_image_raw or map_worldfile_raw:
-            self.get_logger().warn(
-                "地図画像またはワールドファイルの解決に失敗したため、地図描画を無効化します。"
-            )
 
         # --- メンバ（状態） ---
         self.blocks: List[Dict[str, Any]] = []                  # YAMLのブロック原義（固定/可変）
@@ -451,6 +463,9 @@ class RoutePlannerNode(Node):
         """solve_variable_routeの結果を用いて地図画像を生成する。"""
 
         if not (self.map_image_path and self.map_worldfile_path):
+            self.get_logger().warn(
+                "可変ブロックが存在しますが map_image_path と map_worldfile_path が設定されていないため、ダミー画像を返却します。"
+            )
             return None
 
         rgb_array = render_variable_route_overlay(
@@ -557,9 +572,13 @@ class RoutePlannerNode(Node):
                     if img is not None:
                         route_image = img
                 if route_image is None:
-                    route_image = make_text_png_image("variable part image (placeholder)")
+                    if self.map_image_path and self.map_worldfile_path:
+                        self.get_logger().warn(
+                            "可変ブロックの地図描画に失敗したため、ダミー画像を返却します。"
+                        )
+                    route_image = make_text_png_image()
             else:
-                route_image = make_text_png_image("No variable route in this plan")
+                route_image = make_text_png_image()
 
             self.route_version = 1
             route = pack_route_msg(route_wps, self.route_version, total_distance, route_image)
@@ -873,7 +892,14 @@ class RoutePlannerNode(Node):
             apply_segment_fixed_flags(new_wps, new_origins, self.blocks)
             indexing(new_wps)
             total_distance = calc_total_distance(new_wps)
-            route_image = img_solver if img_solver is not None else make_text_png_image("variable part image (placeholder)")
+            if img_solver is None:
+                if self.map_image_path and self.map_worldfile_path:
+                    self.get_logger().warn(
+                        "可変ブロックの地図描画に失敗したため、ダミー画像を返却します。"
+                    )
+                route_image = make_text_png_image()
+            else:
+                route_image = img_solver
             self.route_version += 1
             new_route = pack_route_msg(new_wps, self.route_version, total_distance, route_image)
 

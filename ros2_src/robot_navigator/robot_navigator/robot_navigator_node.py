@@ -152,6 +152,7 @@ class RobotNavigator(Node):
         self.current_route_version: Optional[int] = None
         self._road_block_route_version: Optional[int] = None
         self._road_block_release_candidate_route_version: Optional[int] = None
+        self._road_block_goal_pose: Optional[Pose] = None
 
         # --- Publisher/Subscriber の設定 ---
         # /cmd_vel は Reliable/Volatile で十分
@@ -257,9 +258,11 @@ class RobotNavigator(Node):
         self._goal_sequence += 1
         if self._road_block_active:
             if self._road_block_stop_until is None:
-                self._road_block_release_candidate_sequence = self._goal_sequence
+                if self._has_goal_pose_change(msg.pose):
+                    self._road_block_release_candidate_sequence = self._goal_sequence
             elif time.monotonic() >= self._road_block_stop_until:
-                self._road_block_release_candidate_sequence = self._goal_sequence
+                if self._has_goal_pose_change(msg.pose):
+                    self._road_block_release_candidate_sequence = self._goal_sequence
 
     def on_active_route(self, msg: Route) -> None:
         """active_route メッセージを受信し、バージョン更新を監視する。"""
@@ -286,6 +289,7 @@ class RobotNavigator(Node):
             self._road_block_release_candidate_sequence = None
             self._road_block_route_version = self.current_route_version
             self._road_block_release_candidate_route_version = None
+            self._road_block_goal_pose = self._clone_pose(self.current_goal)
             self.get_logger().warn(
                 f'road_blocked=True を受信。{self.road_block_hold_sec:.1f}秒間停止します。',
             )
@@ -424,7 +428,8 @@ class RobotNavigator(Node):
         if self._road_block_stop_until is not None and now < self._road_block_stop_until:
             return True
 
-        if not (self._has_goal_release_candidate() or self._has_route_release_candidate()):
+        # active_route の更新有無にかかわらず、active_target の内容更新を必須条件とする。
+        if not self._has_goal_release_candidate():
             return True
 
         self._reset_road_block_state()
@@ -453,6 +458,43 @@ class RobotNavigator(Node):
         self._road_block_release_candidate_sequence = None
         self._road_block_route_version = None
         self._road_block_release_candidate_route_version = None
+        self._road_block_goal_pose = None
+
+    def _has_goal_pose_change(self, new_pose: Pose) -> bool:
+        """道路封鎖中に受信した active_target が内容更新かを判定する。"""
+        # route_follower は target が更新されなくても一定周期で Pose を再送する。
+        # そのため XY 位置とヨー角を比較し、数値変化が 1e-4 を超えた場合のみ更新とみなす。
+        if self._road_block_goal_pose is None:
+            return True
+
+        base_pose = self._road_block_goal_pose
+        pos_diff = math.hypot(
+            new_pose.position.x - base_pose.position.x,
+            new_pose.position.y - base_pose.position.y,
+        )
+        if pos_diff > 1.0e-4:
+            return True
+
+        new_yaw = self.quaternion_to_yaw(new_pose.orientation)
+        base_yaw = self.quaternion_to_yaw(base_pose.orientation)
+        yaw_diff = abs(self.normalize_angle(new_yaw - base_yaw))
+        return yaw_diff > 1.0e-4
+
+    @staticmethod
+    def _clone_pose(pose: Optional[Pose]) -> Optional[Pose]:
+        """Pose オブジェクトを内容コピーする。"""
+        if pose is None:
+            return None
+
+        copied = Pose()
+        copied.position.x = pose.position.x
+        copied.position.y = pose.position.y
+        copied.position.z = pose.position.z
+        copied.orientation.x = pose.orientation.x
+        copied.orientation.y = pose.orientation.y
+        copied.orientation.z = pose.orientation.z
+        copied.orientation.w = pose.orientation.w
+        return copied
 
     def _log_goal_status(self) -> None:
         """active_target の座標と距離を 1 秒周期で INFO ログ出力する。"""

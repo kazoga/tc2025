@@ -23,7 +23,7 @@ from typing import Dict, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.duration import Duration
@@ -34,7 +34,8 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose, Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from route_msgs.msg import ObstacleAvoidanceHint
+from std_msgs.msg import Bool
+from route_msgs.msg import ObstacleAvoidanceHint, Route
 from visualization_msgs.msg import Marker
 
 
@@ -73,6 +74,7 @@ class RobotNavigator(Node):
         self.declare_parameter('pos_tol', 0.5)
         self.declare_parameter('ang_tol', 0.25)
         self.declare_parameter('control_rate_hz', 20.0)
+        self.declare_parameter('road_block_hold_sec', 5.0)
 
         # 旧実装の固定相当をパラメータ化
         self.declare_parameter('robot_width', 0.6)
@@ -99,6 +101,10 @@ class RobotNavigator(Node):
         self.ang_tol: float = float(self.get_parameter('ang_tol').value)
         self.control_rate_hz: float = float(self.get_parameter('control_rate_hz').value)
         self.dt: float = 1.0 / self.control_rate_hz
+        self.road_block_hold_sec: float = float(self.get_parameter('road_block_hold_sec').value)
+        if self.road_block_hold_sec < 0.0:
+            self.get_logger().warn('road_block_hold_sec が負値のため 0 に切り上げます。')
+            self.road_block_hold_sec = 0.0
 
         self.robot_width: float = float(self.get_parameter('robot_width').value)
         self.safety_distance: float = float(self.get_parameter('safety_distance').value)
@@ -120,6 +126,8 @@ class RobotNavigator(Node):
         odom_topic = 'odom'
         amcl_pose_topic = 'amcl_pose'
         goal_topic = 'active_target'
+        road_block_topic = 'road_blocked'
+        active_route_topic = 'active_route'
         cmd_vel_topic = 'cmd_vel'
         marker_topic = 'direction_marker'
         hint_topic = 'obstacle_avoidance_hint'
@@ -136,6 +144,14 @@ class RobotNavigator(Node):
         self.current_velocity: Optional[Twist] = None
         self.current_goal: Optional[Pose] = None
         self.obstacle_distance: Optional[float] = None
+        self._goal_sequence: int = 0
+        self._road_block_active: bool = False
+        self._road_block_stop_until: Optional[float] = None
+        self._road_block_goal_sequence: Optional[int] = None
+        self._road_block_release_candidate_sequence: Optional[int] = None
+        self.current_route_version: Optional[int] = None
+        self._road_block_route_version: Optional[int] = None
+        self._road_block_release_candidate_route_version: Optional[int] = None
 
         # --- Publisher/Subscriber の設定 ---
         # /cmd_vel は Reliable/Volatile で十分
@@ -158,6 +174,14 @@ class RobotNavigator(Node):
         self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, amcl_pose_topic, self.on_amcl_pose, 10)
         self.create_subscription(PoseStamped, goal_topic, self.on_goal, 10)
+        self.create_subscription(Bool, road_block_topic, self.on_road_blocked, 10)
+        route_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.create_subscription(Route, active_route_topic, self.on_active_route, route_qos)
         if self.obstacle_distance_mode == 'scan':
             self.create_subscription(LaserScan, scan_topic, self.on_scan, qos_profile_sensor_data)
         else:
@@ -175,6 +199,8 @@ class RobotNavigator(Node):
         self.odom_topic_name = self._resolve_topic_name(odom_topic)
         self.amcl_pose_topic_name = self._resolve_topic_name(amcl_pose_topic)
         self.goal_topic_name = self._resolve_topic_name(goal_topic)
+        self.road_block_topic_name = self._resolve_topic_name(road_block_topic)
+        self.active_route_topic_name = self._resolve_topic_name(active_route_topic)
         self.cmd_vel_topic_name = self._resolve_topic_name(cmd_vel_topic)
         self.marker_topic_name = self._resolve_topic_name(marker_topic)
         self.hint_topic_name = self._resolve_topic_name(hint_topic)
@@ -228,6 +254,50 @@ class RobotNavigator(Node):
     def on_goal(self, msg: PoseStamped) -> None:
         """目標トピック（PoseStamped）から目標姿勢（Pose）を保持する。"""
         self.current_goal = msg.pose
+        self._goal_sequence += 1
+        if self._road_block_active:
+            if self._road_block_stop_until is None:
+                self._road_block_release_candidate_sequence = self._goal_sequence
+            elif time.monotonic() >= self._road_block_stop_until:
+                self._road_block_release_candidate_sequence = self._goal_sequence
+
+    def on_active_route(self, msg: Route) -> None:
+        """active_route メッセージを受信し、バージョン更新を監視する。"""
+        version_value = int(getattr(msg, 'version', 0) or 0)
+        self.current_route_version = version_value if version_value > 0 else None
+        if not self._road_block_active or self.current_route_version is None:
+            return
+
+        if self._road_block_route_version is None:
+            self._road_block_route_version = self.current_route_version
+            return
+
+        if self.current_route_version != self._road_block_route_version:
+            self._road_block_release_candidate_route_version = self.current_route_version
+
+    def on_road_blocked(self, msg: Bool) -> None:
+        """道路封鎖イベントを受信し、停止制御フラグを更新する。"""
+        now = time.monotonic()
+        blocked = bool(getattr(msg, 'data', False))
+        if blocked:
+            self._road_block_active = True
+            self._road_block_stop_until = now + self.road_block_hold_sec
+            self._road_block_goal_sequence = self._goal_sequence
+            self._road_block_release_candidate_sequence = None
+            self._road_block_route_version = self.current_route_version
+            self._road_block_release_candidate_route_version = None
+            self.get_logger().warn(
+                f'road_blocked=True を受信。{self.road_block_hold_sec:.1f}秒間停止します。',
+            )
+        else:
+            if self._road_block_active:
+                self.get_logger().info(
+                    'road_blocked=False を受信しました。停止解除条件の達成を待ちます。',
+                )
+            else:
+                self.get_logger().info(
+                    'road_blocked=False を受信しましたが停止状態ではありません。',
+                )
 
     def on_scan(self, msg: LaserScan) -> None:
         """/scan を処理して、前方矩形ウィンドウ内の最小前方距離を更新する。"""
@@ -285,6 +355,10 @@ class RobotNavigator(Node):
     # -------------------- 制御ループ --------------------
     def on_timer(self) -> None:
         """周期制御ロジック。必要な入力が揃ったら cmd_vel と Marker を発行し、CSV ログを追記する。"""
+        if self._should_stop_due_to_road_block():
+            self._publish_stop_for_road_block()
+            return
+
         if not (self.current_pose and self.current_velocity and self.current_goal):
             # 必要入力が揃わない場合は停止指令
             self._publish_stop_with_throttle()
@@ -323,6 +397,62 @@ class RobotNavigator(Node):
             throttle_duration_sec=5.0,
         )
         self.cmd_pub.publish(Twist())
+
+    def _publish_stop_for_road_block(self) -> None:
+        """道路封鎖対応の停止指令と状況ログを出力する。"""
+        now = time.monotonic()
+        wait_reason = 'タイマ満了待ち'
+        if self._road_block_stop_until is not None and now >= self._road_block_stop_until:
+            pending: list[str] = []
+            if not self._has_goal_release_candidate():
+                pending.append('active_target更新待ち')
+            if not self._has_route_release_candidate():
+                pending.append('active_route更新待ち')
+            wait_reason = '・'.join(pending) if pending else '解除判定処理中'
+        self.get_logger().warn(
+            f'road_blocked停止中（{wait_reason}）',
+            throttle_duration_sec=1.0,
+        )
+        self.cmd_pub.publish(Twist())
+
+    def _should_stop_due_to_road_block(self) -> bool:
+        """道路封鎖イベントによる停止継続が必要か判定する。"""
+        if not self._road_block_active:
+            return False
+
+        now = time.monotonic()
+        if self._road_block_stop_until is not None and now < self._road_block_stop_until:
+            return True
+
+        if not (self._has_goal_release_candidate() or self._has_route_release_candidate()):
+            return True
+
+        self._reset_road_block_state()
+        self.get_logger().info('road_blocked解除条件を満たしたため制御を再開します。')
+        return False
+
+    def _has_goal_release_candidate(self) -> bool:
+        """active_target の更新により解除条件が満たされたか判定する。"""
+        goal_sequence_threshold = self._road_block_goal_sequence or 0
+        release_sequence = self._road_block_release_candidate_sequence
+        return release_sequence is not None and release_sequence > goal_sequence_threshold
+
+    def _has_route_release_candidate(self) -> bool:
+        """active_route の更新により解除条件が満たされたか判定する。"""
+        if self._road_block_release_candidate_route_version is None:
+            return False
+        if self._road_block_route_version is None:
+            return True
+        return self._road_block_release_candidate_route_version != self._road_block_route_version
+
+    def _reset_road_block_state(self) -> None:
+        """道路封鎖制御用の内部状態を初期化する。"""
+        self._road_block_active = False
+        self._road_block_stop_until = None
+        self._road_block_goal_sequence = None
+        self._road_block_release_candidate_sequence = None
+        self._road_block_route_version = None
+        self._road_block_release_candidate_route_version = None
 
     def _log_goal_status(self) -> None:
         """active_target の座標と距離を 1 秒周期で INFO ログ出力する。"""

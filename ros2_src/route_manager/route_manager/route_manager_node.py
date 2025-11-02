@@ -481,7 +481,8 @@ class RouteManagerNode(Node):
             current_index=int(getattr(req, "current_index", -1)),
             current_label=str(getattr(req, "current_wp_label", "") or ""),
             current_pose=pose2d,
-            reason=str(getattr(req, "reason", "")),
+            reason_code=int(getattr(req, "reason_code", ReportStuck.Request.REASON_UNKNOWN)),
+            reason_detail=str(getattr(req, "reason_detail", "")),
             avoid_trial_count=int(getattr(req, "avoid_trial_count", 0)),
             last_hint_blocked=bool(getattr(req, "last_hint_blocked", False)),
             last_applied_offset_m=float(getattr(req, "last_applied_offset_m", 0.0)),
@@ -489,7 +490,8 @@ class RouteManagerNode(Node):
 
         self.get_logger().info(
             f"[Node] {self.report_stuck_service_name}: received -> delegate to Core/FSM "
-            f"idx={report.current_index} label='{report.current_label}' reason='{report.reason}'"
+            f"idx={report.current_index} label='{report.current_label}' reason='{report.reason_label()}' "
+            f"(code={report.reason_code})"
         )
         # Coreのイベントループ上でFSM処理を非同期実行し、結果を同期的に取得
         result = self.core.run_async(self.core.on_report_stuck(report)).result()

@@ -23,6 +23,7 @@ import asyncio
 import math
 import threading
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set, Tuple
 
 from manager_fsm import RouteManagerFSM, SimpleServiceResult, ServiceResult
@@ -30,6 +31,27 @@ from manager_fsm import RouteManagerFSM, SimpleServiceResult, ServiceResult
 # =============================================================================
 # 非ROS依存データモデル
 # =============================================================================
+
+class StuckReason(IntEnum):
+    """ReportStuckで通知される滞留理由コードの内部表現."""
+
+    UNKNOWN = 0
+    FRONT_BLOCKED = 1
+    ROAD_BLOCKED = 2
+    NO_HINT = 3
+    NO_SPACE = 4
+    AVOIDANCE_FAILED = 5
+
+
+_STUCK_REASON_LABELS: Dict[StuckReason, str] = {
+    StuckReason.UNKNOWN: 'unknown',
+    StuckReason.FRONT_BLOCKED: 'front_blocked',
+    StuckReason.ROAD_BLOCKED: 'road_blocked',
+    StuckReason.NO_HINT: 'no_hint',
+    StuckReason.NO_SPACE: 'no_space',
+    StuckReason.AVOIDANCE_FAILED: 'avoidance_failed',
+}
+
 
 @dataclass
 class VersionMM:
@@ -69,10 +91,21 @@ class StuckReport:
     current_index: int
     current_label: str
     current_pose: Pose2D
-    reason: str
+    reason_code: int
+    reason_detail: str
     avoid_trial_count: int
     last_hint_blocked: bool
     last_applied_offset_m: float
+
+    def reason_label(self) -> str:
+        """理由コードと詳細文字列から内部で使用するラベルを返す。"""
+        if self.reason_detail:
+            return str(self.reason_detail)
+        try:
+            reason = StuckReason(int(self.reason_code))
+        except ValueError:
+            return 'unknown'
+        return _STUCK_REASON_LABELS.get(reason, 'unknown')
 
 
 @dataclass
@@ -476,12 +509,56 @@ class RouteManagerCore:
         self._log("[Core] _cb_replan: begin replan sequence")
         self._last_replan_offset_hint = 0.0
         report: Optional[StuckReport] = data if isinstance(data, StuckReport) else self._last_stuck_report
+        reason_enum: Optional[StuckReason] = None
+        failure_reason = "avoidance_failed"
         if report is not None:
+            reason_label = report.reason_label()
+            if reason_label:
+                failure_reason = reason_label
+            reason_desc = f"{reason_label}(code={report.reason_code})"
             self._log(
                 f"[Core] _cb_replan: report idx={report.current_index}, label='{report.current_label}', "
-                f"reason='{report.reason}', avoid_trials={report.avoid_trial_count}, "
+                f"reason='{reason_desc}', avoid_trials={report.avoid_trial_count}, "
                 f"last_offset={report.last_applied_offset_m:.2f}, hint_blocked={report.last_hint_blocked}"
             )
+            try:
+                reason_enum = StuckReason(int(report.reason_code))
+            except ValueError:
+                reason_enum = None
+
+        skip_local_adjustments = False
+        if reason_enum == StuckReason.ROAD_BLOCKED:
+            skip_local_adjustments = True
+            if self.route_model is None:
+                self._log("[Core] _cb_replan: road_blocked reported but no active route -> fail")
+                failure_reason = failure_reason or "road_blocked"
+                self._emit_route_state(message=failure_reason)
+                self._set_status("holding", decision="failed", cause=failure_reason)
+                return SimpleServiceResult(False, failure_reason)
+            if self.is_current_segment_fixed():
+                self._log("[Core] _cb_replan: road_blocked on fixed segment -> reissue current route")
+                current = self.route_model
+                new_rm = RouteModel(
+                    waypoints=copy.deepcopy(current.waypoints),
+                    version=VersionMM(
+                        major=current.version.major,
+                        minor=current.version.minor + 1,
+                    ),
+                    frame_id=current.frame_id,
+                    has_image=current.has_image,
+                    current_index=current.current_index,
+                    current_label=current.current_label,
+                )
+                self._accept_route(
+                    new_rm,
+                    log_prefix="RoadBlock FixedSegment",
+                    source="local",
+                    event_message="road_blocked_fixed",
+                )
+                self._set_status("running", decision="road_blocked_fixed", cause="road_blocked")
+                self._last_replan_offset_hint = 0.0
+                return SimpleServiceResult(True, "road_blocked_fixed")
+            self._log("[Core] _cb_replan: road_blocked on variable segment -> planner replan only")
 
         # 1) UpdateRoute（最初の試行）
         self._log("[Core] _cb_replan: step1 try UpdateRoute (replan_first)")
@@ -490,20 +567,34 @@ class RouteManagerCore:
             self._last_replan_offset_hint = 0.0
             return SimpleServiceResult(True, "replan_first")
 
+        if skip_local_adjustments:
+            failure_reason = failure_reason or "road_blocked"
+            self._log("[Core] _cb_replan: road_blocked -> skip SHIFT/SKIP and report failure")
+            self._emit_route_state(message=failure_reason)
+            self._set_status("holding", decision="failed", cause=failure_reason)
+            return SimpleServiceResult(False, failure_reason)
+
         # 2) SHIFT（左右オフセット）
-        if self.route_model is not None:
-            cur = self.route_model.current_index
-            prv = self._find_prev_active_index(cur)
-            self._log(f"[Core] _cb_replan: step2 try SHIFT cur={cur} prv_active={prv}")
-            if prv is not None and cur < self.route_model.total():
-                cur_wp = self.route_model.waypoints[cur]
-                prev_wp = self.route_model.waypoints[prv]
-                if self._try_shift(prev_wp, cur_wp, cur, report):
-                    self._log("[Core] _cb_replan: step2 success (SHIFT)")
-                    return SimpleServiceResult(True, "shift")
+        if self.route_model is not None and not skip_local_adjustments:
+            if reason_enum not in (None, StuckReason.FRONT_BLOCKED, StuckReason.AVOIDANCE_FAILED):
+                reason_text = report.reason_label() if report is not None else 'unknown'
+                reason_code = getattr(report, 'reason_code', 'N/A') if report is not None else 'N/A'
+                self._log(
+                    f"[Core] _cb_replan: skip SHIFT (reason={reason_text} code={reason_code})"
+                )
+            else:
+                cur = self.route_model.current_index
+                prv = self._find_prev_active_index(cur)
+                self._log(f"[Core] _cb_replan: step2 try SHIFT cur={cur} prv_active={prv}")
+                if prv is not None and cur < self.route_model.total():
+                    cur_wp = self.route_model.waypoints[cur]
+                    prev_wp = self.route_model.waypoints[prv]
+                    if self._try_shift(prev_wp, cur_wp, cur, report):
+                        self._log("[Core] _cb_replan: step2 success (SHIFT)")
+                        return SimpleServiceResult(True, "shift")
 
         # 3) SKIP（次WPスキップ）
-        if self.route_model is not None:
+        if self.route_model is not None and not skip_local_adjustments:
             cur = self.route_model.current_index
             self._log(f"[Core] _cb_replan: step3 try SKIP cur={cur}")
             if cur is not None and self._try_skip(cur):
@@ -513,9 +604,7 @@ class RouteManagerCore:
 
         # 4) 失敗
         self._log("[Core] _cb_replan: step4 failed -> holding")
-        failure_reason = "avoidance_failed"
-        if report is not None and getattr(report, "reason", ""):
-            failure_reason = str(getattr(report, "reason", ""))
+        failure_reason = failure_reason or "avoidance_failed"
         self._emit_route_state(message=failure_reason)
         self._set_status("holding", decision="failed", cause=failure_reason)
         return SimpleServiceResult(False, failure_reason)

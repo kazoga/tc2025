@@ -1,4 +1,4 @@
-# route_manager パッケージ README (phase2正式版)
+# route_manager パッケージ README (phase3正式版)
 
 ## 概要
 `route_manager` は `route_planner` が提供する `/get_route`・`/update_route` サービスを利用し、

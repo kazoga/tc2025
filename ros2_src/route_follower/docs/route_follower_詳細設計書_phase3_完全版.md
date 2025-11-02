@@ -1,8 +1,8 @@
-# route_follower_詳細設計書（Phase2 最終版・完全統合版）
+# route_follower_詳細設計書（Phase3 最終版・完全統合版）
 
 ## 0. 文書目的
-本書は route_follower ノード（Phase2）における詳細設計内容を示す。
-Phase1 からの変更点として滞留検知・障害物回避（L字2段階）・状態骨格構成を実装し、
+本書は route_follower ノード（Phase3）における詳細設計内容を示す。
+Phase1/Phase2 からの変更点として滞留検知・障害物回避（L字2段階）・状態骨格構成を実装し、
 obstacle_monitor、route_manager との連携仕様を含めた完全設計情報を提供する。
 
 ---
@@ -46,7 +46,7 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 | トピック名 | 型 | 内容 |
 |-------------|----|------|
 | /active_target | geometry_msgs/PoseStamped | 現在の目標Pose（1Hzで再送） |
-| /follower_state | route_msgs/FollowerState | 状態情報（Phase2拡張版） |
+| /follower_state | route_msgs/FollowerState | 状態情報（Phase3拡張版） |
 
 ### 3.3 サービス
 
@@ -91,7 +91,7 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 | left_offset | float | 左回避許容量[m] |
 | right_offset | float | 右回避許容量[m] |
 
-### 5.2 FollowerState.msg（Phase2拡張）
+### 5.2 FollowerState.msg（Phase3拡張）
 
 | フィールド | 型 | 説明 |
 |-------------|----|------|
@@ -115,7 +115,8 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 | Req | current_index | int32 | 現在Waypointインデックス |
 | Req | current_wp_label | string | 現在のWaypointラベル |
 | Req | current_pose_map | geometry_msgs/Pose | 現在地(map基準) |
-| Req | reason | string | 滞留・回避失敗理由（"no_hint" 等） |
+| Req | reason_code | uint8 | 滞留理由コード。0=unknown,1=front_blocked,2=road_blocked など |
+| Req | reason_detail | string | コードに対応する文字列ラベル（"front_blocked" 等） |
 | Req | avoid_trial_count | uint32 | 当該Waypointでの回避試行回数 |
 | Req | last_hint_blocked | bool | 直近Hintが閉塞を示したか |
 | Req | last_applied_offset_m | float32 | 直前に適用した横オフセット[m] |
@@ -291,8 +292,8 @@ IDLE → RUNNING → WAITING_STOP → RUNNING/FINISHED
 ---
 
 ## 14. 結論
-本詳細設計に基づき、`route_follower_phase2_final.py` を実装した。
-Phase2では堅牢な滞留検知およびL字回避機構を実装し、状態骨格構造により
-コードの可読性・拡張性を大幅に向上させた。
+本詳細設計に基づき、`route_follower_node.py` を実装した。
+Phase3では、滞留理由コードの拡張（`reason_code` / `reason_detail`）と road_blocked 通報の扱い整理を完了し、
+route_manager との連携で経路封鎖時の再開条件を明確化した。
 
 以上。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Optional
 
 import rclpy
@@ -30,7 +31,22 @@ class RobotConsoleNode(Node):
 
     def __init__(self, gui_core: Optional[GuiCore] = None) -> None:
         super().__init__('robot_console')
-        self._core = gui_core or GuiCore()
+        log_dir_param = self.declare_parameter('console_log_directory', '').value
+        resolved_log_dir: Optional[Path] = None
+        if isinstance(log_dir_param, str) and log_dir_param:
+            candidate = Path(log_dir_param).expanduser()
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:  # pragma: no cover - 例外時は警告のみ
+                self.get_logger().warn(
+                    f'コンソールログ出力先 {candidate} を作成できません: {exc}'
+                )
+            else:
+                resolved_log_dir = candidate
+                self.get_logger().info(
+                    f'コンソールログを {resolved_log_dir} に保存します。'
+                )
+        self._core = gui_core or GuiCore(log_directory=resolved_log_dir)
         self._manual_pub = self.create_publisher(Bool, '/manual_start', 10)
         self._sig_pub = self.create_publisher(Int32, '/sig_recog', 10)
         self._road_pub = self.create_publisher(Bool, '/road_blocked', 10)
@@ -61,6 +77,12 @@ class RobotConsoleNode(Node):
         self._command_timer = self.create_timer(0.1, self._process_commands)
         self._obstacle_override_timer = None
         self._obstacle_override_payload = None
+
+    @property
+    def core(self) -> GuiCore:
+        """UiMain から利用する GuiCore インスタンスを返す。"""
+
+        return self._core
 
     def _process_commands(self) -> None:
         while True:
@@ -116,15 +138,14 @@ class RobotConsoleNode(Node):
 
 def main() -> None:
     rclpy.init()
-    gui_core = GuiCore()
-    node = RobotConsoleNode(gui_core)
+    node = RobotConsoleNode()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
 
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
 
-    ui = UiMain(gui_core)
+    ui = UiMain(node.core)
     try:
         ui.run()
     finally:

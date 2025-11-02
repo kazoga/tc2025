@@ -62,6 +62,23 @@ class Pose2D:
 
 
 @dataclass
+class RouteImageData:
+    """Route に埋め込む画像データをROS非依存で保持する。"""
+
+    height: int = 0
+    width: int = 0
+    encoding: str = ""
+    step: int = 0
+    is_bigendian: int = 0
+    data: bytes = field(default_factory=bytes)
+
+    def is_valid(self) -> bool:
+        """画像データが有効かどうかを判定する。"""
+
+        return self.height > 0 and self.width > 0 and bool(self.data)
+
+
+@dataclass
 class StuckReport:
     """/report_stuck で受け取る情報をCore内部で扱いやすい形にしたもの。"""
 
@@ -85,6 +102,24 @@ class WaypointLite:
     not_skip: bool = False
     right_open: float = 0.0
     left_open: float = 0.0
+    segment_is_fixed: bool = False
+
+
+@dataclass
+class FollowerStateUpdate:
+    """RouteFollower からの進捗通知を非ROS構造体として保持する。"""
+
+    route_version: int = 0
+    state: str = ""
+    active_waypoint_index: int = -1
+    active_waypoint_label: str = ""
+
+
+@dataclass
+class FollowerEvent:
+    """FSMへ渡すフォロワ状態更新イベント."""
+
+    finished: bool = False
 
 
 
@@ -100,6 +135,15 @@ class RouteModel:
     has_image: bool = True
     current_index: int = 0
     current_label: str = ""
+    route_image: Optional[RouteImageData] = None
+
+    def __post_init__(self) -> None:
+        """画像有無フラグを保持している画像と同期する。"""
+
+        if self.route_image is not None and not self.route_image.is_valid():
+            # 無効な画像は破棄し、フラグを整合させる。
+            self.route_image = None
+        self.has_image = self.route_image is not None
 
     @classmethod
     def from_route(cls, route_like) -> "RouteModel":
@@ -111,9 +155,10 @@ class RouteModel:
                 waypoints=list(getattr(rm, "waypoints", [])),
                 version=VersionMM(major=int(getattr(rm.version, "major", 0)), minor=int(getattr(rm.version, "minor", 0))),
                 frame_id=str(getattr(rm, "frame_id", "map")),
-                has_image=bool(getattr(rm, "has_image", True)),
+                has_image=bool(getattr(rm, "route_image", None) is not None or getattr(rm, "has_image", False)),
                 current_index=int(getattr(rm, "current_index", 0)),
                 current_label=str(getattr(rm, "current_label", "")),
+                route_image=copy.deepcopy(getattr(rm, "route_image", None)),
             )
         # route_likeがRouteLite相当（version:int, waypoints:List）ならそこから生成
         wps = list(getattr(route_like, "waypoints", []))
@@ -125,7 +170,53 @@ class RouteModel:
         ver = VersionMM.from_int(ver_int)
         cur_idx = 0
         cur_lbl = wps[0].label if wps else ""
-        return cls(waypoints=wps, version=ver, frame_id=str(getattr(getattr(route_like, "header", None), "frame_id", getattr(route_like, "frame_id", "map"))), has_image=bool(getattr(route_like, "has_image", True)), current_index=cur_idx, current_label=cur_lbl)
+        route_image = cls._extract_route_image(getattr(route_like, "route_image", None))
+        return cls(
+            waypoints=wps,
+            version=ver,
+            frame_id=str(
+                getattr(
+                    getattr(route_like, "header", None), "frame_id", getattr(route_like, "frame_id", "map")
+                )
+            ),
+            has_image=route_image is not None,
+            current_index=cur_idx,
+            current_label=cur_lbl,
+            route_image=route_image,
+        )
+
+    @staticmethod
+    def _extract_route_image(image_obj: Any) -> Optional["RouteImageData"]:
+        """Route互換オブジェクトに含まれる画像をRouteImageDataへ変換する。"""
+
+        if image_obj is None:
+            return None
+        try:
+            height = int(getattr(image_obj, "height", 0))
+            width = int(getattr(image_obj, "width", 0))
+        except Exception:
+            return None
+        raw_data = getattr(image_obj, "data", b"")
+        try:
+            if hasattr(raw_data, "tobytes"):
+                data_bytes = raw_data.tobytes()  # type: ignore[call-arg]
+            else:
+                data_bytes = bytes(raw_data)
+        except Exception:
+            data_bytes = b""
+        if height <= 0 or width <= 0 or not data_bytes:
+            return None
+        encoding = str(getattr(image_obj, "encoding", ""))
+        step = int(getattr(image_obj, "step", 0) or 0)
+        is_bigendian = int(getattr(image_obj, "is_bigendian", 0) or 0)
+        return RouteImageData(
+            height=height,
+            width=width,
+            encoding=encoding,
+            step=step,
+            is_bigendian=is_bigendian,
+            data=data_bytes,
+        )
 
     def total(self) -> int:
         return len(self.waypoints)
@@ -166,6 +257,7 @@ class RouteModel:
             has_image=self.has_image,
             current_index=0 if new_wps else -1,
             current_label=(new_wps[0].label if new_wps else ""),
+            route_image=copy.deepcopy(self.route_image),
         )
 
     def is_completed(self) -> bool:
@@ -251,6 +343,7 @@ class RouteManagerCore:
         self.current_index: int = -1
         self.current_label: str = ""
         self.current_status: str = "IDLE"
+        self.current_segment_is_fixed: bool = False
         self._skip_history: Dict[str, int] = {}
         self._skipped_indices: Set[int] = set()
         # 1回のローカル再計画シーケンスで許可するSKIP回数は1回のみ。
@@ -324,6 +417,7 @@ class RouteManagerCore:
                     f"report={int(report.route_version)}"
                 )
             self.route_model.advance_to(index=self.current_index, label=self.current_label)
+        self._update_current_segment_flag()
 
         self._log(
             f"[Core] _sync_from_stuck_report: idx={self.current_index}, label='{self.current_label}', "
@@ -338,9 +432,23 @@ class RouteManagerCore:
             status=str(self.current_status),
         )
 
+    def _update_current_segment_flag(self) -> None:
+        """現在ターゲットのWaypointが固定区間かどうかのフラグを更新する。"""
+        fixed = False
+        if self.route_model is not None:
+            idx = int(getattr(self.route_model, "current_index", -1))
+            if 0 <= idx < len(self.route_model.waypoints):
+                cur_wp = self.route_model.waypoints[idx]
+                fixed = bool(getattr(cur_wp, "segment_is_fixed", False))
+        self.current_segment_is_fixed = fixed
+
     def get_last_offset_hint(self) -> float:
         """直近の再計画で決定した横シフト量（ヒント）を返す。"""
         return float(self._last_replan_offset_hint)
+
+    def is_current_segment_fixed(self) -> bool:
+        """現在ターゲットの区間が固定ルートかどうかを返す。"""
+        return bool(self.current_segment_is_fixed)
 
     async def request_initial_route(self, start_label: str, goal_label: str, checkpoint_labels: List[str]) -> ServiceResult:
         """初期ルートをFSM経由で要求する。"""
@@ -356,6 +464,43 @@ class RouteManagerCore:
         self._log("[Core] on_report_stuck: received")
         self._sync_from_stuck_report(report)
         return await self.fsm.handle_event(RouteManagerFSM.E_REPORT_STUCK, report)
+
+    async def on_follower_state_update(self, update: FollowerStateUpdate) -> ServiceResult:
+        """RouteFollower からの進捗更新を反映し、完了時はFSMへ通知する。"""
+
+        self._log(
+            "[Core] on_follower_state_update: state=%s, index=%d, label='%s', ver=%d"
+            % (
+                str(update.state),
+                int(update.active_waypoint_index),
+                str(update.active_waypoint_label),
+                int(update.route_version),
+            )
+        )
+
+        route_version = int(update.route_version)
+        self.current_index = int(update.active_waypoint_index)
+        self.current_label = str(update.active_waypoint_label or "")
+
+        if self.route_model is not None:
+            local_version = int(self.route_model.version.to_int())
+            if route_version > 0 and local_version != route_version:
+                self._log(
+                    f"[Core] on_follower_state_update: version mismatch local={local_version} follower={route_version}"
+                )
+            self.route_model.advance_to(index=self.current_index, label=self.current_label or "")
+
+        emit_version: Optional[int] = route_version if route_version > 0 else None
+        self._emit_route_state(index=self.current_index, label=self.current_label, version=emit_version)
+
+        normalized_state = (update.state or "").strip().upper()
+        if normalized_state == "FINISHED":
+            self._log("[Core] follower reported FINISHED -> notify FSM")
+            self._set_status("completed", decision="none", cause="", route_version=emit_version)
+            event = FollowerEvent(finished=True)
+            return await self.fsm.handle_event(RouteManagerFSM.E_FOLLOWER_UPDATE, event)
+
+        return SimpleServiceResult(True, "Follower update consumed")
 
     # ------------------------------------------------------------------
     # FSM用コールバック（Get/Update/Replan）
@@ -590,6 +735,7 @@ class RouteManagerCore:
             has_image=self.route_model.has_image,
             current_index=self.route_model.current_index,
             current_label=self.route_model.current_label,
+            route_image=copy.deepcopy(self.route_model.route_image),
         )
         event_message = f"shift_{'right' if right_side else 'left'}({shift_d:.1f}m)"
         self._accept_route(
@@ -664,6 +810,7 @@ class RouteManagerCore:
             has_image=self.route_model.has_image,
             current_index=nxt_idx,
             current_label=new_cur_label,
+            route_image=copy.deepcopy(self.route_model.route_image),
         )
         if new_cur_label:
             event_message = f"skip->{new_cur_label}"
@@ -705,6 +852,7 @@ class RouteManagerCore:
         # 現在インデックス同期
         if self.current_index >= 0:
             self.route_model.advance_to(index=self.current_index, label=self.current_label or "")
+        self._update_current_segment_flag()
         # publish（Node層へ委譲）。非ROSだが、Node側のpublish関数は変換を担保する。
         self._publish_active_route(self.route_model)
         self._emit_route_state(message=event_message or None)
@@ -725,7 +873,7 @@ class RouteManagerCore:
         if n_wp <= 0:
             self._log("Route has no waypoints.")
             return False
-        if not getattr(rm, "has_image", False):
+        if getattr(rm, "route_image", None) is None or not rm.route_image.is_valid():
             self._log("Route has no route_image.")
             return False
         return True

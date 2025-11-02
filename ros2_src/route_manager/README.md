@@ -55,7 +55,6 @@ ros2 launch route_manager route_manager.launch.py \
 | `start_label` | string | `""` | 初期ルート要求時の開始ラベル。空文字で先頭から開始。 |
 | `goal_label` | string | `""` | 初期ルート要求時の終了ラベル。空文字で末尾まで。 |
 | `checkpoint_labels` | string[] | `[]` | 追加で通過させたいチェックポイント一覧。 |
-| `auto_request_on_startup` | bool | `true` | 起動直後に初期ルート要求を行うか。 |
 | `planner_timeout_sec` | double | `5.0` | `/update_route` 呼び出し時のサービス待機タイムアウト。 |
 | `planner_retry_count` | int | `2` | `/update_route` が失敗した場合の再試行回数。 |
 | `planner_connect_timeout_sec` | double | `10.0` | `/get_route` 接続待ちの打ち切り時間。 |
@@ -79,6 +78,10 @@ ros2 launch route_manager route_manager.launch.py \
 | `ERROR` | サービス失敗・例外 | `STATUS_ERROR` |
 
 `/manager_status` には `state`（上表）と `decision`（replan / shift / skip / failed）を出力します。
+
+> Phase2 では走行開始タイミングの制御を `route_follower` の `start_immediately` パラメータに統一し、
+> `route_manager` は起動直後に必ず初期ルートを要求します。`start_immediately=false` の場合は
+> `/manual_start` メッセージを受信した時点で `route_follower` が走行を開始します。
 
 ### `/report_stuck` に対する再計画フロー
 1. Core が滞留報告を受理し、ルートバージョン・現在 index・滞留理由を検証する。

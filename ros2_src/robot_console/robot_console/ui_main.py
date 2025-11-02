@@ -1096,7 +1096,14 @@ class UiMain:
         self._route_state_vars.detail.set(
             '\n'.join(detail_entries) or '最新イベントなし'
         )
-        self._follower_vars['state'].set(follower.state)
+
+        follower_state_text = follower.state
+        if follower.state == 'WAITING_STOP':
+            if follower.signal_stop_active:
+                follower_state_text = f'{follower.state} (信号)'
+            elif follower.line_stop_active:
+                follower_state_text = f'{follower.state} (停止線)'
+        self._follower_vars['state'].set(follower_state_text)
         self._follower_vars['index'].set(f"Index: {follower.active_waypoint_index}")
         current_label = follower.active_waypoint_label or route.current_label or '-'
         label_text = f"現在: {current_label}"

@@ -20,9 +20,11 @@ Phase2 準拠・正式版（4段階 replan/shift/skip/failed を統合）。
 from __future__ import annotations
 
 import sys
+from array import array
 from pathlib import Path
 import asyncio
 import time
+from concurrent.futures import Future
 from typing import Any, List, Optional
 
 import rclpy
@@ -35,7 +37,7 @@ from std_msgs.msg import Header
 from sensor_msgs.msg import Image
 
 # route_msgs はユーザ環境のメッセージ/サービスに準拠
-from route_msgs.msg import ManagerStatus, MissionInfo, Route, RouteState  # type: ignore
+from route_msgs.msg import FollowerState, ManagerStatus, MissionInfo, Route, RouteState  # type: ignore
 from route_msgs.msg import Waypoint  # type: ignore
 from route_msgs.srv import GetRoute, ReportStuck, UpdateRoute  # type: ignore
 
@@ -48,10 +50,12 @@ if str(_THIS_DIR) not in sys.path:
 from manager_core import (
     RouteManagerCore,
     RouteModel,
+    RouteImageData,
     WaypointLite,
     Pose2D,
     VersionMM,
     StuckReport,
+    FollowerStateUpdate,
 )
 
 # -----------------------------------------------------------------------------
@@ -80,12 +84,47 @@ def qos_vol(depth: int = 10) -> QoSProfile:
 # -----------------------------------------------------------------------------
 # 変換ヘルパ：ROS <-> Core（非ROS）
 # -----------------------------------------------------------------------------
+def _image_msg_to_route_image_data(image: Optional[Image]) -> Optional[RouteImageData]:
+    """sensor_msgs/Image を RouteImageData へ変換する。"""
+
+    if image is None:
+        return None
+    try:
+        height = int(getattr(image, "height", 0))
+        width = int(getattr(image, "width", 0))
+    except Exception:
+        return None
+    raw_data = getattr(image, "data", b"")
+    data_bytes: bytes
+    try:
+        data_bytes = bytes(raw_data)
+    except Exception:
+        try:
+            data_bytes = raw_data.tobytes()  # type: ignore[call-arg]
+        except Exception:
+            data_bytes = b""
+    if height <= 0 or width <= 0 or not data_bytes:
+        return None
+    encoding = str(getattr(image, "encoding", ""))
+    step = int(getattr(image, "step", 0) or 0)
+    is_bigendian = int(getattr(image, "is_bigendian", 0) or 0)
+    return RouteImageData(
+        height=height,
+        width=width,
+        encoding=encoding,
+        step=step,
+        is_bigendian=is_bigendian,
+        data=data_bytes,
+    )
+
+
 def ros_route_to_core(route: Route) -> RouteModel:
     """ROS Route -> Core RouteLite へ最小限の情報を移す。"""
     rm_wps = []
     version_int = int(getattr(route, "version", 0))
     frame_id = getattr(getattr(route, "header", None), "frame_id", "map") or "map"
-    has_image = getattr(route, "route_image", None) is not None
+    route_image = _image_msg_to_route_image_data(getattr(route, "route_image", None))
+    has_image = route_image is not None
     for wp in getattr(route, "waypoints", []):
         w = WaypointLite(
             label=str(getattr(wp, "label", "")),
@@ -98,6 +137,7 @@ def ros_route_to_core(route: Route) -> RouteModel:
             not_skip=bool(getattr(wp, "not_skip", False)),
             right_open=float(getattr(wp, "right_open", 0.0) or 0.0),
             left_open=float(getattr(wp, "left_open", 0.0) or 0.0),
+            segment_is_fixed=bool(getattr(wp, "segment_is_fixed", False)),
         )
         rm_wps.append(w)
     start_index = int(getattr(route, "start_index", 0))
@@ -119,6 +159,7 @@ def ros_route_to_core(route: Route) -> RouteModel:
         has_image=has_image,
         current_index=current_index,
         current_label=current_label,
+        route_image=route_image,
     )
 
 
@@ -130,9 +171,20 @@ def core_route_to_ros(route: RouteModel) -> Route:
     msg.version = int(route.version.to_int())
     msg.start_index = route.current_index
     msg.start_waypoint_label = route.current_label
-    # route_image の実体はplanner応答から受領する前提。ここでは有無のみを尊重。
-    if route.has_image:
-        msg.route_image = Image()  # encodingなどはplanner実装に依存
+    if route.route_image is not None and route.route_image.is_valid():
+        img = Image()
+        img.header = Header()
+        img.header.frame_id = route.frame_id or "map"
+        img.height = int(route.route_image.height)
+        img.width = int(route.route_image.width)
+        img.encoding = route.route_image.encoding
+        img.step = int(route.route_image.step)
+        img.is_bigendian = int(route.route_image.is_bigendian)
+        img.data = array("B", route.route_image.data)
+        msg.route_image = img
+    elif route.has_image:
+        # has_image が真だが実体が無い場合は後段で空画像とならないように空メッセージを置く。
+        msg.route_image = Image()
     msg.waypoints = []
     for w in route.waypoints:
         # Waypoint の詳細フィールドはユーザ環境の定義に依存、代表的なもののみ移送
@@ -151,6 +203,7 @@ def core_route_to_ros(route: RouteModel) -> Route:
             # 開放長
             wp.right_open = float(w.right_open)
             wp.left_open = float(w.left_open)
+            wp.segment_is_fixed = bool(w.segment_is_fixed)
         except Exception:
             pass
         msg.waypoints.append(wp)
@@ -173,7 +226,6 @@ class RouteManagerNode(Node):
         self.declare_parameter("start_label", "")
         self.declare_parameter("goal_label", "")
         self.declare_parameter("checkpoint_labels", [])
-        self.declare_parameter("auto_request_on_startup", True)
         self.declare_parameter("planner_timeout_sec", 5.0)
         self.declare_parameter("planner_retry_count", 2)
         self.declare_parameter("planner_connect_timeout_sec", 10.0)
@@ -188,7 +240,6 @@ class RouteManagerNode(Node):
         self.checkpoint_labels: List[str] = list(
             self.get_parameter("checkpoint_labels").get_parameter_value().string_array_value
         )
-        self.auto_request: bool = self.get_parameter("auto_request_on_startup").get_parameter_value().bool_value
         self.timeout_sec: float = float(self.get_parameter("planner_timeout_sec").get_parameter_value().double_value)
         self.retry_count: int = int(self.get_parameter("planner_retry_count").get_parameter_value().integer_value)
         self.connect_timeout_sec: float = float(
@@ -208,6 +259,7 @@ class RouteManagerNode(Node):
         route_state_topic = 'route_state'
         mission_info_topic = 'mission_info'
         manager_status_topic = 'manager_status'
+        follower_state_topic = 'follower_state'
         report_stuck_service = 'report_stuck'
 
         # ---------------- QoS ----------------
@@ -219,6 +271,14 @@ class RouteManagerNode(Node):
         self.pub_route_state = self.create_publisher(RouteState, route_state_topic, self.qos_stream)
         self.pub_mission_info = self.create_publisher(MissionInfo, mission_info_topic, self.qos_tl)
         self.pub_manager_status = self.create_publisher(ManagerStatus, manager_status_topic, self.qos_stream)
+
+        # ---------------- Subscriber ----------------
+        self.sub_follower_state = self.create_subscription(
+            FollowerState,
+            follower_state_topic,
+            self._on_follower_state,
+            self.qos_stream,
+        )
 
         # ---------------- Service Clients ----------------
         self.cb_cli = MutuallyExclusiveCallbackGroup()
@@ -238,6 +298,7 @@ class RouteManagerNode(Node):
         self.route_state_topic = self._resolve_topic_name(route_state_topic)
         self.mission_info_topic = self._resolve_topic_name(mission_info_topic)
         self.manager_status_topic = self._resolve_topic_name(manager_status_topic)
+        self.follower_state_topic = self._resolve_topic_name(follower_state_topic)
         self.report_stuck_service_name = self._resolve_service_name(report_stuck_service)
 
         # ---------------- Core 構築 ----------------
@@ -291,6 +352,35 @@ class RouteManagerNode(Node):
             return self.resolve_service_name(name)
         except AttributeError:
             return name
+
+    def _add_future_logging(self, future: Future, context: str) -> None:
+        """Future完了時に例外を検知してログ出力する補助関数."""
+
+        def _done_callback(done_future: Future) -> None:
+            try:
+                done_future.result()
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f"[Node] {context} で例外が発生しました: {exc}")
+
+        future.add_done_callback(_done_callback)
+
+    def _on_follower_state(self, msg: FollowerState) -> None:
+        """RouteFollower からの状態通知を受け取りCoreへ伝搬する."""
+
+        update = FollowerStateUpdate(
+            route_version=int(getattr(msg, "route_version", 0)),
+            state=str(getattr(msg, "state", "")),
+            active_waypoint_index=int(getattr(msg, "active_waypoint_index", -1)),
+            active_waypoint_label=str(getattr(msg, "active_waypoint_label", "")),
+        )
+
+        if (update.state or "").strip().upper() == "FINISHED":
+            self.get_logger().info(
+                f"[Node] {self.follower_state_topic}: FINISHED を検知しました。FSMへ完了通知を送ります。"
+            )
+
+        future = self.core.run_async(self.core.on_follower_state_update(update))
+        self._add_future_logging(future, "core.on_follower_state_update")
 
     # ------------------------------------------------------------------
     # Core -> Node: Publish 実装（ROSメッセージへ変換して配信）
@@ -484,10 +574,6 @@ class RouteManagerNode(Node):
         if getattr(self, '_once_done', False):
             return
         self._once_done = True
-
-        if not getattr(self, 'auto_request', True):
-            self.get_logger().info("[Node] auto_request=False -> skip initial route request")
-            return
 
         # ROSサービス接続待ち
         start = time.time()

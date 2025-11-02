@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import platform
 import queue
 import signal
 import subprocess
 import threading
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
@@ -63,6 +65,7 @@ class NodeLaunchManager:
         self,
         status_callback: Callable[[str, NodeLaunchStatus, Optional[int], Optional[str]], None],
         log_callback: Callable[[str, str], None],
+        log_directory: Optional[Union[str, Path]] = None,
     ) -> None:
         self._status_callback = status_callback
         self._log_callback = log_callback
@@ -70,6 +73,15 @@ class NodeLaunchManager:
         self._processes: Dict[str, subprocess.Popen[str]] = {}
         self._sim_processes: Dict[str, subprocess.Popen[str]] = {}
         self._threads: List[threading.Thread] = []
+        self._log_meta_lock = threading.Lock()
+        self._log_paths: Dict[str, Path] = {}
+        self._log_locks: Dict[str, threading.Lock] = {}
+        self._log_stream_counters: Dict[str, int] = {}
+        self._base_log_directory: Optional[Path] = None
+        self._run_log_directory: Optional[Path] = None
+        if log_directory:
+            base_dir = Path(log_directory).expanduser()
+            self._base_log_directory = base_dir
 
     def launch(
         self,
@@ -188,29 +200,91 @@ class NodeLaunchManager:
     def _start_reader_threads(self, profile_id: str, process: subprocess.Popen[str]) -> None:
         """stdout/stderr を読み取るスレッドを起動する。"""
 
+        streams = []
+        if process.stdout is not None:
+            streams.append((process.stdout, 'INFO'))
+        if process.stderr is not None:
+            streams.append((process.stderr, 'ERR'))
+
+        if streams:
+            self._prepare_log_file(profile_id, process.pid, len(streams))
+
         def _reader(stream, prefix: str) -> None:
             try:
                 for line in iter(stream.readline, ''):
-                    self._log_callback(profile_id, f"[{prefix}] {line.rstrip()}\n")
+                    formatted = f"[{prefix}] {line.rstrip()}\n"
+                    self._log_callback(profile_id, formatted)
+                    self._append_log_line(profile_id, formatted)
             finally:
                 stream.close()
+                self._notify_stream_closed(profile_id)
 
-        if process.stdout is not None:
+        for stream, prefix in streams:
             thread = threading.Thread(
                 target=_reader,
-                args=(process.stdout, "INFO"),
+                args=(stream, prefix),
                 daemon=True,
             )
             thread.start()
             self._threads.append(thread)
-        if process.stderr is not None:
-            thread = threading.Thread(
-                target=_reader,
-                args=(process.stderr, "ERR"),
-                daemon=True,
-            )
-            thread.start()
-            self._threads.append(thread)
+
+    def _prepare_log_file(self, profile_id: str, pid: int, stream_count: int) -> None:
+        """ログファイルの作成準備を行う。"""
+
+        if self._base_log_directory is None:
+            return
+        run_dir = self._ensure_run_log_directory()
+        if run_dir is None:
+            return
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        sanitized = profile_id.replace(':', '_')
+        file_name = f"{sanitized}-{pid}-{timestamp}.log"
+        path = run_dir / file_name
+        with self._log_meta_lock:
+            self._log_paths[profile_id] = path
+            self._log_locks[profile_id] = threading.Lock()
+            self._log_stream_counters[profile_id] = stream_count
+
+    def _append_log_line(self, profile_id: str, line: str) -> None:
+        """ログ行をファイルへ追記する。"""
+
+        with self._log_meta_lock:
+            path = self._log_paths.get(profile_id)
+            lock = self._log_locks.get(profile_id)
+        if path is None or lock is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with lock:
+            with path.open('a', encoding='utf-8') as handle:
+                handle.write(line)
+
+    def _notify_stream_closed(self, profile_id: str) -> None:
+        """ストリーム終了時にファイル管理情報を更新する。"""
+
+        with self._log_meta_lock:
+            counter = self._log_stream_counters.get(profile_id)
+            if counter is None:
+                return
+            if counter <= 1:
+                self._log_stream_counters.pop(profile_id, None)
+                self._log_locks.pop(profile_id, None)
+                self._log_paths.pop(profile_id, None)
+            else:
+                self._log_stream_counters[profile_id] = counter - 1
+
+    def _ensure_run_log_directory(self) -> Optional[Path]:
+        """ROS2 標準に倣ったランログディレクトリを生成する。"""
+
+        if self._base_log_directory is None:
+            return None
+        if self._run_log_directory is not None:
+            return self._run_log_directory
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        hostname = platform.node() or 'unknown_host'
+        run_dir = self._base_log_directory / f"{timestamp}_{hostname}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self._run_log_directory = run_dir
+        return run_dir
 
     def _start_monitor_thread(
         self,
@@ -241,7 +315,11 @@ class NodeLaunchManager:
 class GuiCore:
     """GUI 更新と ROS I/O を仲介する。"""
 
-    def __init__(self, launch_profiles: Optional[List[NodeLaunchProfile]] = None) -> None:
+    def __init__(
+        self,
+        launch_profiles: Optional[List[NodeLaunchProfile]] = None,
+        log_directory: Optional[Union[str, Path]] = None,
+    ) -> None:
         self._route_state = RouteStateView()
         self._follower_state = FollowerStateView()
         self._obstacle_hint = ObstacleHintView()
@@ -269,7 +347,11 @@ class GuiCore:
         self._camera_signal_forced = False
         self._route_signal_stop_flags: List[bool] = []
         self._route_line_stop_flags: List[bool] = []
-        self._launch_manager = NodeLaunchManager(self._on_launch_status, self._on_log_received)
+        self._launch_manager = NodeLaunchManager(
+            self._on_launch_status,
+            self._on_log_received,
+            log_directory=log_directory,
+        )
         self._profiles = launch_profiles or default_launch_profiles()
         self._initialize_launch_states()
         self._load_additional_params()
@@ -467,6 +549,13 @@ class GuiCore:
             self._follower_state.line_stop_active = line_stop_active
             if msg.state == 'WAITING_STOP' and signal_stop_active:
                 self._camera_signal_forced = True
+            if msg.state == 'FINISHED':
+                current_status = (self._route_state.route_status or '').lower()
+                if current_status not in {'completed', 'finished'}:
+                    self._route_state.route_status = 'completed'
+                manager_state = (self._route_state.manager_state or '').lower()
+                if manager_state in {'running', 'updating_route', 'holding'}:
+                    self._route_state.manager_state = 'finished'
             self._update_camera_frame_locked()
 
     def update_obstacle_hint(self, msg) -> None:

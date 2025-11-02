@@ -77,7 +77,7 @@ phase1においては、経路要求・更新要求の骨格実装を完成さ�
 
 ## 第6章 動作シーケンス
 1. ノード起動  
-2. `auto_request_on_startup` が True の場合 `/get_route` 呼出  
+2. 起動直後に `/get_route` を呼び出して初期ルートを取得
 3. planner応答受信 → `/active_route` と `/route_state` Publish  
 4. `/follower_state`購読により current_label 更新  
 5. route更新要求発生時 `/update_route` 呼出  
@@ -107,7 +107,6 @@ phase1においては、経路要求・更新要求の骨格実装を完成さ�
 | `planner_timeout_sec` | float | 5.0 | サービス応答タイムアウト |
 | `planner_retry_count` | int | 3 | 再試行回数 |
 | `publish_rate_hz` | float | 1.0 | 状態更新周期 |
-| `auto_request_on_startup` | bool | True | 起動時に自動経路要求を行うか |
 | `log.route_summary` | bool | False | 経路要約ログ出力フラグ |
 
 ---
@@ -124,10 +123,13 @@ phase1においては、経路要求・更新要求の骨格実装を完成さ�
 
 ## 第10章 内部構成
 ### 主クラス
-`RouteManager(Node)`  
+`RouteManager(Node)`
 - タイマー駆動 (`publish_rate_hz`)
 - Futureベース非ブロッキング呼出
 - `_handle_get_route_response()` / `_handle_update_route_response()` による結果処理
+
+> 走行開始タイミングは `route_follower` の `start_immediately` パラメータで制御し、
+> `route_manager` は起動直後に常に初期ルート取得を行う。
 
 ### 主関数
 | 関数 | 概要 |

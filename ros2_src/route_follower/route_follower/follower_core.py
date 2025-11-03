@@ -160,10 +160,11 @@ class FollowerCore:
         # 直近の滞留理由
         self.last_stagnation_reason = ""
         
-        # ---- Control（manual_start / sig_recog）----
+        # ---- Control（manual_start / sig_recog / road_blocked）----
         self._ctrl_lock = threading.Lock()
         self._manual_start_mb: Optional[bool] = None
         self._sig_recog_mb: Optional[int] = None  # 1=GO, 2=NOGO, その他=未定義
+        self._road_blocked_mb: Optional[bool] = None
 
         # ---- 受け渡し箱（mailboxes）とロック ----
         # 非タイマー(update_*) → [inbox_lock] → mailbox へ書き込み
@@ -249,17 +250,24 @@ class FollowerCore:
                 self._hint_right_offset_median = 0.0
             self._hint_enough = True
 
-    def update_control_inputs(self, manual_start: Optional[bool] = None, sig_recog: Optional[int] = None) -> None:
-        """/manual_start(Bool), /sig_recog(Int32) の最新値をホールドする。"""
+    def update_control_inputs(
+        self,
+        manual_start: Optional[bool] = None,
+        sig_recog: Optional[int] = None,
+        road_blocked: Optional[bool] = None,
+    ) -> None:
+        """/manual_start(Bool)、/sig_recog(Int32)、/road_blocked(Bool) の最新値をホールドする。"""
         with self._ctrl_lock:
             if manual_start is not None:
                 self._manual_start_mb = bool(manual_start)
             if sig_recog is not None:
                 self._sig_recog_mb = int(sig_recog)
+            if road_blocked is not None:
+                self._road_blocked_mb = bool(road_blocked)
 
-    def _get_control_snapshot(self) -> Tuple[Optional[bool], Optional[int]]:
+    def _get_control_snapshot(self) -> Tuple[Optional[bool], Optional[int], Optional[bool]]:
         with self._ctrl_lock:
-            return self._manual_start_mb, self._sig_recog_mb
+            return self._manual_start_mb, self._sig_recog_mb, self._road_blocked_mb
 
     def _consume_control_inputs(self) -> None:
         """manual_startおよびsig_recogのラッチ値を消費済みとしてクリアする。"""
@@ -294,10 +302,18 @@ class FollowerCore:
         fb_major, med_l, med_r, enough = self._get_hint_snapshot()
 
         # --- 3) Control スナップショット ---
-        manual_start, sig_recog = self._get_control_snapshot()
+        manual_start, sig_recog, road_blocked = self._get_control_snapshot()
 
         # --- 4) 本処理 ---
-        return self._tick_main(fb_major, med_l, med_r, enough, manual_start, sig_recog)
+        return self._tick_main(
+            fb_major,
+            med_l,
+            med_r,
+            enough,
+            manual_start,
+            sig_recog,
+            road_blocked,
+        )
 
     # ========================= 内部適用処理 =========================
     def _apply_route(self, route: Route) -> None:
@@ -335,7 +351,16 @@ class FollowerCore:
             self.pose_hist.popleft()
 
     # ========================= 本処理（状態遷移・判定） =========================
-    def _tick_main(self, fb_major: bool, med_l: float, med_r: float, enough: bool, manual_start: Optional[bool], sig_recog: Optional[int]) -> FollowerOutput:
+    def _tick_main(
+        self,
+        fb_major: bool,
+        med_l: float,
+        med_r: float,
+        enough: bool,
+        manual_start: Optional[bool],
+        sig_recog: Optional[int],
+        road_blocked: Optional[bool],
+    ) -> FollowerOutput:
         # ERROR/FINISHED は状態監視のみ
         if self.status in (FollowerStatus.ERROR, FollowerStatus.FINISHED):
             return FollowerOutput(None, self._make_state_dict())
@@ -474,27 +499,35 @@ class FollowerCore:
             if time.time() >= self.stagnation_grace_until:
                 if self._check_stagnation_tick(exclude_stop=exclude_stop):
                     self.status = FollowerStatus.STAGNATION_DETECTED
-                    # 滞留検知をトリガとして回避に移行するため、Hint評価結果に応じた理由を記録する。
-                    # Hint統計（Node側集約）に基づく判断
+                    # 滞留検知をトリガとして road_blocked を最優先で確認する。
+                    if bool(road_blocked):
+                        self.last_stagnation_reason = "road_blocked"
+                        self._enter_waiting_reroute()
+                        return FollowerOutput(self.last_target, self._make_state_dict())
+
+                    # Hint統計（Node側集約）に基づく判断。
                     if not enough:
                         self.last_stagnation_reason = "no_hint"
                         self._enter_waiting_reroute()
                         return FollowerOutput(self.last_target, self._make_state_dict())
+
                     if not fb_major:
-                        self.last_stagnation_reason = "no_hint"
-                        self._enter_waiting_reroute()
+                        # 前方遮蔽が継続していないため監視継続のみ行う。
+                        self.status = FollowerStatus.RUNNING
+                        self.last_stagnation_reason = ""
+                        self.log("[FollowerCore] Stagnation cleared by hint -> continue RUNNING")
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
-                    # 前方ブロック True → L字回避トライ
+                    # 前方ブロック True → L字回避トライ。
                     self.last_stagnation_reason = "front_blocked"
                     success = self._start_avoidance_sequence(cur_wp, cur_pose, med_l, med_r)
                     if success:
                         self.status = FollowerStatus.AVOIDING
                         return FollowerOutput(self.last_target, self._make_state_dict())
-                    else:
-                        self.last_stagnation_reason = "no_space"
-                        self._enter_waiting_reroute()
-                        return FollowerOutput(self.last_target, self._make_state_dict())
+
+                    self.last_stagnation_reason = "no_space"
+                    self._enter_waiting_reroute()
+                    return FollowerOutput(self.last_target, self._make_state_dict())
 
             # 到達していないが滞留でもない → 目標の再提示（保険）
             return FollowerOutput(self.last_target, self._make_state_dict())

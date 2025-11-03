@@ -120,6 +120,7 @@ class RouteFollowerNode(Node):
         obstacle_hint_topic = 'obstacle_avoidance_hint'
         manual_start_topic = 'manual_start'
         signal_recognition_topic = 'sig_recog'
+        road_block_topic = 'road_blocked'
         active_target_topic = 'active_target'
         follower_state_topic = 'follower_state'
         report_stuck_service = 'report_stuck'
@@ -133,6 +134,9 @@ class RouteFollowerNode(Node):
         )
         self.sub_manual = self.create_subscription(Bool, manual_start_topic, self._on_manual_start, self.qos_vol)
         self.sub_sig = self.create_subscription(Int32, signal_recognition_topic, self._on_sig_recog, self.qos_vol)
+        self.sub_road_block = self.create_subscription(
+            Bool, road_block_topic, self._on_road_blocked, self.qos_tl
+        )
 
         self.pub_target = self.create_publisher(PoseStamped, active_target_topic, self.qos_vol)
         self.pub_state = self.create_publisher(FollowerState, follower_state_topic, self.qos_vol)
@@ -145,6 +149,7 @@ class RouteFollowerNode(Node):
         self.obstacle_hint_topic = self._resolve_topic_name(obstacle_hint_topic)
         self.manual_start_topic = self._resolve_topic_name(manual_start_topic)
         self.signal_recognition_topic = self._resolve_topic_name(signal_recognition_topic)
+        self.road_block_topic = self._resolve_topic_name(road_block_topic)
         self.active_target_topic = self._resolve_topic_name(active_target_topic)
         self.follower_state_topic = self._resolve_topic_name(follower_state_topic)
         self.report_stuck_service_name = self._resolve_service_name(report_stuck_service)
@@ -237,13 +242,16 @@ class RouteFollowerNode(Node):
         self.core.update_hint(sample)
 
     def _on_manual_start(self, msg: Bool) -> None:
-        """manual_start(Bool) の立ち上がりで Core に通知"""
-        if msg.data:
-            self.core.update_control_inputs(manual_start=True)
+        """manual_start(Bool) の最新値を Core に渡す。"""
+        self.core.update_control_inputs(manual_start=bool(msg.data))
 
     def _on_sig_recog(self, msg: Int32) -> None:
         """sig_recog(Int32) の最新値を Core に渡す"""
         self.core.update_control_inputs(sig_recog=int(msg.data))
+
+    def _on_road_blocked(self, msg: Bool) -> None:
+        """road_blocked(Bool) の最新値を Core に渡す。"""
+        self.core.update_control_inputs(road_blocked=bool(msg.data))
 
     # ========================================================
     # 周期処理

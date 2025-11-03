@@ -269,11 +269,13 @@ class FollowerCore:
         with self._ctrl_lock:
             return self._manual_start_mb, self._sig_recog_mb, self._road_blocked_mb
 
-    def _consume_control_inputs(self) -> None:
-        """manual_startおよびsig_recogのラッチ値を消費済みとしてクリアする。"""
+    def _consume_control_inputs(self, clear_road_blocked: bool = False) -> None:
+        """manual_start・sig_recog・road_blocked のラッチ値を消費済みとしてクリアする。"""
         with self._ctrl_lock:
             self._manual_start_mb = None
             self._sig_recog_mb = None
+            if clear_road_blocked:
+                self._road_blocked_mb = None
 
     # ========================= 周期処理（唯一の状態更新点） =========================
     def tick(self) -> FollowerOutput:
@@ -502,6 +504,7 @@ class FollowerCore:
                     # 滞留検知をトリガとして road_blocked を最優先で確認する。
                     if bool(road_blocked):
                         self.last_stagnation_reason = "road_blocked"
+                        self._consume_control_inputs(clear_road_blocked=True)
                         self._enter_waiting_reroute()
                         return FollowerOutput(self.last_target, self._make_state_dict())
 

@@ -1,0 +1,28 @@
+カード名,項目名,対応するトピック/サービス名,トピック/サービス定義ファイル,パラメータ名,備考
+ルート進捗,マネージャ状態,manager_status,route_msgs/msg/ManagerStatus.msg,status / state,ManagerStatus.stateを表示
+ルート進捗,ルート状態,route_state,route_msgs/msg/RouteState.msg,status / state,RouteState.statusを表示
+ルート進捗,バージョン,route_state / active_route,route_msgs/msg/RouteState.msg,route_version / version,RouteState.route_versionを表示
+ルート進捗,進捗率,route_state,route_msgs/msg/RouteState.msg,"current_index,total_waypoints",current_index/total_waypoints×100で進捗バーに反映
+ルート進捗,進捗カウンタ,follower_state / route_state,route_msgs/msg/FollowerState.msg; route_msgs/msg/RouteState.msg,"active_waypoint_index,total_waypoints",active_waypoint_index+1とtotal_waypointsで「n / total」を表示。active_waypoint_indexはfollower_stateから取得
+ルート進捗,詳細ラベル,route_state / manager_status,route_msgs/msg/RouteState.msg; route_msgs/msg/ManagerStatus.msg,"message,decision,last_cause","RouteState.messageをEv:, ManagerStatus.decision/last_causeをMgr:として1行表示"
+フォロワ状態,フォロワ状態,follower_state,route_msgs/msg/FollowerState.msg,state,特になし
+フォロワ状態,目標ウェイポイント,follower_state / active_route,route_msgs/msg/FollowerState.msg; route_msgs/msg/Route.msg,active_waypoint_label / current_label,active_waypoint_labelが空のときはRoute.current_labelを利用
+フォロワ状態,滞留要因,follower_state,route_msgs/msg/FollowerState.msg,last_stagnation_reason,空の場合は「滞留なし」を表示
+フォロワ状態,左右オフセット,follower_state,route_msgs/msg/FollowerState.msg,"left_offset_m,right_offset_m",左:+x / 右:+yの文字列で表示
+ロボット速度,並進速度,cmd_vel,geometry_msgs/msg/Twist.msg,linear.x,m/sに変換して小数第2位まで表示
+ロボット速度,角速度,cmd_vel,geometry_msgs/msg/Twist.msg,angular.z,rad/sをdeg/sへ換算し小数第1位表示
+目標までの距離,目標ウェイポイントまでの距離,follower_state,route_msgs/msg/FollowerState.msg,active_target_distance_m,active_target_distance_mを表示
+目標までの距離,進捗,amcl_pose,geometry_msgs/msg/PoseWithCovarianceStamped.msg,"current_distance_m,baseline_distance_m",baseline_distance_m>0のときcurrent_distance_m/baseline_distance_m×100を進捗バーに反映。follower_state.segment_length_mで更新
+手動・信号・封鎖イベント,バナーテキスト,manual_start / sig_recog / road_blocked / follower_state / active_route,std_msgs/msg/Bool.msg; std_msgs/msg/Int32.msg; route_msgs/msg/FollowerState.msg; route_msgs/msg/Route.msg,data / state / signal_stop_active / line_stop_active,manual_startで手動開始、road_blockedで道路封鎖、WAITING_STOP時は信号・停止線フラグで文言を決定
+手動・信号・封鎖イベント,詳細行,ー,ー,updated_at,JSTの更新時刻のみを表示
+制御コマンド(manual_start),送信状況,manual_start,std_msgs/msg/Bool.msg,"data,manual_timestamp",現在値と最終送信時刻を表示（GUI送信時は即時反映）
+制御コマンド(sig_recog),送信状況,sig_recog,std_msgs/msg/Int32.msg,"data,sig_timestamp",GO/STOPの最終送信値と時刻を表示
+制御コマンド(obstacle_hint),受信状態,obstacle_avoidance_hint,route_msgs/msg/ObstacleAvoidanceHint.msg,"front_blocked,front_clearance_m,left_offset_m,right_offset_m,updated_at",front_blocked状態とfront_clearance_mと、左右オフセットと更新時刻(now)を表示
+制御コマンド(road_blocked),送信状況,road_blocked,std_msgs/msg/Bool.msg,"data,road_blocked_timestamp,road_blocked_source",現在値と最終送信時刻を表示し、外部入力かGUI送信かをsourceで保持
+画像パネル,ルート地図,active_route,route_msgs/msg/Route.msg,route_image,640x360へリサイズし、画像なしの場合はプレースホルダ表示
+画像パネル,障害物ビュー,sensor_viewer,sensor_msgs/msg/Image.msg,data,400x400へletterboxし、障害物ヒントのオーバレイを重畳
+画像パネル,障害物オーバレイ,obstacle_avoidance_hint,route_msgs/msg/ObstacleAvoidanceHint.msg,"front_blocked,front_clearance_m,left_offset_m,right_offset_m",遮蔽状況・余裕距離・左右オフセットをオーバレイ表示
+画像パネル,外部カメラ,usb_cam/image_raw / sig_det_imgs,sensor_msgs/msg/Image.msg,data,WAITING_STOPやsig_recogの値に応じdrive/signalフレームを選択し480x360に調整
+障害物ビュー,遮蔽,obstacle_avoidance_hint,route_msgs/msg/ObstacleAvoidanceHint.msg,front_blocked,
+障害物ビュー,余裕,obstacle_avoidance_hint,route_msgs/msg/ObstacleAvoidanceHint.msg,front_clearance_m,
+障害物ビュー,左、右,obstacle_avoidance_hint,route_msgs/msg/ObstacleAvoidanceHint.msg,"left_offset_m,right_offset_m",

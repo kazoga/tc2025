@@ -1,168 +1,115 @@
-# route_manager パッケージ README (phase1正式版)
+# route_manager パッケージ README (phase2正式版)
 
 ## 概要
-`route_manager` は、経路計画ノード（`route_planner`）から経路情報を取得し、システム全体に配信する **経路管理ノード** です。  
-本READMEは **phase1正式版** に対応しており、他ノード（`route_planner`, `route_follower`）との統合動作を前提にしています。
+`route_manager` は `route_planner` が提供する `/get_route`・`/update_route` サービスを利用し、
+経路データの取得・配信・状態管理を統括する経路管理ノードです。Phase2 では ROS2 ノード層
+(`route_manager_node.py`) とコアロジック (`manager_core.py` / `manager_fsm.py`) を分割し、
+非同期 FSM で経路要求と再計画を制御します。
 
-phase1では、経路要求・配信・状態管理の骨格実装を完了しており、システム全体との連携動作が確認済みです。  
-`/update_route` による経路更新処理は、**phase2以降で実装予定** です。
-
----
-
-## 主な機能（phase1対応範囲）
-- `/get_route` サービスによる経路初期取得  
-- `/active_route` トピックによる経路情報配信  
-- `/route_state` トピックによる経路状態通知  
-- `/mission_info` トピックによる経路構成情報配信  
-- `/follower_state` の購読による走行進捗同期  
-- `/update_route` 呼出は**phase2以降の拡張対象**（本phaseでは骨格のみ実装）
-
----
+## 主な機能
+- 起動直後に `/get_route` を呼び出し、初期ルートと PNG 画像を取得。
+- `/active_route` を **TRANSIENT_LOCAL** QoS で配信し、再起動後も最新ルートを取得可能にする。
+- `/route_state`・`/manager_status` で FSM 状態・再計画判断・ルートバージョンを通知。
+- `/mission_info` に start / goal / checkpoint の要求条件を Publish。
+- `/report_stuck` で滞留報告を受け取り、`/update_route`・shift・skip を段階的に判断。
+- 再計画結果を `ReportStuck.Response` の `decision_code`・`offset_hint`・`note` へ反映。
 
 ## 起動方法
-
-### 1. 単独起動
-```
-ros2 launch route_manager route_manager.launch.py start_label:=START goal_label:=GOAL
-```
-
-例：
-```
-ros2 launch route_manager route_manager.launch.py start_label:=A1 goal_label:=B5
+### launch を用いた起動
+```bash
+ros2 launch route_manager route_manager.launch.py \
+  start_label:=START \
+  goal_label:=GOAL \
+  checkpoint_labels:="['P1','P2']"
 ```
 
-- `start_label`：経路の始点ラベル(未指定の場合は先頭から開始)
-- `goal_label`：経路の終点ラベル(未指定の場合は末尾まで継続)
-- launch内では `OpaqueFunction` を用いて LaunchConfiguration を Node に展開します。
+- `start_label` / `goal_label` はルートをスライスするラベル（未指定時は先頭〜末尾）。
+- `checkpoint_labels` は YAML 既定値に追加で通過させたいラベルを配列で指定。
+- 起動直後は `/get_route` 接続を待ち、接続後に FSM から初期要求が送出される。
 
-### 2. 起動結果確認
-起動後、以下のトピックが生成されます：
-```
-/active_route
-/route_state
-/mission_info
-```
-状態遷移は `/route_state` トピックで監視できます。
+## 外部インタフェース
+### Publisher
+| 名称 | 型 | 説明 | QoS |
+|------|----|------|-----|
+| `/active_route` | `route_msgs/Route` | 現在有効なルート。`Route.version` は major*100 + minor で管理。 | RELIABLE / TRANSIENT_LOCAL / depth=1 |
+| `/route_state` | `route_msgs/RouteState` | 現在 index・ラベル・ステータスを通知。 | RELIABLE / VOLATILE / depth=10 |
+| `/mission_info` | `route_msgs/MissionInfo` | 現在の start / goal / checkpoint を配信。 | RELIABLE / TRANSIENT_LOCAL / depth=1 |
+| `/manager_status` | `route_msgs/ManagerStatus` | FSM 状態と再計画判断結果を通知。 | RELIABLE / VOLATILE / depth=10 |
 
----
-
-## 外部インタフェース一覧
-
-### トピック購読
+### Service Client
 | 名称 | 型 | 説明 |
 |------|----|------|
-| `/follower_state` | `FollowerState` | 経路追従ノードの進捗を購読（current_label使用） |
+| `/get_route` | `route_msgs/srv/GetRoute` | 初期ルート取得。成功時は `Route.version=1` で保存。 |
+| `/update_route` | `route_msgs/srv/UpdateRoute` | 滞留時の再計画。成功時に部分ルートを差し替え、`Route.version` を進める。 |
 
-### トピック配信
+### Service Server
 | 名称 | 型 | 説明 |
 |------|----|------|
-| `/active_route` | `ActiveRoute` | 現在の経路情報（画像含む） |
-| `/route_state` | `RouteState` | 経路状態（status, current_label, message） |
-| `/mission_info` | `MissionInfo` | 経路構成情報（start, goal, checkpoints, description任意） |
+| `/report_stuck` | `route_msgs/srv/ReportStuck` | `route_follower` からの滞留通報を受け付け、再計画方針と `offset_hint` を返す。 |
 
-### サービス呼出
-| 名称 | 型 | 説明 |
-|------|----|------|
-| `/get_route` | `GetRoute.srv` | 経路の初期取得。planner発番のversionを採用。 |
-| `/update_route` | `UpdateRoute.srv` | 経路更新。**phase2以降で本格対応予定**。本phaseでは呼出骨格のみ実装。 |
+> 本ノードは購読トピックを持たず、滞留状況は `/report_stuck` 要求に含まれる情報を利用します。
 
----
-
-## 主なパラメータ
+## パラメータ
 | 名称 | 型 | 既定値 | 概要 |
 |------|----|--------|------|
-| `start_label` | str | "" | 出発ノードラベル(未指定の場合は先頭から開始) |
-| `goal_label` | str | "" | 目的ノードラベル(未指定の場合は末尾まで継続) |
-| `planner_get_service_name` | str | "/get_route" | 経路取得サービス名 |
-| `planner_update_service_name` | str | "/update_route" | 経路更新サービス名 |
-| `planner_timeout_sec` | float | 5.0 | サービス呼出タイムアウト |
-| `planner_retry_count` | int | 3 | 再試行回数 |
-| `publish_rate_hz` | float | 1.0 | 状態更新周期 |
-| `auto_request_on_startup` | bool | True | 起動直後に経路要求を自動実行するか |
+| `start_label` | string | `""` | 初期ルート要求時の開始ラベル。空文字で先頭から開始。 |
+| `goal_label` | string | `""` | 初期ルート要求時の終了ラベル。空文字で末尾まで。 |
+| `checkpoint_labels` | string[] | `[]` | 追加で通過させたいチェックポイント一覧。 |
+| `planner_timeout_sec` | double | `5.0` | `/update_route` 呼び出し時のサービス待機タイムアウト。 |
+| `planner_retry_count` | int | `2` | `/update_route` が失敗した場合の再試行回数。 |
+| `planner_connect_timeout_sec` | double | `10.0` | `/get_route` 接続待ちの打ち切り時間。 |
+| `state_publish_rate_hz` | double | `1.0` | `/route_state` 再送タイマーの周期（再送実装補完用）。 |
+| `image_encoding_check` | bool | `false` | 受信画像の encoding を検証するか（将来拡張用）。 |
+| `report_stuck_timeout_sec` | double | `5.0` | `/report_stuck` 処理の許容待ち時間（拡張用）。 |
+| `offset_step_max_m` | double | `1.0` | Shift 回避で適用する横方向オフセットの上限値[m]。 |
 
----
+## 状態管理・処理フロー
+### FSM 状態遷移
+`manager_fsm.py` に実装された FSM は以下の状態遷移を持ちます。
 
-## 状態遷移
-| 状態 | 概要 |
-|------|------|
-| UNSET | 初期状態 |
-| REQUESTING | 経路要求中（内部状態） |
-| ACTIVE | 経路有効 |
-| UPDATING | 更新要求中（phase2以降で使用） |
-| COMPLETED | 更新完了（phase2以降で使用） |
-| ERROR | エラー発生時 |
+| FSM 状態 | 説明 | `/route_state.status` へのマッピング |
+|----------|------|---------------------------------------|
+| `IDLE` | 起動直後・ルート未取得 | `STATUS_IDLE` |
+| `REQUESTING` | `/get_route` 応答待ち | `STATUS_RUNNING` |
+| `ACTIVE` | ルート配信中 | `STATUS_RUNNING` |
+| `WAITING_REROUTE` | 滞留中で再計画待ち | `STATUS_HOLDING` |
+| `UPDATING` | `/update_route` 応答待ち | `STATUS_UPDATING_ROUTE` |
+| `COMPLETED` | ルート完走（follower から完了通報） | `STATUS_COMPLETED` |
+| `ERROR` | サービス失敗・例外 | `STATUS_ERROR` |
 
----
+`/manager_status` には `state`（上表）と `decision`（replan / shift / skip / failed）を出力します。
 
-## QoS設定
-| トピック | Reliability | Durability | Depth |
-|-----------|--------------|-------------|-------|
-| `/active_route` | RELIABLE | TRANSIENT_LOCAL | 1 |
-| `/route_state` | RELIABLE | VOLATILE | 1 |
-| `/mission_info` | RELIABLE | TRANSIENT_LOCAL | 1 |
+> Phase2 では走行開始タイミングの制御を `route_follower` の `start_immediately` パラメータに統一し、
+> `route_manager` は起動直後に必ず初期ルートを要求します。`start_immediately=false` の場合は
+> `/manual_start` メッセージを受信した時点で `route_follower` が走行を開始します。
 
----
+### `/report_stuck` に対する再計画フロー
+1. Core が滞留報告を受理し、ルートバージョン・現在 index・滞留理由を検証する。
+2. `/update_route` を呼び出し、新ルートが得られればそのまま適用する。
+3. `/update_route` が失敗した場合は `offset_step_max_m` を上限とした左右オフセット提示（shift）を試みる。
+4. それでも走行不能な場合は次ウェイポイントのスキップ（skip）を試行し、部分ルートを再配信する。
+5. すべて失敗した場合は `decision_code=FAILED` とし、`note` に原因を格納する。
+6. `offset_hint` には follower が採用すべき横方向オフセット量（m）を設定する。
 
-## 動作確認方法
-
-1. **ノード起動**
+## 動作確認手順
+1. `route_planner` を起動し、`/get_route` `/update_route` サービスが利用可能であることを確認する。
+2. 上記コマンドで `route_manager` を起動し、初期ルート取得後に `/active_route` が Publish されることを確認する。
+3. 滞留状況を模擬する場合は以下のように `/report_stuck` を呼び出す。
    ```bash
-   ros2 launch route_manager route_manager.launch.py start_label:=S goal_label:=G
+   ros2 service call /report_stuck route_msgs/srv/ReportStuck \
+     "{route_version: 1, current_index: 5, current_wp_label: 'W5',
+        current_pose_map: {header: {frame_id: 'map'}, pose: {position: {x: 0.0, y: 0.0}}},
+        reason: 'front_blocked', avoid_trial_count: 2, last_hint_blocked: true,
+        last_applied_offset_m: 0.5}"
    ```
+   応答の `decision_code` や `offset_hint` を `/manager_status` と合わせて確認する。
+4. `/route_state` や `/manager_status` を `ros2 topic echo` で監視し、FSM 状態遷移が意図どおりであることを確認する。
 
-2. **plannerノード起動**
-   ```bash
-   ros2 run route_planner route_planner
-   ```
+## デバッグのヒント
+- `/manager_status` の `decision` が `skip` の場合、Core がローカルに経路をスライスして再配信している。
+- `/update_route` が連続で失敗する場合は、`route_planner` 側の閉塞ノード指定や YAML 設定を確認する。
+- `planner_connect_timeout_sec` を短く設定すると、`/get_route` サービスが未起動のまま一定時間経過した場合に `ERROR` へ遷移する。
 
-3. **フォロワノード起動**
-   ```bash
-   ros2 run route_follower route_follower
-   ```
-
-4. **状態確認**
-   ```bash
-   ros2 topic echo /route_state
-   ```
-
-5. **更新テスト（phase2以降対象）**
-   ```bash
-   ros2 service call /update_route route_interfaces/srv/UpdateRoute "{reason: 'reroute test'}"
-   ```
-
----
-
-## 内部構成要約
-- `RouteManager` クラス内で全処理を統括。  
-- Future＋Timerによる非ブロッキング構成。  
-- `planner_retry_count` に基づく再試行制御。  
-- `/active_route` 発行時に `stamp` を上書き。  
-- エラー時は `/route_state` に `ERROR` 状態をPublish。
-
----
-
-## テストとデバッグ
-| テスト項目 | 期待結果 |
-|-------------|-----------|
-| 初期経路取得 | `/active_route` が1回Publishされる |
-| フォロワ同期 | `/follower_state`更新によりcurrent_labelが追従する |
-| planner無応答 | ERROR状態となり再試行後停止 |
-| 更新要求（参考） | `/update_route` はphase2以降で有効化予定 |
-
----
-
-## 将来拡張（phase2以降）
-- `/update_route` 機能の本格実装（reroute対応）  
-- 障害物検知との統合（`obstacle_monitor`連携）  
-- mission再構成・GUI操作による経路切替  
-- version整合性管理の自動化
-
----
-
-## 保守上の注意
-- QoS設定変更時はplanner・follower両方を見直すこと。  
-- 状態更新はスレッド安全性を確保するため、`MutuallyExclusiveCallbackGroup` の利用を推奨。  
-- 経路画像のencodingやデータ長の検証を省略しないこと。
-
----
-
+## 将来拡張メモ
+- `image_encoding_check` および `report_stuck_timeout_sec` は将来的な検証ロジック追加のためのパラメータ。
+- `/route_state` の再送タイマ（`state_publish_rate_hz`）は今後再送実装を補完する予定。

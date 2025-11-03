@@ -5,68 +5,66 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
-def generate_launch_description():
-    # --- パッケージ共有ディレクトリを取得 ---
+def generate_launch_description() -> LaunchDescription:
     pkg_share = FindPackageShare('route_planner')
-    default_config = PathJoinSubstitution([pkg_share, 'routes', 'config.yaml'])
+    default_param = PathJoinSubstitution([pkg_share, 'params', 'default.yaml'])
     default_csv_dir = PathJoinSubstitution([pkg_share, 'routes'])
 
-    # --- launch引数の宣言 ---
-    config_yaml_arg = DeclareLaunchArgument(
-        'config_yaml_path',
-        default_value=default_config,
-        description='ルート構成YAMLファイルのパス (デフォルト: <pkg_share>/routes/config.yaml)'
+    param_arg = DeclareLaunchArgument(
+        'param_file',
+        default_value=default_param,
+        description='route_plannerノードの既定パラメータファイル',
     )
     csv_base_dir_arg = DeclareLaunchArgument(
         'csv_base_dir',
         default_value=default_csv_dir,
-        description='CSVファイルの基準ディレクトリ (デフォルト: <pkg_share>/csv)'
+        description='CSVファイルの基準ディレクトリ (デフォルト: <pkg_share>/routes)',
     )
     node_name_arg = DeclareLaunchArgument(
         'node_name',
         default_value='route_planner',
-        description='ノード名'
+        description='ノード名',
     )
     get_service_arg = DeclareLaunchArgument(
-        'get_service_name',
-        default_value='GetRoute',
-        description='GetRouteサービス名'
+        'get_route_service',
+        default_value='/get_route',
+        description='提供するGetRouteサービス名',
     )
     update_service_arg = DeclareLaunchArgument(
-        'update_service_name',
-        default_value='UpdateRoute',
-        description='UpdateRouteサービス名'
+        'update_route_service',
+        default_value='/update_route',
+        description='提供するUpdateRouteサービス名',
     )
 
-    # --- launch引数の取得 ---
-    config_yaml_path = LaunchConfiguration('config_yaml_path')
+    param_file = LaunchConfiguration('param_file')
     csv_base_dir = LaunchConfiguration('csv_base_dir')
     node_name = LaunchConfiguration('node_name')
-    get_service_name = LaunchConfiguration('get_service_name')
-    update_service_name = LaunchConfiguration('update_service_name')
+    get_route_service = LaunchConfiguration('get_route_service')
+    update_route_service = LaunchConfiguration('update_route_service')
 
-    # --- Node定義 ---
     route_planner_node = Node(
         package='route_planner',
         executable='route_planner',
         name=node_name,
         output='screen',
         emulate_tty=True,
-        parameters=[{
-            'config_yaml_path': config_yaml_path,
-            'csv_base_dir': csv_base_dir,
-        }],
+        parameters=[
+            param_file,
+            {
+                'csv_base_dir': csv_base_dir,
+            },
+        ],
         remappings=[
-            ('GetRoute', get_service_name),
-            ('UpdateRoute', update_service_name),
-        ]
+            ('get_route', get_route_service),
+            ('update_route', update_route_service),
+        ],
     )
 
     return LaunchDescription([
-        config_yaml_arg,
+        param_arg,
         csv_base_dir_arg,
         node_name_arg,
         get_service_arg,
         update_service_arg,
-        route_planner_node
+        route_planner_node,
     ])

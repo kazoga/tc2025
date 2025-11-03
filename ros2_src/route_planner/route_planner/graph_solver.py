@@ -38,17 +38,12 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import japanize_matplotlib
 import networkx as nx
+import numpy as np
 
-# ---------------------------------------------------------------------------
-# 地図画像と表示範囲の定義（定数）
-# ---------------------------------------------------------------------------
-MAP_IMAGE_PATH = "./map/gsi20250928000333444.png"
-MAP_WIDTH_PX = 600
-MAP_HEIGHT_PX = 600
-MAP_LAT_MIN = 36.079371
-MAP_LAT_MAX = 36.082107
-MAP_LON_MIN = 140.079144
-MAP_LON_MAX = 140.082352
+try:
+    from .latlon_to_pixel_mapper import latlon_to_pixel
+except ImportError:  # CLI実行時（モジュールとしてでなくスクリプトとして起動した場合）
+    from latlon_to_pixel_mapper import latlon_to_pixel
 
 
 # ============================================================
@@ -286,12 +281,11 @@ def solve_variable_route(
     goal: str,
     checkpoints: List[str],
 ) -> Dict[str, Any]:
-    """可変ルート探索。外部I/Fは固定し、戻り値は edge_sequence/node_sequence/visit_order/stats に加えて
-    route_image_path を返す。
+    """可変ルート探索。戻り値は edge_sequence/node_sequence/visit_order/stats のみを含む。
 
     - JSONへ直列化可能な stats のみ含める（tupleキーは "i-j" 文字列に変換）。
     - Graph オブジェクトや tupleキー版の dist_matrix/path_table は戻り値に含めない。
-    - plot_route_image() を呼び出し、同一プロセス内では上書き、別プロセスなら別ファイルとして /tmp に画像を保存する。
+    - 地図への重畳描画は :func:`render_route_on_map` など別関数で必要に応じて実行する。
     """
     if len(checkpoints) < 1:
         raise ValueError("checkpoints must contain at least one node")
@@ -443,16 +437,12 @@ def solve_variable_route(
         "path_table": {f"{i}-{j}": path_table[(i, j)] for (i, j) in path_table},
     }
 
-    # (8) ルート画像を /tmp に出力し、そのパスを戻り値に含める
-    image_path = plot_route_image(nodes, node_sequence, visit_order)  # out_path=Noneで /tmp/route_solver_<pid>.png に保存
-
     # 外部I/F（route_planner等）向けの戻り値
     return {
         "edge_sequence": edge_sequence,
         "node_sequence": node_sequence,
         "visit_order": visit_order,
         "stats": stats,
-        "route_image_path": image_path,  # 追加：画像ファイルパス
     }
 
 
@@ -460,50 +450,67 @@ def solve_variable_route(
 # 可視化（地図背景付き）
 # ============================================================
 
-def plot_route_image(
+def _compute_pixel_positions(
+    nodes: Dict[str, Tuple[float, float]],
+    map_image_path: str,
+    map_worldfile_path: str,
+) -> Dict[str, Optional[Tuple[int, int]]]:
+    """PGWを用いて全ノードのピクセル座標を計算する。"""
+
+    node_ids = list(nodes.keys())
+    latlon_seq = [nodes[nid] for nid in node_ids]
+    pixels = latlon_to_pixel(map_image_path, map_worldfile_path, latlon_seq, verbose=False)
+    pos: Dict[str, Optional[Tuple[int, int]]] = {}
+    for nid, pix in zip(node_ids, pixels):
+        if pix == (None, None):
+            pos[nid] = None
+        else:
+            pos[nid] = (int(pix[0]), int(pix[1]))
+    return pos
+
+
+def render_route_on_map(
     nodes: Dict[str, Tuple[float, float]],
     node_sequence: List[str],
     visit_order: List[str],
-    out_path: Optional[str] = None,
-) -> str:
-    """地図背景付きで経路と訪問順表を描画する。
+    map_image_path: str,
+    map_worldfile_path: str,
+    *,
+    output_path: Optional[str] = None,
+) -> np.ndarray:
+    """地図画像に経路と訪問順表を重畳し、RGB配列として返す。"""
 
-    Args:
-        nodes: {id: (lat, lon)} ノード集合
-        node_sequence: 経路ノード列
-        visit_order: 端点訪問順
-        out_path: 保存先パス。None の場合は /tmp/route_solver_<pid>.png に保存
-
-    Returns:
-        実際に保存したファイルのパス
-    """
-    from matplotlib.patches import Patch
     from matplotlib.lines import Line2D
-    import os
+    from matplotlib.patches import Patch
 
-    # 背景地図
-    img = plt.imread(MAP_IMAGE_PATH)
+    img_array = plt.imread(map_image_path)
+    height, width = img_array.shape[0], img_array.shape[1]
+    pos_lookup = _compute_pixel_positions(nodes, map_image_path, map_worldfile_path)
+    valid_pos = {nid: coords for nid, coords in pos_lookup.items() if coords is not None}
+
     fig = plt.figure(figsize=(14, 8))
     gs = fig.add_gridspec(ncols=2, nrows=1, width_ratios=[2.5, 1.0])
     ax_map = fig.add_subplot(gs[0, 0])
     ax_table = fig.add_subplot(gs[0, 1])
-    ax_map.imshow(img, extent=[MAP_LON_MIN, MAP_LON_MAX, MAP_LAT_MIN, MAP_LAT_MAX], origin="upper")
+
+    ax_map.imshow(img_array, origin="upper")
+    ax_map.set_xlim(0, width)
+    ax_map.set_ylim(height, 0)
     ax_map.set_title("Variable Route")
 
-    # ノード座標（lon,lat）辞書
-    pos = {nid: (lon, lat) for nid, (lat, lon) in nodes.items()}
-
-    # 全ノードを灰色で描画、IDラベルを表示
     G = nx.Graph()
-    for nid in nodes.keys():
-        G.add_node(nid)
-    nx.draw_networkx_nodes(G, pos, node_size=50, node_color="lightgray", ax=ax_map)
-    nx.draw_networkx_labels(G, pos, labels={nid: nid for nid in G.nodes()}, font_size=12, ax=ax_map)
+    if valid_pos:
+        G.add_nodes_from(valid_pos.keys())
+        nx.draw_networkx_nodes(G, valid_pos, node_size=50, node_color="lightgray", ax=ax_map)
+        nx.draw_networkx_labels(G, valid_pos, labels={nid: nid for nid in G.nodes()}, font_size=12, ax=ax_map)
 
-    # 経路を青矢印で描画
     for u, v in zip(node_sequence[:-1], node_sequence[1:]):
-        x1, y1 = pos[u]
-        x2, y2 = pos[v]
+        src = valid_pos.get(u)
+        dst = valid_pos.get(v)
+        if src is None or dst is None:
+            continue
+        x1, y1 = src
+        x2, y2 = dst
         ax_map.annotate(
             "",
             xy=(x2, y2), xycoords="data",
@@ -511,26 +518,47 @@ def plot_route_image(
             arrowprops=dict(arrowstyle="->", color="blue", lw=2),
         )
 
-    # 重要ノードを強調（start, goal, via）
     if visit_order:
         color_map = {"start": "green", "goal": "red", "via": "orange"}
         start_id = visit_order[0]
         goal_id = visit_order[-1]
         via_ids = visit_order[1:-1]
-        if start_id in pos:
-            nx.draw_networkx_nodes(G, pos, nodelist=[start_id],
-                                   node_size=260, node_color=color_map["start"],
-                                   ax=ax_map, linewidths=1.2, edgecolors="black")
-        if goal_id in pos:
-            nx.draw_networkx_nodes(G, pos, nodelist=[goal_id],
-                                   node_size=260, node_color=color_map["goal"],
-                                   ax=ax_map, linewidths=1.2, edgecolors="black")
+        if start_id in valid_pos:
+            nx.draw_networkx_nodes(
+                G,
+                valid_pos,
+                nodelist=[start_id],
+                node_size=260,
+                node_color=color_map["start"],
+                ax=ax_map,
+                linewidths=1.2,
+                edgecolors="black",
+            )
+        if goal_id in valid_pos:
+            nx.draw_networkx_nodes(
+                G,
+                valid_pos,
+                nodelist=[goal_id],
+                node_size=260,
+                node_color=color_map["goal"],
+                ax=ax_map,
+                linewidths=1.2,
+                edgecolors="black",
+            )
         if via_ids:
-            nx.draw_networkx_nodes(G, pos, nodelist=via_ids,
-                                   node_size=260, node_color=color_map["via"],
-                                   ax=ax_map, linewidths=1.2, edgecolors="black")
+            via_pos = [vid for vid in via_ids if vid in valid_pos]
+            if via_pos:
+                nx.draw_networkx_nodes(
+                    G,
+                    valid_pos,
+                    nodelist=via_pos,
+                    node_size=260,
+                    node_color=color_map["via"],
+                    ax=ax_map,
+                    linewidths=1.2,
+                    edgecolors="black",
+                )
 
-    # 訪問順・距離の表を作成
     table_data: List[List[Any]] = []
     headers = ["訪問順", "ノードID", "区間距離(m)", "累積距離(m)"]
     cumulative = 0.0
@@ -549,7 +577,6 @@ def plot_route_image(
     table.set_fontsize(10)
     table.scale(1.2, 1.2)
 
-    # 凡例
     legend_handles = [
         Patch(facecolor="green", edgecolor="black", label="出発地"),
         Patch(facecolor="orange", edgecolor="black", label="経由地"),
@@ -559,102 +586,114 @@ def plot_route_image(
     ]
     ax_map.legend(handles=legend_handles, loc="upper left", framealpha=0.95)
 
-    # 軸設定
-    ax_map.set_xlim(MAP_LON_MIN, MAP_LON_MAX)
-    ax_map.set_ylim(MAP_LAT_MIN, MAP_LAT_MAX)
-    ax_map.set_xlabel("Longitude")
-    ax_map.set_ylabel("Latitude")
-
     plt.tight_layout()
-
-    # ファイルパスの決定
-    if out_path is None:
-        pid = os.getpid()
-        out_path = f"/tmp/route_solver_{pid}.png"
-
-    # 画像保存
-    plt.savefig(out_path, dpi=150)
+    fig.canvas.draw()
+    if output_path:
+        fig.savefig(output_path, dpi=150)
+    canvas_width, canvas_height = fig.canvas.get_width_height()
+    rgb_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    rgb_array = rgb_array.reshape((canvas_height, canvas_width, 3))
     plt.close(fig)
-    return out_path
+    return rgb_array
 
 
-def plot_terminal_complete_graph(
+
+def render_terminal_complete_graph(
     terminals: List[str],
     dist_matrix: Dict[Tuple[int, int], float],
     nodes: Dict[str, Tuple[float, float]],
-    out_path: Optional[str] = None,
+    map_image_path: str,
+    map_worldfile_path: str,
+    *,
     terminal_order: Optional[List[int]] = None,
-) -> None:
-    """地図背景付きで端点完全グラフを描画し、最適経路のエッジを強調する。
+    output_path: Optional[str] = None,
+) -> np.ndarray:
+    """端点完全グラフを地図上に重畳し、RGB配列を返す。"""
 
-    Args:
-        terminals: 重要ノード（start + checkpoints + goal）
-        dist_matrix: タプルキー版の端点間距離（(i,j)→距離）
-        nodes: 全ノードの座標 {id: (lat,lon)}
-        out_path: 画像保存パス
-        terminal_order: Held-Karp が返した端点順序（例: [0,2,3,1]）
-    """
-    from matplotlib.patches import Patch
     from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
 
-    # 有向グラフ（端点完全グラフ）
+    img_array = plt.imread(map_image_path)
+    height, width = img_array.shape[0], img_array.shape[1]
+    pos_lookup = _compute_pixel_positions(nodes, map_image_path, map_worldfile_path)
+    valid_pos = {nid: coords for nid, coords in pos_lookup.items() if coords is not None and nid in terminals}
+
     H = nx.DiGraph()
-    pos = {nid: (lon, lat) for nid, (lat, lon) in nodes.items()}
     for nid in terminals:
-        H.add_node(nid)
-    k = len(terminals)
+        if nid in valid_pos:
+            H.add_node(nid)
+
     for i, u in enumerate(terminals):
+        if u not in valid_pos:
+            continue
         for j, v in enumerate(terminals):
-            if i == j:
+            if i == j or v not in valid_pos:
                 continue
             d = dist_matrix.get((i, j), math.inf)
             if d == math.inf:
                 continue
             H.add_edge(u, v, weight=d)
 
-    # 背景地図
-    img = plt.imread(MAP_IMAGE_PATH)
     fig, ax = plt.subplots(figsize=(8, 8))
-    ax.imshow(img, extent=[MAP_LON_MIN, MAP_LON_MAX, MAP_LAT_MIN, MAP_LAT_MAX], origin="upper")
+    ax.imshow(img_array, origin="upper")
+    ax.set_xlim(0, width)
+    ax.set_ylim(height, 0)
 
-    # 全エッジを薄く描画
-    nx.draw_networkx_edges(H, pos, alpha=0.2, edge_color="gray", ax=ax)
+    if H.nodes:
+        nx.draw_networkx_edges(H, valid_pos, alpha=0.2, edge_color="gray", ax=ax)
+        nx.draw_networkx_nodes(H, valid_pos, node_size=150, node_color="lightgray", ax=ax)
+        nx.draw_networkx_labels(H, valid_pos, font_size=8, ax=ax)
 
-    # ノードを灰色で描画＋ラベル
-    nx.draw_networkx_nodes(H, pos, node_size=150, node_color="lightgray", ax=ax)
-    nx.draw_networkx_labels(H, pos, font_size=8, ax=ax)
-
-    # 最適経路エッジを強調表示
     if terminal_order and len(terminal_order) >= 2:
         path_edges = []
         for a_idx, b_idx in zip(terminal_order[:-1], terminal_order[1:]):
-            u = terminals[a_idx]
-            v = terminals[b_idx]
-            if H.has_edge(u, v):
-                path_edges.append((u, v))
-        nx.draw_networkx_edges(
-            H, pos, edgelist=path_edges, width=2.5, edge_color="magenta", ax=ax, arrows=True
-        )
+            if 0 <= a_idx < len(terminals) and 0 <= b_idx < len(terminals):
+                u = terminals[a_idx]
+                v = terminals[b_idx]
+                if H.has_edge(u, v):
+                    path_edges.append((u, v))
+        if path_edges:
+            nx.draw_networkx_edges(H, valid_pos, edgelist=path_edges, width=2.5, edge_color="magenta", ax=ax, arrows=True)
 
-    # 重要ノードを強調（start/goal/via）
     if terminals:
         start_id = terminals[0]
         goal_id = terminals[-1]
         via_ids = terminals[1:-1]
-        if start_id in pos:
-            nx.draw_networkx_nodes(H, pos, nodelist=[start_id],
-                                   node_size=300, node_color="green",
-                                   ax=ax, linewidths=1.2, edgecolors="black")
-        if goal_id in pos:
-            nx.draw_networkx_nodes(H, pos, nodelist=[goal_id],
-                                   node_size=300, node_color="red",
-                                   ax=ax, linewidths=1.2, edgecolors="black")
-        if via_ids:
-            nx.draw_networkx_nodes(H, pos, nodelist=via_ids,
-                                   node_size=300, node_color="orange",
-                                   ax=ax, linewidths=1.2, edgecolors="black")
+        if start_id in valid_pos:
+            nx.draw_networkx_nodes(
+                H,
+                valid_pos,
+                nodelist=[start_id],
+                node_size=300,
+                node_color="green",
+                ax=ax,
+                linewidths=1.2,
+                edgecolors="black",
+            )
+        if goal_id in valid_pos:
+            nx.draw_networkx_nodes(
+                H,
+                valid_pos,
+                nodelist=[goal_id],
+                node_size=300,
+                node_color="red",
+                ax=ax,
+                linewidths=1.2,
+                edgecolors="black",
+            )
+        via_nodes = [vid for vid in via_ids if vid in valid_pos]
+        if via_nodes:
+            nx.draw_networkx_nodes(
+                H,
+                valid_pos,
+                nodelist=via_nodes,
+                node_size=300,
+                node_color="orange",
+                ax=ax,
+                linewidths=1.2,
+                edgecolors="black",
+            )
 
-    # 凡例
     legend_handles = [
         Patch(facecolor="green", edgecolor="black", label="出発地"),
         Patch(facecolor="orange", edgecolor="black", label="経由地"),
@@ -662,18 +701,19 @@ def plot_terminal_complete_graph(
         Line2D([0], [0], color="magenta", lw=2, label="最適経路"),
     ]
     ax.legend(handles=legend_handles, loc="upper left", framealpha=0.95)
-
-    # 軸と範囲
-    ax.set_xlim(MAP_LON_MIN, MAP_LON_MAX)
-    ax.set_ylim(MAP_LAT_MIN, MAP_LAT_MAX)
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
     ax.set_title("Terminal Complete Graph")
 
     plt.tight_layout()
-    if out_path:
-        plt.savefig(out_path, dpi=150)
+    fig.canvas.draw()
+    if output_path:
+        fig.savefig(output_path, dpi=150)
+    canvas_width, canvas_height = fig.canvas.get_width_height()
+    rgb_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    rgb_array = rgb_array.reshape((canvas_height, canvas_width, 3))
     plt.close(fig)
+    return rgb_array
+
+
 
 
 # ============================================================
@@ -732,6 +772,20 @@ def main() -> None:
     parser.add_argument("--checkpoints", required=True, help="Comma-separated checkpoint node ids (>=1)")
     parser.add_argument("--outdir", default="out", help="Output directory")
     parser.add_argument("--json", dest="json_path", default=None, help="Optional output JSON path (default: out/route.json)")
+    parser.add_argument("--map-image", dest="map_image_path", default=None, help="Background map image (PNG) for visualization")
+    parser.add_argument("--world-file", dest="world_file_path", default=None, help="World file (PGW) corresponding to the map image")
+    parser.add_argument(
+        "--route-image-output",
+        dest="route_image_output",
+        default=None,
+        help="Output path for the variable route overlay (defaults to <outdir>/variable_route.png)",
+    )
+    parser.add_argument(
+        "--terminal-image-output",
+        dest="terminal_image_output",
+        default=None,
+        help="Output path for the terminal complete graph overlay (defaults to <outdir>/terminal_complete.png)",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -745,23 +799,33 @@ def main() -> None:
     # ライブラリI/F（外部互換）を使用
     result = solve_variable_route(nodes, edges, args.start, args.goal, cps)
 
-    # 画像出力 1: 経路（地図背景）
-    img_path = os.path.join(args.outdir, "variable_route.png")
-    plot_route_image(nodes, result["node_sequence"], result["visit_order"], img_path)
+    route_img_path = None
+    terminal_img_path = None
+    if args.map_image_path and args.world_file_path:
+        route_img_path = args.route_image_output or os.path.join(args.outdir, "variable_route.png")
+        render_route_on_map(
+            nodes,
+            result["node_sequence"],
+            result["visit_order"],
+            args.map_image_path,
+            args.world_file_path,
+            output_path=route_img_path,
+        )
 
-    # 画像出力 2: 端点完全グラフ
-    terminals = result["stats"]["terminals"]
-    G = _rebuild_graph_for_terminals(nodes, edges)  # solve と同じ重みルールで再構築
-    dist_matrix_tuple, _ = compute_terminals_shortest_paths(G, terminals)
+        terminals = result["stats"]["terminals"]
+        graph_for_terminals = _rebuild_graph_for_terminals(nodes, edges)
+        dist_matrix_tuple, _ = compute_terminals_shortest_paths(graph_for_terminals, terminals)
 
-    complete_img_path = os.path.join(args.outdir, "terminal_complete.png")
-    plot_terminal_complete_graph(
-        terminals,
-        dist_matrix_tuple,
-        nodes,
-        complete_img_path,
-        terminal_order=result["stats"]["order_indices"],  # ★ Held-Karp の順序を渡す
-    )
+        terminal_img_path = args.terminal_image_output or os.path.join(args.outdir, "terminal_complete.png")
+        render_terminal_complete_graph(
+            terminals,
+            dist_matrix_tuple,
+            nodes,
+            args.map_image_path,
+            args.world_file_path,
+            terminal_order=result["stats"]["order_indices"],
+            output_path=terminal_img_path,
+        )
 
     # JSON 出力（tupleキーは含まないのでそのまま直列化できる）
     json_path = args.json_path or os.path.join(args.outdir, "route.json")
@@ -776,7 +840,10 @@ def main() -> None:
     print("terminals:", ", ".join(result["stats"]["terminals"]))
     print("visit_order:", " -> ".join(result["visit_order"]))
     print(f"JSON saved to: {json_path}")
-    print(f"Images saved to: {img_path}, {complete_img_path}")
+    if route_img_path and terminal_img_path:
+        print(f"Images saved to: {route_img_path}, {terminal_img_path}")
+    else:
+        print("Images not generated (map image and world file were not specified)")
 
 
 if __name__ == "__main__":

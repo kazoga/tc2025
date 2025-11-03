@@ -63,15 +63,16 @@ class Route:
     version: int
     waypoints: List[Waypoint]
     start_index: int = 0
-    start_label: str = ""
+    start_waypoint_label: str = ""
 
 
 @dataclass
 class HintSample:
     t: float
     front_blocked: bool
-    left_open: float
-    right_open: float
+    left_offset: float
+    right_offset: float
+    front_clearance: float = math.inf
 
 
 @dataclass
@@ -153,6 +154,9 @@ class FollowerCore:
         self.reroute_wait_start: Optional[float] = None
         self.reroute_wait_deadline: Optional[float] = None
 
+        # 起動時自動開始フラグ
+        self.start_immediately: bool = True
+
         # 直近の滞留理由
         self.last_stagnation_reason = ""
         
@@ -179,9 +183,10 @@ class FollowerCore:
 
         # 統計結果（update_hintで逐次更新）
         self._hint_front_blocked_majority = False
-        self._hint_left_open_median = 0.0
-        self._hint_right_open_median = 0.0
+        self._hint_left_offset_median = 0.0
+        self._hint_right_offset_median = 0.0
         self._hint_enough = False
+        self._hint_front_clearance_latest = float('inf')
 
     # ========================= 受け渡しAPI（非タイマー） =========================
     def update_route(self, route: Route) -> None:
@@ -201,8 +206,8 @@ class FollowerCore:
         """Hint統計の最新値をセット（Node側で統計済み）。"""
         with self._hint_lock:
             self._hint_front_blocked_majority = bool(fb_major)
-            self._hint_left_open_median = float(med_l)
-            self._hint_right_open_median = float(med_r)
+            self._hint_left_offset_median = float(med_l)
+            self._hint_right_offset_median = float(med_r)
             self._hint_enough = bool(enough)
 
     # tick 内で使用するスナップショット取得（ロックは極小）
@@ -210,8 +215,8 @@ class FollowerCore:
         with self._hint_lock:
             return (
                 self._hint_front_blocked_majority,
-                self._hint_left_open_median,
-                self._hint_right_open_median,
+                self._hint_left_offset_median,
+                self._hint_right_offset_median,
                 self._hint_enough,
             )
 
@@ -221,6 +226,7 @@ class FollowerCore:
         with self._hint_lock:
             # 追加
             self._hint_cache.append(hint)
+            self._hint_front_clearance_latest = float(hint.front_clearance)
             # 窓外を削除
             wnd = float(self.hint_cache_window_sec)
             while self._hint_cache and (now - float(self._hint_cache[0].t)) > wnd:
@@ -228,19 +234,19 @@ class FollowerCore:
             n = len(self._hint_cache)
             if n < int(self.hint_min_samples):
                 self._hint_front_blocked_majority = False
-                self._hint_left_open_median = 0.0
-                self._hint_right_open_median = 0.0
+                self._hint_left_offset_median = 0.0
+                self._hint_right_offset_median = 0.0
                 self._hint_enough = False
                 return
             fb_vals = [1 if s.front_blocked else 0 for s in self._hint_cache]
             self._hint_front_blocked_majority = (sum(fb_vals) / n) >= float(self.hint_majority_true_ratio)
             fb_samples = [s for s in self._hint_cache if s.front_blocked]
             if fb_samples:
-                self._hint_left_open_median = float(median(s.left_open for s in fb_samples))
-                self._hint_right_open_median = float(median(s.right_open for s in fb_samples))
+                self._hint_left_offset_median = float(median(s.left_offset for s in fb_samples))
+                self._hint_right_offset_median = float(median(s.right_offset for s in fb_samples))
             else:
-                self._hint_left_open_median = 0.0
-                self._hint_right_open_median = 0.0
+                self._hint_left_offset_median = 0.0
+                self._hint_right_offset_median = 0.0
             self._hint_enough = True
 
     def update_control_inputs(self, manual_start: Optional[bool] = None, sig_recog: Optional[int] = None) -> None:
@@ -254,6 +260,12 @@ class FollowerCore:
     def _get_control_snapshot(self) -> Tuple[Optional[bool], Optional[int]]:
         with self._ctrl_lock:
             return self._manual_start_mb, self._sig_recog_mb
+
+    def _consume_control_inputs(self) -> None:
+        """manual_startおよびsig_recogのラッチ値を消費済みとしてクリアする。"""
+        with self._ctrl_lock:
+            self._manual_start_mb = None
+            self._sig_recog_mb = None
 
     # ========================= 周期処理（唯一の状態更新点） =========================
     def tick(self) -> FollowerOutput:
@@ -293,7 +305,10 @@ class FollowerCore:
         self.route = route
         self.route_active = True
         self.route_version = route.version
-        self.index = route.start_index
+        if route.waypoints:
+            self.index = max(0, min(route.start_index, len(route.waypoints) - 1))
+        else:
+            self.index = 0
         self.pose_hist.clear()
         self.avoid_active = False
         self.avoid_subgoals.clear()
@@ -303,7 +318,10 @@ class FollowerCore:
         self.reroute_wait_start = None
         self.reroute_wait_deadline = None
         self.stagnation_grace_until = time.time() + self.stagnation_grace_sec
-        self.last_target = route.waypoints[0].pose if route.waypoints else None
+        if route.waypoints:
+            self.last_target = route.waypoints[self.index].pose
+        else:
+            self.last_target = None
         self.log(f"[FollowerCore] Route適用 version={route.version} waypoints={len(route.waypoints)} start_index={route.start_index}")
 
     def _apply_pose(self, pose: Pose) -> None:
@@ -325,10 +343,13 @@ class FollowerCore:
         # IDLEでルートが設定されたらRUNNINGに遷移
         if self.status == FollowerStatus.IDLE:
             if self.route_active:
-                self.log(f"[FollowerCore] IDLE -> RUNNING index={self.index}")
-                next_wp = self.route.waypoints[self.index]
-                self.status = FollowerStatus.RUNNING
-                return FollowerOutput(next_wp.pose, self._make_state_dict())
+                if self.start_immediately or bool(manual_start):
+                    if not self.start_immediately:
+                        self._consume_control_inputs()
+                    self.log(f"[FollowerCore] IDLE -> RUNNING index={self.index}")
+                    next_wp = self.route.waypoints[self.index]
+                    self.status = FollowerStatus.RUNNING
+                    return FollowerOutput(next_wp.pose, self._make_state_dict())
             return FollowerOutput(None, self._make_state_dict())
 
         # RUNNING/AVOIDING/WAITING_STOP/WAITING_REROUTE
@@ -357,6 +378,7 @@ class FollowerCore:
                 else:
                     # すべて消化 → 本来WPへ復帰
                     self.avoid_active = False
+                    self.status = FollowerStatus.RUNNING
                     self.last_target = cur_wp.pose
                     self.log("[FollowerCore] Avoidance completed. Back to main route.")
                     return FollowerOutput(cur_wp.pose, self._make_state_dict())
@@ -380,6 +402,7 @@ class FollowerCore:
                 return FollowerOutput(self.last_target, self._make_state_dict())
 
             # 解除：次WP or FINISHED
+            self._consume_control_inputs()
             if self.index < len(self.route.waypoints) - 1:
                 self.index += 1
                 next_wp = self.route.waypoints[self.index]
@@ -403,6 +426,7 @@ class FollowerCore:
             if self.route_active:
                 self.log(f"[FollowerCore] WAITING_REROUTE -> RUNNING index={self.index}")
                 next_wp = self.route.waypoints[self.index]
+                self.last_target = next_wp.pose
                 self.status = FollowerStatus.RUNNING
                 return FollowerOutput(next_wp.pose, self._make_state_dict())
             # タイムアウト管理
@@ -422,6 +446,7 @@ class FollowerCore:
                 # STOP系
                 if cur_wp.line_stop or cur_wp.signal_stop:
                     self.status = FollowerStatus.WAITING_STOP
+                    self._consume_control_inputs()
                     self.log(f"[FollowerCore] Reached STOP waypoint -> WAITING_STOP (line_stop={cur_wp.line_stop}, signal_stop={cur_wp.signal_stop})")
                     return FollowerOutput(self.last_target, self._make_state_dict())
                 # 次WPへ
@@ -441,9 +466,15 @@ class FollowerCore:
                 return FollowerOutput(None, self._make_state_dict())
 
             # --- 未到達：滞留判定（グレース期間内はスキップ） ---
+            exclude_stop = False
+            if cur_wp.line_stop or cur_wp.signal_stop:
+                # 停止系WPでも停止線に到達する前は滞留判定を有効にする
+                exclude_stop = dist < self.arrival_threshold
+
             if time.time() >= self.stagnation_grace_until:
-                if self._check_stagnation_tick(exclude_stop=(cur_wp.line_stop or cur_wp.signal_stop)):
+                if self._check_stagnation_tick(exclude_stop=exclude_stop):
                     self.status = FollowerStatus.STAGNATION_DETECTED
+                    # 滞留検知をトリガとして回避に移行するため、Hint評価結果に応じた理由を記録する。
                     # Hint統計（Node側集約）に基づく判断
                     if not enough:
                         self.last_stagnation_reason = "no_hint"
@@ -455,6 +486,7 @@ class FollowerCore:
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
                     # 前方ブロック True → L字回避トライ
+                    self.last_stagnation_reason = "front_blocked"
                     success = self._start_avoidance_sequence(cur_wp, cur_pose, med_l, med_r)
                     if success:
                         self.status = FollowerStatus.AVOIDING
@@ -478,6 +510,18 @@ class FollowerCore:
         now = time.time()
         self.reroute_wait_start = now
         self.reroute_wait_deadline = now + self.reroute_timeout_sec
+
+    def notify_reroute_failed(self, note: str = "") -> None:
+        """/report_stuck が失敗した際にノード層から呼び出す。"""
+        self.route_active = False
+        self.avoid_active = False
+        self.avoid_subgoals.clear()
+        self.reroute_wait_start = None
+        self.reroute_wait_deadline = None
+        if note:
+            self.last_stagnation_reason = note
+        self.status = FollowerStatus.ERROR
+        self.log(f"[FollowerCore] WAITING_REROUTE failed -> ERROR note='{note}'")
 
     def _check_stagnation_tick(self, exclude_stop: bool) -> bool:
         """滞留判定。
@@ -591,19 +635,40 @@ class FollowerCore:
     def _make_state_dict(self) -> dict:
         """/follower_state 相当の簡易状態（Node側でROS msgへ変換）。"""
         cur_label = ""
-        next_label = ""
+        segment_length = 0.0
         if self.route and 0 <= self.index < len(self.route.waypoints):
-            cur_label = self.route.waypoints[self.index].label
-            if self.index + 1 < len(self.route.waypoints):
-                next_label = self.route.waypoints[self.index + 1].label
+            cur_wp = self.route.waypoints[self.index]
+            cur_label = cur_wp.label
+            if self.index > 0:
+                prev_wp = self.route.waypoints[self.index - 1]
+                segment_length = self._euclid_xy(prev_wp.pose, cur_wp.pose)
 
         return {
             "status": self.status.name,
-            "index": int(self.index),
+            "active_waypoint_index": int(self.index),
             "route_version": int(self.route_version),
-            "current_waypoint_label": cur_label,
-            "next_waypoint_label": next_label,
+            "active_waypoint_label": cur_label,
+            "segment_length_m": float(segment_length),
             "avoid_count": int(self.avoid_attempt_count),
             "reason": str(self.last_stagnation_reason),
+            "front_blocked": bool(self._hint_front_blocked_majority),
+            "left_offset_m": float(self._hint_left_offset_median),
+            "right_offset_m": float(self._hint_right_offset_median),
+            "front_clearance_m": float(self._hint_front_clearance_latest),
         }
+
+    def get_current_waypoint_label(self) -> str:
+        """現在追従中のウェイポイントラベルを返す。"""
+        if self.route and 0 <= self.index < len(self.route.waypoints):
+            return self.route.waypoints[self.index].label
+        return ""
+
+    def get_current_pose(self) -> Optional[Pose]:
+        """現在の自己位置（Pose）を返す。"""
+        return self.current_pose
+
+    def get_hint_front_blocked(self) -> bool:
+        """直近Hintで前方が塞がれているかを返す。"""
+        with self._hint_lock:
+            return bool(self._hint_front_blocked_majority)
 

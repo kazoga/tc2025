@@ -1,0 +1,6 @@
+route_planner:
+  ros__parameters:
+    config_yaml_path: "routes/config.yaml"
+    csv_base_dir: "routes"
+    map_image_path: ""
+    map_worldfile_path: ""

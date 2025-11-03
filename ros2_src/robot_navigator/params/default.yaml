@@ -1,0 +1,19 @@
+robot_navigator:
+  ros__parameters:
+    max_vel: 1.1
+    max_w: 1.8
+    max_acc_v: 1.0
+    max_acc_w: 1.5
+    pos_tol: 0.5
+    ang_tol: 0.25
+    control_rate_hz: 20.0
+    robot_width: 0.6
+    marker_frame: "map"
+    obstacle_distance_mode: "hint"
+    obst_fov_deg: 120.0
+    obst_max_dist: 5.0
+    safety_distance: 0.8
+    log_csv_path: "/tmp/control_log.csv"
+    enable_debug_pub: false
+    use_nav2_action: false
+

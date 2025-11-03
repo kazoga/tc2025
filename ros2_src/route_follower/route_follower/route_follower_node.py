@@ -206,6 +206,7 @@ class RouteFollowerNode(Node):
         pose_msg.header.stamp = now_ros.to_msg()
         pose_msg.header.frame_id = "map"
         pose_msg.pose = self._pose_to_msg(pose)
+        print("publish target:", pose)
         self.pub_target.publish(pose_msg)
         self._last_pub_target_pose = pose
         self._last_pub_time = now_sec

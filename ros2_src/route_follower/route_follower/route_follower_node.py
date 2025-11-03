@@ -374,8 +374,9 @@ class RouteFollowerNode(Node):
         if pose is not None:
             req.current_pose_map = self._pose_to_msg(pose)
         reason_label = str(self.core.last_stagnation_reason)
-        req.reason_code = int(self._convert_reason_code(reason_label))
-        req.reason_detail = reason_label
+        normalized_reason = self._normalize_reason_label(reason_label)
+        req.reason_code = int(self._convert_reason_code(normalized_reason))
+        req.reason_detail = normalized_reason or reason_label
         req.avoid_trial_count = int(self.core.avoid_attempt_count)
         req.last_hint_blocked = bool(self.core.get_hint_front_blocked())
         req.last_applied_offset_m = float(self.core.last_applied_offset_m)
@@ -401,8 +402,16 @@ class RouteFollowerNode(Node):
     # ユーティリティ
     # ========================================================
 
+    def _normalize_reason_label(self, label: str) -> str:
+        """滞留理由ラベルを manager と共有可能な正規化表現へ変換する。"""
+        normalized = (label or "").strip().lower()
+        if normalized.startswith("road_blocked"):
+            return "road_blocked"
+        return normalized
+
     def _convert_reason_code(self, label: str) -> int:
         """滞留理由ラベルを ReportStuck の列挙値へ変換する。"""
+        normalized = self._normalize_reason_label(label)
         mapping = {
             'front_blocked': ReportStuck.Request.REASON_FRONT_BLOCKED,
             'road_blocked': ReportStuck.Request.REASON_ROAD_BLOCKED,
@@ -410,7 +419,7 @@ class RouteFollowerNode(Node):
             'no_space': ReportStuck.Request.REASON_NO_SPACE,
             'avoidance_failed': ReportStuck.Request.REASON_AVOIDANCE_FAILED,
         }
-        return mapping.get(label, ReportStuck.Request.REASON_UNKNOWN)
+        return mapping.get(normalized, ReportStuck.Request.REASON_UNKNOWN)
 
     def _compute_active_target_distance(self, output) -> float:
         """現在位置とアクティブターゲット間の距離を算出する。"""

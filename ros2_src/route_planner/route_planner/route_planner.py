@@ -692,6 +692,10 @@ class RoutePlannerNode(Node):
                     visited_now.add(lab)
             hist |= visited_now
             remaining_cps = list(required - hist)
+            if not remaining_cps:
+                # すべての必須チェックポイントを通過済みの場合でも、solverは最低1個のノード指定を要求する。
+                # goalを代用チェックポイントとして指定し、残区間の経路探索を継続できるようにする。
+                remaining_cps = [goal]
 
             # 7) 仮想ノード/エッジは solver に __virtual__ を流さず、
             #    代わりに「current→prev→U」の waypoint 群を先頭に自前で連結する。

@@ -693,6 +693,10 @@ class RoutePlannerNode(Node):
             ))
 
             # 7-2) 仮想エッジ: current→prev→U の waypoint 群を生成して連結
+            prev_wp_label = str(wps[request.prev_index].label or "")
+            if not prev_wp_label:
+                raise RuntimeError("Prev waypoint label is empty.")
+
             virtual_wps = self._make_virtual_edge_waypoints(
                 seg_id=seg_id_running,
                 u_label=u_node,
@@ -703,7 +707,9 @@ class RoutePlannerNode(Node):
             )
             # 端点ラベル（Uラベル）を刻印（virtual_wps の末尾は U になる）
             if virtual_wps:
-                stamp_edge_end_labels(virtual_wps, src_label="current", dst_label=u_node)
+                stamp_edge_end_labels(
+                    virtual_wps, src_label="current", dst_label=prev_wp_label
+                )
 
             # 追加（重複境界は concat 内で解消される）
             start_idx_virtual = len(new_wps)
@@ -749,7 +755,7 @@ class RoutePlannerNode(Node):
 
             try:
                 rebuild_result: RouteBuildResult = self.route_builder.build_route(
-                    start_label=str(u_node),
+                    start_label=prev_wp_label,
                     goal_label=str(goal_label_total),
                     checkpoint_labels=list(remaining_global_cps),
                 )

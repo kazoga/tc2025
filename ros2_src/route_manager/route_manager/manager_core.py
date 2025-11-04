@@ -600,12 +600,14 @@ class RouteManagerCore:
             except ValueError:
                 reason_enum = None
 
+        normalized_reason = (reason_label or "").strip().lower()
+        is_road_blocked = reason_enum == StuckReason.ROAD_BLOCKED or normalized_reason == "road_blocked"
         skip_local_adjustments = False
-        if reason_enum == StuckReason.ROAD_BLOCKED:
+        if is_road_blocked:
             skip_local_adjustments = True
             if self.route_model is None:
                 self._log("[Core] _cb_replan: road_blocked reported but no active route -> fail")
-                failure_reason = failure_reason or "road_blocked"
+                failure_reason = "road_blocked"
                 self._emit_route_state(message=failure_reason)
                 self._set_status("holding", decision="failed", cause=failure_reason)
                 return SimpleServiceResult(False, failure_reason)
@@ -642,7 +644,10 @@ class RouteManagerCore:
             return SimpleServiceResult(True, "replan_first")
 
         if skip_local_adjustments:
-            failure_reason = failure_reason or "road_blocked"
+            if is_road_blocked:
+                failure_reason = "road_blocked"
+            else:
+                failure_reason = failure_reason or "road_blocked"
             self._log("[Core] _cb_replan: road_blocked -> skip SHIFT/SKIP and report failure")
             self._emit_route_state(message=failure_reason)
             self._set_status("holding", decision="failed", cause=failure_reason)

@@ -19,7 +19,7 @@ import sys
 import traceback
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import rclpy
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
@@ -46,7 +46,6 @@ from .route_builder import (
     WaypointOrigin,
     WaypointRecord,
     render_variable_route_overlay,
-    normalize_nodes,
     resolve_path,
 )
 
@@ -384,8 +383,6 @@ class RoutePlannerNode(Node):
         self.current_route: Optional[Route] = None
         self.current_route_origins: List[WaypointOrigin] = []   # current_route.waypoints と同長
         self.route_version: int = 0                             # Route.msgのversion(int32)に対応
-        self.current_block_name: Optional[str] = None           # 累積封鎖の対象ブロック名
-        self.closed_edges: Set[frozenset] = set()               # {frozenset({u,v}), }
         self.last_request_checkpoints: Set[str] = set()         # GetRoute時に追加されたチェックポイント
         self.visited_checkpoints_hist: Dict[str, Set[str]] = {} # ブロック名 -> 訪問済みチェックポイント（永続）
 
@@ -513,25 +510,6 @@ class RoutePlannerNode(Node):
         for seg_id, entry in self.route_builder.segments.items():
             waypoints = [self._record_to_waypoint(wp) for wp in entry.waypoints]
             self.segments[seg_id] = SegmentCacheEntry(seg_id, waypoints)
-
-    def _run_variable_solver(
-        self,
-        nodes: Dict[str, Tuple[float, float]],
-        edges: List[Dict[str, Any]],
-        start: str,
-        goal: str,
-        checkpoints: List[str],
-    ) -> Dict[str, Any]:
-        """RouteBuilder経由で可変ルート探索を実行する。"""
-
-        return self.route_builder.run_variable_solver(
-            nodes=nodes,
-            edges=edges,
-            start=start,
-            goal=goal,
-            checkpoints=checkpoints,
-        )
-
 
     # ===== GetRoute / UpdateRoute =====================================================
 
@@ -665,44 +643,37 @@ class RoutePlannerNode(Node):
                 # 可変ブロックなのに必要メタが欠けるのは異常
                 raise RuntimeError("Failed to identify running edge metadata for closure.")
 
-            # 4) 封鎖累積の管理（同ブロック内は追加／別ブロックならリセット）
-            if self.current_block_name != block_name:
-                self.closed_edges = set()
-                self.current_block_name = block_name
-            # 片方向通行可能は考えないため {U,V} を丸ごと封鎖
-            self.closed_edges.add(frozenset({u_node, v_node}))
+            removed = self.route_builder.remove_graph_edge(block_name, block_idx, u_node, v_node)
+            if not removed:
+                self.get_logger().warn(
+                    f"封鎖対象エッジが見つかりませんでした: {u_node}-{v_node}"
+                )
 
-            # 5) グラフ = 原義 - 累積封鎖
-            nodes, edges = self._build_graph_with_closures(block_name)
+            goal = block.get("goal")
+            if not goal:
+                raise RuntimeError("Block goal not set.")
 
-            # 6) 未通過チェックポイント集合（永続履歴を考慮）
+            # 5) 未通過チェックポイント集合（永続履歴を考慮）
             yaml_cps = set(block.get("checkpoints", []))
-            req_cps = set(self.last_request_checkpoints)  # GetRoute で追加された分
-            # このブロックの nodes に存在するものだけを有効チェックポイントとする
+            req_cps = set(self.last_request_checkpoints)
             node_ids = {nd["id"] for nd in (block.get("nodes") or [])}
             required = {c for c in (yaml_cps | req_cps) if c in node_ids}
 
-            # 永続履歴（これまでの封鎖を跨いでも消えない）
             hist = self.visited_checkpoints_hist.setdefault(block_name, set())
-            # 今回の current_route で prev までに通過済みを追加
             visited_now: Set[str] = set()
             for i in range(0, request.prev_index + 1):
                 lab = wps[i].label
                 if lab in required:
                     visited_now.add(lab)
             hist |= visited_now
-            remaining_cps = list(required - hist)
-            if not remaining_cps:
-                # すべての必須チェックポイントを通過済みの場合でも、solverは最低1個のノード指定を要求する。
-                # goalを代用チェックポイントとして指定し、残区間の経路探索を継続できるようにする。
-                remaining_cps = [goal]
 
-            # 7) 仮想ノード/エッジは solver に __virtual__ を流さず、
-            #    代わりに「current→prev→U」の waypoint 群を先頭に自前で連結する。
-            #    solver の start は U、goal は block.goal。
-            goal = block.get("goal")
-            if not goal:
-                raise RuntimeError("Block goal not set.")
+            remaining_cps_block = list(required - hist)
+            if not remaining_cps_block:
+                remaining_cps_block = [str(goal)]
+
+            remaining_global_cps: List[str] = [
+                cp for cp in self.last_request_checkpoints if cp not in hist
+            ]
 
             # 7-1) 先頭: current（今回の現在位置）
             new_wps: List[Waypoint] = []
@@ -719,6 +690,10 @@ class RoutePlannerNode(Node):
             ))
 
             # 7-2) 仮想エッジ: current→prev→U の waypoint 群を生成して連結
+            prev_wp_label = str(wps[request.prev_index].label or "")
+            if not prev_wp_label:
+                raise RuntimeError("Prev waypoint label is empty.")
+
             virtual_wps = self._make_virtual_edge_waypoints(
                 seg_id=seg_id_running,
                 u_label=u_node,
@@ -729,7 +704,9 @@ class RoutePlannerNode(Node):
             )
             # 端点ラベル（Uラベル）を刻印（virtual_wps の末尾は U になる）
             if virtual_wps:
-                stamp_edge_end_labels(virtual_wps, src_label="current", dst_label=u_node)
+                stamp_edge_end_labels(
+                    virtual_wps, src_label="current", dst_label=prev_wp_label
+                )
 
             # 追加（重複境界は concat 内で解消される）
             start_idx_virtual = len(new_wps)
@@ -747,163 +724,64 @@ class RoutePlannerNode(Node):
                     u_first=True,  # virtual は current→U の向き（U側へ向かう）としてUファースト扱いで良い
                 ))
 
-            # 仮想区間は「姿勢完全再計算区間」に追加
-            recalc_ranges: List[Tuple[int, int]] = []
-            if end_idx_virtual > start_idx_virtual:
-                recalc_ranges.append((start_idx_virtual, end_idx_virtual))
+            # 8) RouteBuilder を用いた再構築。封鎖と未通過チェックポイントを一時的に反映する。
+            builder_block: Optional[Dict[str, Any]] = None
+            for b in self.route_builder.blocks:
+                if b.get("name") == block_name and b.get("index") == block_idx:
+                    builder_block = b
+                    break
+            if builder_block is None:
+                raise RuntimeError(f"RouteBuilder block not found: {block_name}")
 
-            block_tail_indices: List[int] = []  # 末尾補正用
+            original_checkpoints = list(builder_block.get("checkpoints") or [])
+            builder_block["checkpoints"] = list(remaining_cps_block)
 
-            # 8) solver 実行（start=U, goal=block.goal, checkpoints=remaining_cps）
-            nodes_dict = normalize_nodes(nodes)
-            result = self._run_variable_solver(
-                nodes=nodes_dict,
-                edges=edges,
-                start=u_node,
-                goal=goal,
-                checkpoints=remaining_cps,
+            goal_label_total = wps[-1].label if wps else ""
+            if not goal_label_total:
+                goal_label_total = str(goal)
+
+            try:
+                rebuild_result: RouteBuildResult = self.route_builder.build_route(
+                    start_label=prev_wp_label,
+                    goal_label=str(goal_label_total),
+                    checkpoint_labels=list(remaining_global_cps),
+                )
+            finally:
+                builder_block["checkpoints"] = original_checkpoints
+
+            rebuilt_wps: List[Waypoint] = [
+                self._record_to_waypoint(record) for record in rebuild_result.waypoints
+            ]
+            rebuilt_origins: List[WaypointOrigin] = list(rebuild_result.origins)
+
+            new_wps, new_origins = self._concat_waypoints_with_origins(
+                new_wps,
+                new_origins,
+                rebuilt_wps,
+                rebuilt_origins,
             )
-            edge_seq: List[Dict[str, Any]] = result.get("edge_sequence", [])
-            if not edge_seq:
-                raise RuntimeError("No route found after applying closures.")
-            # 画像取得
-            img_solver = self._render_variable_route_image(nodes_dict, result)
 
-            # 9) 可変結果を連結（__virtual__ は solver から基本返さない前提。返ってきても無視）
-            for e in edge_seq:
-                if e.get("segment_id") == "__virtual__":
-                    # 念のためスキップ（通常は発生しない想定）
-                    continue
-                seg_id2 = e["segment_id"]
-                direction2 = e["direction"]  # "forward" | "reverse"
-                src2 = e["source"]
-                dst2 = e["target"]
-                entry2 = self.segments.get(seg_id2)
-                if entry2 is None:
-                    raise RuntimeError(f"Segment not loaded: {seg_id2}")
+            recalc_ranges = self._collect_recalc_ranges(new_origins)
+            block_tail_indices = self._collect_block_tail_indices(new_origins)
 
-                u_first2 = True if direction2 == "forward" else False
-                seg_wps2 = entry2.waypoints if u_first2 else list(reversed(entry2.waypoints))
-                stamp_edge_end_labels(seg_wps2, src_label=src2, dst_label=dst2)
-
-                start_idx2 = len(new_wps)
-                new_wps = concat_with_dedup(new_wps, seg_wps2)
-                end_idx2 = len(new_wps) - 1
-
-                # origin 付与
-                for i_local in range(end_idx2 - start_idx2 + 1):
-                    new_origins.append(WaypointOrigin(
-                        block_name=block_name,
-                        block_index=block_idx,
-                        segment_id=seg_id2,
-                        edge_u=src2,
-                        edge_v=dst2,
-                        index_in_edge=i_local,
-                        u_first=u_first2,
-                    ))
-
-                # 逆走区間は姿勢完全再計算に追加
-                if not u_first2 and end_idx2 > start_idx2:
-                    recalc_ranges.append((start_idx2, end_idx2))
-
-            # ブロック末尾を記録（可変ブロックの末尾）
-            block_tail_indices.append(len(new_wps) - 1)
-
-            # 10) 後続の未走行ブロックを定義どおり連結（固定はCSV、可変は再探索）
-            for b in self.blocks:
-                if b["index"] <= block_idx:
-                    continue
-                bname2 = b["name"]
-                bidx2 = b["index"]
-                if b["type"] == "fixed":
-                    seg_id3 = b["segment_id"]
-                    entry3 = self.segments.get(seg_id3)
-                    if entry3 is None:
-                        raise RuntimeError(f"[fixed:{bname2}] segment not loaded: {seg_id3}")
-                    before = len(new_wps)
-                    new_wps = concat_with_dedup(new_wps, entry3.waypoints)
-                    for _ in range(len(new_wps) - before):
-                        new_origins.append(WaypointOrigin(
-                            block_name=bname2,
-                            block_index=bidx2,
-                            segment_id=seg_id3,
-                            edge_u=None,
-                            edge_v=None,
-                            index_in_edge=None,
-                            u_first=None,
-                        ))
-                    block_tail_indices.append(len(new_wps) - 1)
-                elif b["type"] == "variable":
-                    nodes2 = b.get("nodes") or []
-                    edges2 = b.get("edges") or []
-                    start2 = b.get("start")
-                    goal2 = b.get("goal")
-                    if not nodes2 or not edges2 or not start2 or not goal2:
-                        raise RuntimeError(f"[variable:{bname2}] definition incomplete.")
-
-                    merged_cps2 = list(dict.fromkeys((b.get("checkpoints", []) or []) + list(self.last_request_checkpoints)))
-                    node_ids2 = {nd["id"] for nd in nodes2}
-                    cps2 = [c for c in merged_cps2 if c in node_ids2]
-
-                    nodes_dict2 = normalize_nodes(nodes2)
-                    res2 = self._run_variable_solver(
-                        nodes=nodes_dict2,
-                        edges=edges2,
-                        start=start2,
-                        goal=goal2,
-                        checkpoints=cps2,
-                    )
-                    img_extra = self._render_variable_route_image(nodes_dict2, res2)
-                    if img_extra is not None and img_solver is None:
-                        img_solver = img_extra
-                    es2: List[Dict[str, Any]] = res2.get("edge_sequence", [])
-                    if not es2:
-                        raise RuntimeError(f"[variable:{bname2}] solver returned empty edge_sequence.")
-                    for e2 in es2:
-                        seg_id4 = e2["segment_id"]
-                        direction4 = e2["direction"]
-                        src4 = e2["source"]
-                        dst4 = e2["target"]
-                        entry4 = self.segments.get(seg_id4)
-                        if entry4 is None:
-                            raise RuntimeError(f"[variable:{bname2}] segment not loaded: {seg_id4}")
-                        u_first4 = True if direction4 == "forward" else False
-                        seg_wps4 = entry4.waypoints if u_first4 else list(reversed(entry4.waypoints))
-                        stamp_edge_end_labels(seg_wps4, src_label=src4, dst_label=dst4)
-
-                        start_idx4 = len(new_wps)
-                        new_wps = concat_with_dedup(new_wps, seg_wps4)
-                        end_idx4 = len(new_wps) - 1
-
-                        for i_local in range(end_idx4 - start_idx4 + 1):
-                            new_origins.append(WaypointOrigin(
-                                block_name=bname2,
-                                block_index=bidx2,
-                                segment_id=seg_id4,
-                                edge_u=src4,
-                                edge_v=dst4,
-                                index_in_edge=i_local,
-                                u_first=u_first4,
-                            ))
-
-                        if not u_first4 and end_idx4 > start_idx4:
-                            recalc_ranges.append((start_idx4, end_idx4))
-
-                    block_tail_indices.append(len(new_wps) - 1)
-
-            # 11) finalize（姿勢補正・採番・距離・画像・version++）
             adjust_orientations(new_wps, recalc_ranges, block_tail_indices)
             apply_segment_fixed_flags(new_wps, new_origins, self.blocks)
             indexing(new_wps)
             total_distance = calc_total_distance(new_wps)
-            if img_solver is None:
+
+            solver_info = rebuild_result.solver_info
+            if solver_info is not None:
+                route_image = self._render_variable_route_image(
+                    solver_info.nodes, solver_info.solver_result
+                )
+            else:
+                route_image = None
+            if route_image is None:
                 if self.map_image_path and self.map_worldfile_path:
                     self.get_logger().warn(
                         "可変ブロックの地図描画に失敗したため、ダミー画像を返却します。"
                     )
                 route_image = make_text_png_image()
-            else:
-                route_image = img_solver
             self.route_version += 1
             new_route = pack_route_msg(new_wps, self.route_version, total_distance, route_image)
 
@@ -926,32 +804,9 @@ class RoutePlannerNode(Node):
 
     # ===== 内部補助 =====================================================
 
-    def _build_graph_with_closures(self, block_name: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """可変ブロックの原義から累積封鎖を反映した nodes/edges を構築する。"""
-        # 対象ブロックを取得
-        block = None
-        for b in self.blocks:
-            if b["name"] == block_name:
-                block = b
-                break
-        if block is None or block["type"] != "variable":
-            raise RuntimeError("Block not found or not variable.")
-
-        nodes = list(block.get("nodes") or [])
-        raw_edges = list(block.get("edges") or [])
-        # 累積封鎖の適用：{u,v} が self.closed_edges にあれば、その行は除外
-        filt_edges: List[Dict[str, Any]] = []
-        for e in raw_edges:
-            u = str(e["source"])
-            v = str(e["target"])
-            if frozenset({u, v}) in self.closed_edges:
-                continue
-            filt_edges.append(dict(e))  # シャローコピー
-
-        return nodes, filt_edges
-
     def _make_waypoint_from_pose(self, pose_stamped: PoseStamped, label: str) -> Waypoint:
         """PoseStamped から Waypoint を作る簡易ヘルパ。index は後段で採番し直す。"""
+
         wp = Waypoint()
         wp.label = label
         wp.index = 0
@@ -959,6 +814,104 @@ class RoutePlannerNode(Node):
         if hasattr(wp, "segment_is_fixed"):
             wp.segment_is_fixed = False
         return wp
+
+    def _concat_waypoints_with_origins(
+        self,
+        base_wps: List[Waypoint],
+        base_origins: List[WaypointOrigin],
+        ext_wps: List[Waypoint],
+        ext_origins: List[WaypointOrigin],
+    ) -> Tuple[List[Waypoint], List[WaypointOrigin]]:
+        """Waypoint列と由来情報を重複除去しながら連結する。"""
+
+        if not base_wps:
+            return list(ext_wps), list(ext_origins)
+        if not ext_wps:
+            return list(base_wps), list(base_origins)
+
+        combined_wps = list(base_wps)
+        combined_origins = list(base_origins)
+
+        bx = combined_wps[-1].pose.position.x
+        by = combined_wps[-1].pose.position.y
+        ex = ext_wps[0].pose.position.x
+        ey = ext_wps[0].pose.position.y
+
+        if almost_same_xy(bx, by, ex, ey):
+            if ext_wps[0].label and not combined_wps[-1].label:
+                combined_wps[-1].label = ext_wps[0].label
+            combined_wps.extend(ext_wps[1:])
+            combined_origins.extend(ext_origins[1:])
+        else:
+            combined_wps.extend(ext_wps)
+            combined_origins.extend(ext_origins)
+
+        return combined_wps, combined_origins
+
+    @staticmethod
+    def _needs_orientation_recalc(
+        segment_id: Optional[str], u_first: Optional[bool]
+    ) -> bool:
+        """姿勢再計算が必要な区間かを判定する。"""
+
+        if segment_id == "__virtual__":
+            return True
+        if segment_id is None:
+            return False
+        return u_first is False
+
+    def _collect_recalc_ranges(
+        self, origins: List[WaypointOrigin]
+    ) -> List[Tuple[int, int]]:
+        """由来情報から姿勢再計算が必要なインデックス範囲を抽出する。"""
+
+        ranges: List[Tuple[int, int]] = []
+        if not origins:
+            return ranges
+
+        seg_start = 0
+        current_seg = origins[0].segment_id
+        current_u_first = origins[0].u_first
+
+        for idx in range(1, len(origins)):
+            origin = origins[idx]
+            if origin.segment_id == current_seg:
+                continue
+            if self._needs_orientation_recalc(current_seg, current_u_first):
+                end = idx - 1
+                if end > seg_start:
+                    ranges.append((seg_start, end))
+            seg_start = idx
+            current_seg = origin.segment_id
+            current_u_first = origin.u_first
+
+        if self._needs_orientation_recalc(current_seg, current_u_first):
+            end = len(origins) - 1
+            if end > seg_start:
+                ranges.append((seg_start, end))
+
+        return ranges
+
+    @staticmethod
+    def _collect_block_tail_indices(origins: List[WaypointOrigin]) -> List[int]:
+        """ブロック境界となる末尾インデックスを抽出する。"""
+
+        if not origins:
+            return []
+
+        tails: Set[int] = set()
+        for idx in range(len(origins) - 1):
+            current = origins[idx]
+            nxt = origins[idx + 1]
+            if (
+                current.block_name != nxt.block_name
+                or current.block_index != nxt.block_index
+            ):
+                tails.add(idx)
+        tails.add(len(origins) - 1)
+        return sorted(tails)
+
+
 
     def _make_virtual_edge_waypoints(
         self,

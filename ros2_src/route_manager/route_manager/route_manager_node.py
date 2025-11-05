@@ -621,19 +621,30 @@ class RouteManagerNode(Node):
         return type("Resp", (), {"success": False, "message": "invalid response"})
 
     async def _planner_update_async(
-        self, major_version: int, prev_index: int, prev_label: str, next_index: Optional[int], next_label: str
+        self,
+        major_version: int,
+        prev_index: int,
+        prev_label: str,
+        current_index: int,
+        current_label: str,
     ):
         if not self.cli_update.wait_for_service(timeout_sec=self.timeout_sec):
             self.get_logger().info(f"[Node] planner UpdateRoute unavailable ({self.srv_update_name})")
             return type("Resp", (), {"success": False, "message": f"{self.srv_update_name} unavailable"})
-        self.get_logger().info(f"[Node] call planner UpdateRoute: ver(major)={major_version}, prev=({prev_index},{prev_label}), next=({next_index},{next_label})")
+        self.get_logger().info(
+            "[Node] call planner UpdateRoute: ver(major)=%s, prev=(%s,%s), current=(%s,%s)",
+            major_version,
+            prev_index,
+            prev_label,
+            current_index,
+            current_label,
+        )
         req = UpdateRoute.Request()
         req.route_version = int(major_version)
         req.prev_index = int(prev_index)
         req.prev_wp_label = str(prev_label)
-        if next_index is not None:
-            req.next_index = int(next_index)
-            req.next_wp_label = str(next_label)
+        req.current_index = int(current_index)
+        req.current_wp_label = str(current_label)
         future = self.cli_update.call_async(req)
         while not future.done():
             await asyncio.sleep(0.01)

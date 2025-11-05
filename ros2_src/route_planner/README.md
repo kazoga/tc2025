@@ -92,10 +92,10 @@ CSV の Waypoint は `segment_id` 単位でキャッシュされ、進行方向�
 4. 現行ルート・チェックポイント履歴を保存し、`last_request_checkpoints` を更新する。
 
 ### `/update_route` の処理
-1. `prev_index` / `next_index` が隣接し同一可変ブロックかを検証する。
-2. 封鎖エッジ `{U,V}` を `closed_edges` に追加し、ブロックが変わった場合はリセットする。
+1. `prev_index` / `current_index` が隣接し同一可変ブロックかを検証する。
+2. 封鎖エッジ `{U,V}` をグラフビルダから除去し、ブロックが変わった場合は設定をリセットする。
 3. 現在位置 `current_pose` から仮想エッジ (current→prev→U) の Waypoint 群を生成し、新ルート冒頭に連結する。
-4. `closed_edges` を除外し、未通過チェックポイントを考慮した再探索を実行する。
+4. 封鎖済みエッジを除外し、未通過チェックポイントを考慮した再探索を実行する。
 5. 再探索結果と後続ブロックを連結して姿勢補正・距離計算を行い、`Route.version` を加算する。
 6. 生成した `Route` と由来情報を保存し、探索失敗時や固定ブロック閉塞時は `success=False` を返す。
 
@@ -106,7 +106,7 @@ CSV の Waypoint は `segment_id` 単位でキャッシュされ、進行方向�
    ```bash
    ros2 service call /get_route route_msgs/srv/GetRoute "{start_label: '', goal_label: '', checkpoint_labels: []}"
    ```
-4. 滞留再計画を確認するには、`route_manager` などから `/update_route` を呼び出し、`prev_index` と `next_index` に隣接インデックスを指定する。
+4. 滞留再計画を確認するには、`route_manager` などから `/update_route` を呼び出し、`prev_index` と `current_index` に隣接インデックスを指定する。
 
 ## デバッグのヒント
 - エラー発生時はスタックトレースを出力するため、`GetRoute` / `UpdateRoute` 失敗時は YAML や CSV の記述ミスを確認する。

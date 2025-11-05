@@ -333,8 +333,15 @@ class PlannerGetCb(Protocol):
 
 
 class PlannerUpdateCb(Protocol):
-    async def __call__(self, major_version: int, prev_index: int, prev_label: str,
-                       next_index: Optional[int], next_label: str) -> ServiceResult: ...
+    async def __call__(
+        self,
+        major_version: int,
+        prev_index: int,
+        prev_label: str,
+        current_index: int,
+        current_label: str,
+    ) -> ServiceResult:
+        ...
 
 
 PublishActiveRoute = Callable[[RouteModel], None]
@@ -697,20 +704,28 @@ class RouteManagerCore:
             self._log("[Core] _try_update_route: guard failed (no planner_update or no route or invalid version)")
             return False
 
-        prev_idx = int(self.route_model.current_index)
+        current_idx = int(self.route_model.current_index)
+        current_lbl = str(self.route_model.label_at(current_idx) or "")
+        prev_idx_opt = self.route_model.prev_index()
+        if prev_idx_opt is None:
+            self._log(
+                "[Core] _try_update_route: prev_index not available (current is first waypoint)"
+            )
+            return False
+        prev_idx = int(prev_idx_opt)
         prev_lbl = str(self.route_model.label_at(prev_idx) or "")
-        nxt_idx = self.route_model.next_index()
-        nxt_lbl = str(self.route_model.label_at(nxt_idx) or "") if nxt_idx is not None else ""
-        self._log(f"[Core] _try_update_route: call planner_update reason={reason} "
-                  f"major={self.route_model.version.major} prev=({prev_idx},{prev_lbl}) "
-                  f"next=({nxt_idx},{nxt_lbl})")
+        self._log(
+            f"[Core] _try_update_route: call planner_update reason={reason} "
+            f"major={self.route_model.version.major} prev=({prev_idx},{prev_lbl}) "
+            f"current=({current_idx},{current_lbl})"
+        )
 
         resp = await self._planner_update(
             int(self.route_model.version.major),
             prev_idx,
             prev_lbl,
-            int(nxt_idx) if nxt_idx is not None else None,
-            nxt_lbl,
+            current_idx,
+            current_lbl,
         )
 
         ok = bool(getattr(resp, "success", False))

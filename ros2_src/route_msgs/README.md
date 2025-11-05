@@ -40,7 +40,7 @@ ros2 interface show route_msgs/srv/ReportStuck
 | 名称 | 概要 | リクエスト主要項目 | 主な利用ノード |
 |------|------|------------------|---------------|
 | `GetRoute` | 初期ルートを取得。応答で `Route` を返す。 | `mission_id` 相当フィールドは無し。 | `route_manager` → `route_planner` |
-| `UpdateRoute` | 滞留時の部分ルート差し替え。 | `prev_index`・`next_index`・`route_version`・`reason`。 | `route_manager` ↔ `route_planner` |
+| `UpdateRoute` | 滞留時の部分ルート差し替え。 | `prev_index`・`current_index`・`route_version`・`reason`。 | `route_manager` ↔ `route_planner` |
 | `ReportStuck` | 滞留報告と再計画結果返却。 | `route_version`・`current_index`・`reason_code`・`reason_detail`・`avoid_trial_count`。 | `route_follower` → `route_manager` |
 
 ## パラメータ

@@ -598,22 +598,24 @@ class RoutePlannerNode(Node):
             origins = self.current_route_origins
             n = len(wps)
 
-            # 1) prev/next の正当性検証（現ルート上で隣接）
+            # 1) prev/current の正当性検証（現ルート上で隣接）
             if not (0 <= request.prev_index < n - 1):
                 raise RuntimeError("Invalid prev_index.")
-            if request.next_index != request.prev_index + 1:
-                raise RuntimeError("prev/next must be adjacent (next_index = prev_index + 1).")
+            if request.current_index != request.prev_index + 1:
+                raise RuntimeError("prev/current must be adjacent (current_index = prev_index + 1).")
             if wps[request.prev_index].label != request.prev_wp_label:
                 raise RuntimeError("prev_wp_label mismatch current route.")
-            if wps[request.next_index].label != request.next_wp_label:
-                raise RuntimeError("next_wp_label mismatch current route.")
+            if not (0 <= request.current_index < n):
+                raise RuntimeError("Invalid current_index.")
+            if wps[request.current_index].label != request.current_wp_label:
+                raise RuntimeError("current_wp_label mismatch current route.")
 
             prev_origin = origins[request.prev_index]
-            next_origin = origins[request.next_index]
+            current_origin = origins[request.current_index]
 
             # 2) 対象ブロックを特定（同一ブロックである必要あり）
-            if prev_origin.block_name != next_origin.block_name:
-                raise RuntimeError("prev/next belong to different blocks.")
+            if prev_origin.block_name != current_origin.block_name:
+                raise RuntimeError("prev/current belong to different blocks.")
             block_name = prev_origin.block_name
             block_idx = prev_origin.block_index
 

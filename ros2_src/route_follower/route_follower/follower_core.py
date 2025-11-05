@@ -277,6 +277,12 @@ class FollowerCore:
             if clear_road_blocked:
                 self._road_blocked_mb = None
 
+    def _clear_road_blocked_mailbox(self) -> None:
+        """road_blocked の保持値を外部イベントなしにクリアする。"""
+
+        with self._ctrl_lock:
+            self._road_blocked_mb = None
+
     # ========================= 周期処理（唯一の状態更新点） =========================
     def tick(self) -> FollowerOutput:
         """1周期の更新処理。
@@ -323,6 +329,8 @@ class FollowerCore:
         self.route = route
         self.route_active = True
         self.route_version = route.version
+        # リルート判定に使用した road_blocked のラッチ値を、新ルート適用のタイミングで破棄する。
+        self._clear_road_blocked_mailbox()
         if route.waypoints:
             self.index = max(0, min(route.start_index, len(route.waypoints) - 1))
         else:
@@ -504,7 +512,7 @@ class FollowerCore:
                     # 滞留検知をトリガとして road_blocked を最優先で確認する。
                     if bool(road_blocked):
                         self.last_stagnation_reason = "road_blocked"
-                        self._consume_control_inputs(clear_road_blocked=True)
+                        self._consume_control_inputs()
                         self._enter_waiting_reroute()
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
@@ -556,6 +564,8 @@ class FollowerCore:
         self.reroute_wait_deadline = None
         if note:
             self.last_stagnation_reason = note
+        # リルート失敗時も road_blocked のラッチ値はここで明示的にリセットする。
+        self._clear_road_blocked_mailbox()
         self.status = FollowerStatus.ERROR
         self.log(f"[FollowerCore] WAITING_REROUTE failed -> ERROR note='{note}'")
 

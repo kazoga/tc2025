@@ -370,7 +370,7 @@ class RouteManagerCore:
         offset_step_max_m: float = 1.5,
     ) -> None:
         # 依存注入
-        self._log = logger
+        self._logger_func = logger
         self._publish_active_route = publish_active_route
         self._publish_status = publish_status
         self._publish_route_state = publish_route_state
@@ -426,6 +426,14 @@ class RouteManagerCore:
     # ------------------------------------------------------------------
     # Node層からの依存注入
     # ------------------------------------------------------------------
+    def _log(self, message: object, *parts: object) -> None:
+        """注入されたロガーを用いて複数引数のログ出力を一つにまとめる。"""
+
+        text = str(message)
+        if parts:
+            text += "".join(str(part) for part in parts)
+        self._logger_func(text)
+
     def set_planner_callbacks(self, get_cb: PlannerGetCb, update_cb: PlannerUpdateCb) -> None:
         """プランナサービス呼び出し用のコールバックを設定する。"""
         self._planner_get = get_cb

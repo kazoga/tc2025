@@ -383,8 +383,6 @@ class RoutePlannerNode(Node):
         self.current_route: Optional[Route] = None
         self.current_route_origins: List[WaypointOrigin] = []   # current_route.waypoints と同長
         self.route_version: int = 0                             # Route.msgのversion(int32)に対応
-        self.current_block_name: Optional[str] = None           # 累積封鎖の対象ブロック名
-        self.closed_edges: Set[frozenset] = set()               # {frozenset({u,v}), }
         self.last_request_checkpoints: Set[str] = set()         # GetRoute時に追加されたチェックポイント
         self.visited_checkpoints_hist: Dict[str, Set[str]] = {} # ブロック名 -> 訪問済みチェックポイント（永続）
 
@@ -645,12 +643,11 @@ class RoutePlannerNode(Node):
                 # 可変ブロックなのに必要メタが欠けるのは異常
                 raise RuntimeError("Failed to identify running edge metadata for closure.")
 
-            # 4) 封鎖累積の管理（同ブロック内は追加／別ブロックならリセット）
-            if self.current_block_name != block_name:
-                self.closed_edges = set()
-                self.current_block_name = block_name
-            # 片方向通行可能は考えないため {U,V} を丸ごと封鎖
-            self.closed_edges.add(frozenset({u_node, v_node}))
+            removed = self.route_builder.remove_graph_edge(block_name, block_idx, u_node, v_node)
+            if not removed:
+                self.get_logger().warn(
+                    f"封鎖対象エッジが見つかりませんでした: {u_node}-{v_node}"
+                )
 
             goal = block.get("goal")
             if not goal:
@@ -736,17 +733,7 @@ class RoutePlannerNode(Node):
             if builder_block is None:
                 raise RuntimeError(f"RouteBuilder block not found: {block_name}")
 
-            original_edges = list(builder_block.get("edges") or [])
-            filtered_edges: List[Dict[str, Any]] = []
-            for edge in original_edges:
-                src_e = str(edge.get("source"))
-                dst_e = str(edge.get("target"))
-                if frozenset({src_e, dst_e}) in self.closed_edges:
-                    continue
-                filtered_edges.append(dict(edge))
-
             original_checkpoints = list(builder_block.get("checkpoints") or [])
-            builder_block["edges"] = filtered_edges
             builder_block["checkpoints"] = list(remaining_cps_block)
 
             goal_label_total = wps[-1].label if wps else ""
@@ -760,7 +747,6 @@ class RoutePlannerNode(Node):
                     checkpoint_labels=list(remaining_global_cps),
                 )
             finally:
-                builder_block["edges"] = original_edges
                 builder_block["checkpoints"] = original_checkpoints
 
             rebuilt_wps: List[Waypoint] = [

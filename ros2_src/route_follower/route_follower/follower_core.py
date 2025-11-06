@@ -269,13 +269,11 @@ class FollowerCore:
         with self._ctrl_lock:
             return self._manual_start_mb, self._sig_recog_mb, self._road_blocked_mb
 
-    def _consume_control_inputs(self, clear_road_blocked: bool = False) -> None:
-        """manual_start・sig_recog・road_blocked のラッチ値を消費済みとしてクリアする。"""
+    def _consume_control_inputs(self) -> None:
+        """manual_start・sig_recog のラッチ値を消費済みとしてクリアする。"""
         with self._ctrl_lock:
             self._manual_start_mb = None
             self._sig_recog_mb = None
-            if clear_road_blocked:
-                self._road_blocked_mb = None
 
     def _clear_road_blocked_mailbox(self) -> None:
         """road_blocked の保持値を外部イベントなしにクリアする。"""

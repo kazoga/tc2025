@@ -1205,6 +1205,7 @@ class RouteBuilder:
         if not route_wps:
             raise RuntimeError("blocks定義からwaypointを生成できませんでした。")
 
+        self._log("info", f"start_label: {start_label}, goal_label: {goal_label}, route: {route_wps}")
         start_index_hint: Optional[int] = None
         if start_label and start_label_origin is not None:
             hint_name, hint_index = start_label_origin

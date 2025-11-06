@@ -3,7 +3,7 @@ route_manager:
     start_label: "C0"
     goal_label: "C4"
     checkpoint_labels:
-      - "C2"
+      - "C6"
     planner_timeout_sec: 5.0
     planner_retry_count: 2
     planner_connect_timeout_sec: 10.0

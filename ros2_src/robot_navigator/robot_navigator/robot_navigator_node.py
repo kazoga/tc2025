@@ -23,7 +23,7 @@ from typing import Dict, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.duration import Duration
@@ -34,7 +34,8 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose, Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from route_msgs.msg import ObstacleAvoidanceHint
+from std_msgs.msg import Bool
+from route_msgs.msg import ObstacleAvoidanceHint, Route
 from visualization_msgs.msg import Marker
 
 
@@ -71,8 +72,10 @@ class RobotNavigator(Node):
         self.declare_parameter('max_acc_v', 1.0)
         self.declare_parameter('max_acc_w', 1.5)
         self.declare_parameter('pos_tol', 0.5)
+        self.declare_parameter('pos_tol_exit_margin', 0.2)
         self.declare_parameter('ang_tol', 0.25)
         self.declare_parameter('control_rate_hz', 20.0)
+        self.declare_parameter('road_block_hold_sec', 5.0)
 
         # 旧実装の固定相当をパラメータ化
         self.declare_parameter('robot_width', 0.6)
@@ -96,9 +99,19 @@ class RobotNavigator(Node):
         self.max_a_v: float = float(self.get_parameter('max_acc_v').value)
         self.max_a_w: float = float(self.get_parameter('max_acc_w').value)
         self.pos_tol: float = float(self.get_parameter('pos_tol').value)
+        self.pos_tol_exit_margin: float = float(
+            self.get_parameter('pos_tol_exit_margin').value
+        )
+        if self.pos_tol_exit_margin < 0.0:
+            self.get_logger().warn('pos_tol_exit_margin が負値のため 0 に切り上げます。')
+            self.pos_tol_exit_margin = 0.0
         self.ang_tol: float = float(self.get_parameter('ang_tol').value)
         self.control_rate_hz: float = float(self.get_parameter('control_rate_hz').value)
         self.dt: float = 1.0 / self.control_rate_hz
+        self.road_block_hold_sec: float = float(self.get_parameter('road_block_hold_sec').value)
+        if self.road_block_hold_sec < 0.0:
+            self.get_logger().warn('road_block_hold_sec が負値のため 0 に切り上げます。')
+            self.road_block_hold_sec = 0.0
 
         self.robot_width: float = float(self.get_parameter('robot_width').value)
         self.safety_distance: float = float(self.get_parameter('safety_distance').value)
@@ -120,6 +133,8 @@ class RobotNavigator(Node):
         odom_topic = 'odom'
         amcl_pose_topic = 'amcl_pose'
         goal_topic = 'active_target'
+        road_block_topic = 'road_blocked'
+        active_route_topic = 'active_route'
         cmd_vel_topic = 'cmd_vel'
         marker_topic = 'direction_marker'
         hint_topic = 'obstacle_avoidance_hint'
@@ -130,12 +145,24 @@ class RobotNavigator(Node):
         self.kd_w: float = 0.02
         self.integral_w: float = 0.0
         self.prev_yaw_error: float = 0.0
+        self.integral_w_limit: float = self.max_w / max(self.ki_w, 1.0e-6)
 
         # --- 内部状態 ---
         self.current_pose: Optional[Pose] = None
         self.current_velocity: Optional[Twist] = None
         self.current_goal: Optional[Pose] = None
         self.obstacle_distance: Optional[float] = None
+        self._goal_sequence: int = 0
+        self._road_block_active: bool = False
+        self._road_block_stop_until: Optional[float] = None
+        self._road_block_goal_sequence: Optional[int] = None
+        self._road_block_release_candidate_sequence: Optional[int] = None
+        self.current_route_version: Optional[int] = None
+        self._road_block_route_version: Optional[int] = None
+        self._road_block_release_candidate_route_version: Optional[int] = None
+        self._road_block_goal_pose: Optional[Pose] = None
+        # 位置許容範囲へ入ったことをヒステリシス付きで保持するフラグ。
+        self._within_goal_pos_tolerance: bool = False
 
         # --- Publisher/Subscriber の設定 ---
         # /cmd_vel は Reliable/Volatile で十分
@@ -158,6 +185,14 @@ class RobotNavigator(Node):
         self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, amcl_pose_topic, self.on_amcl_pose, 10)
         self.create_subscription(PoseStamped, goal_topic, self.on_goal, 10)
+        self.create_subscription(Bool, road_block_topic, self.on_road_blocked, 10)
+        route_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.create_subscription(Route, active_route_topic, self.on_active_route, route_qos)
         if self.obstacle_distance_mode == 'scan':
             self.create_subscription(LaserScan, scan_topic, self.on_scan, qos_profile_sensor_data)
         else:
@@ -175,6 +210,8 @@ class RobotNavigator(Node):
         self.odom_topic_name = self._resolve_topic_name(odom_topic)
         self.amcl_pose_topic_name = self._resolve_topic_name(amcl_pose_topic)
         self.goal_topic_name = self._resolve_topic_name(goal_topic)
+        self.road_block_topic_name = self._resolve_topic_name(road_block_topic)
+        self.active_route_topic_name = self._resolve_topic_name(active_route_topic)
         self.cmd_vel_topic_name = self._resolve_topic_name(cmd_vel_topic)
         self.marker_topic_name = self._resolve_topic_name(marker_topic)
         self.hint_topic_name = self._resolve_topic_name(hint_topic)
@@ -228,6 +265,57 @@ class RobotNavigator(Node):
     def on_goal(self, msg: PoseStamped) -> None:
         """目標トピック（PoseStamped）から目標姿勢（Pose）を保持する。"""
         self.current_goal = msg.pose
+        self._goal_sequence += 1
+        # 目標が更新された場合は PID 積分項をリセットし、残留バイアスを避ける。
+        self.integral_w = 0.0
+        self.prev_yaw_error = 0.0
+        self._within_goal_pos_tolerance = False
+        if self._road_block_active:
+            if self._road_block_stop_until is None:
+                if self._has_goal_pose_change(msg.pose):
+                    self._road_block_release_candidate_sequence = self._goal_sequence
+            elif time.monotonic() >= self._road_block_stop_until:
+                if self._has_goal_pose_change(msg.pose):
+                    self._road_block_release_candidate_sequence = self._goal_sequence
+
+    def on_active_route(self, msg: Route) -> None:
+        """active_route メッセージを受信し、バージョン更新を監視する。"""
+        version_value = int(getattr(msg, 'version', 0) or 0)
+        self.current_route_version = version_value if version_value > 0 else None
+        if not self._road_block_active or self.current_route_version is None:
+            return
+
+        if self._road_block_route_version is None:
+            self._road_block_route_version = self.current_route_version
+            return
+
+        if self.current_route_version != self._road_block_route_version:
+            self._road_block_release_candidate_route_version = self.current_route_version
+
+    def on_road_blocked(self, msg: Bool) -> None:
+        """道路封鎖イベントを受信し、停止制御フラグを更新する。"""
+        now = time.monotonic()
+        blocked = bool(getattr(msg, 'data', False))
+        if blocked:
+            self._road_block_active = True
+            self._road_block_stop_until = now + self.road_block_hold_sec
+            self._road_block_goal_sequence = self._goal_sequence
+            self._road_block_release_candidate_sequence = None
+            self._road_block_route_version = self.current_route_version
+            self._road_block_release_candidate_route_version = None
+            self._road_block_goal_pose = self._clone_pose(self.current_goal)
+            self.get_logger().warn(
+                f'road_blocked=True を受信。{self.road_block_hold_sec:.1f}秒間停止します。',
+            )
+        else:
+            if self._road_block_active:
+                self.get_logger().info(
+                    'road_blocked=False を受信しました。停止解除条件の達成を待ちます。',
+                )
+            else:
+                self.get_logger().info(
+                    'road_blocked=False を受信しましたが停止状態ではありません。',
+                )
 
     def on_scan(self, msg: LaserScan) -> None:
         """/scan を処理して、前方矩形ウィンドウ内の最小前方距離を更新する。"""
@@ -285,6 +373,10 @@ class RobotNavigator(Node):
     # -------------------- 制御ループ --------------------
     def on_timer(self) -> None:
         """周期制御ロジック。必要な入力が揃ったら cmd_vel と Marker を発行し、CSV ログを追記する。"""
+        if self._should_stop_due_to_road_block():
+            self._publish_stop_for_road_block()
+            return
+
         if not (self.current_pose and self.current_velocity and self.current_goal):
             # 必要入力が揃わない場合は停止指令
             self._publish_stop_with_throttle()
@@ -323,6 +415,100 @@ class RobotNavigator(Node):
             throttle_duration_sec=5.0,
         )
         self.cmd_pub.publish(Twist())
+
+    def _publish_stop_for_road_block(self) -> None:
+        """道路封鎖対応の停止指令と状況ログを出力する。"""
+        now = time.monotonic()
+        wait_reason = 'タイマ満了待ち'
+        if self._road_block_stop_until is not None and now >= self._road_block_stop_until:
+            pending: list[str] = []
+            if not self._has_goal_release_candidate():
+                pending.append('active_target更新待ち')
+            if not self._has_route_release_candidate():
+                pending.append('active_route更新待ち')
+            wait_reason = '・'.join(pending) if pending else '解除判定処理中'
+        self.get_logger().warn(
+            f'road_blocked停止中（{wait_reason}）',
+            throttle_duration_sec=1.0,
+        )
+        self.cmd_pub.publish(Twist())
+
+    def _should_stop_due_to_road_block(self) -> bool:
+        """道路封鎖イベントによる停止継続が必要か判定する。"""
+        if not self._road_block_active:
+            return False
+
+        now = time.monotonic()
+        if self._road_block_stop_until is not None and now < self._road_block_stop_until:
+            return True
+
+        # active_route の更新有無にかかわらず、active_target の内容更新を必須条件とする。
+        if not self._has_goal_release_candidate():
+            return True
+
+        self._reset_road_block_state()
+        self.get_logger().info('road_blocked解除条件を満たしたため制御を再開します。')
+        return False
+
+    def _has_goal_release_candidate(self) -> bool:
+        """active_target の更新により解除条件が満たされたか判定する。"""
+        goal_sequence_threshold = self._road_block_goal_sequence or 0
+        release_sequence = self._road_block_release_candidate_sequence
+        return release_sequence is not None and release_sequence > goal_sequence_threshold
+
+    def _has_route_release_candidate(self) -> bool:
+        """active_route の更新により解除条件が満たされたか判定する。"""
+        if self._road_block_release_candidate_route_version is None:
+            return False
+        if self._road_block_route_version is None:
+            return True
+        return self._road_block_release_candidate_route_version != self._road_block_route_version
+
+    def _reset_road_block_state(self) -> None:
+        """道路封鎖制御用の内部状態を初期化する。"""
+        self._road_block_active = False
+        self._road_block_stop_until = None
+        self._road_block_goal_sequence = None
+        self._road_block_release_candidate_sequence = None
+        self._road_block_route_version = None
+        self._road_block_release_candidate_route_version = None
+        self._road_block_goal_pose = None
+
+    def _has_goal_pose_change(self, new_pose: Pose) -> bool:
+        """道路封鎖中に受信した active_target が内容更新かを判定する。"""
+        # route_follower は target が更新されなくても一定周期で Pose を再送する。
+        # そのため XY 位置とヨー角を比較し、数値変化が 1e-4 を超えた場合のみ更新とみなす。
+        if self._road_block_goal_pose is None:
+            return True
+
+        base_pose = self._road_block_goal_pose
+        pos_diff = math.hypot(
+            new_pose.position.x - base_pose.position.x,
+            new_pose.position.y - base_pose.position.y,
+        )
+        if pos_diff > 1.0e-4:
+            return True
+
+        new_yaw = self.quaternion_to_yaw(new_pose.orientation)
+        base_yaw = self.quaternion_to_yaw(base_pose.orientation)
+        yaw_diff = abs(self.normalize_angle(new_yaw - base_yaw))
+        return yaw_diff > 1.0e-4
+
+    @staticmethod
+    def _clone_pose(pose: Optional[Pose]) -> Optional[Pose]:
+        """Pose オブジェクトを内容コピーする。"""
+        if pose is None:
+            return None
+
+        copied = Pose()
+        copied.position.x = pose.position.x
+        copied.position.y = pose.position.y
+        copied.position.z = pose.position.z
+        copied.orientation.x = pose.orientation.x
+        copied.orientation.y = pose.orientation.y
+        copied.orientation.z = pose.orientation.z
+        copied.orientation.w = pose.orientation.w
+        return copied
 
     def _log_goal_status(self) -> None:
         """active_target の座標と距離を 1 秒周期で INFO ログ出力する。"""
@@ -416,27 +602,60 @@ class RobotNavigator(Node):
         dy = ty - cy
         distance_error = math.hypot(dx, dy)
 
+        if self._within_goal_pos_tolerance:
+            if distance_error >= self.pos_tol + self.pos_tol_exit_margin:
+                self._within_goal_pos_tolerance = False
+        else:
+            if distance_error <= self.pos_tol:
+                self._within_goal_pos_tolerance = True
+
+        within_pos_tolerance = self._within_goal_pos_tolerance
+
         # 目標姿勢ではなく、目標位置へのベアリングで方向誤差を求める。
         # 旧ROS1実装同様、位置到達前に目標姿勢のヨー角を使うと、
         # ゴールを通過した際に進行方向を維持したまま離脱してしまう。
         target_bearing = math.atan2(dy, dx)
-        yaw_error = self.normalize_angle(target_bearing - current_yaw)
+        if within_pos_tolerance:
+            yaw_error = self.normalize_angle(target_yaw - current_yaw)
+        else:
+            yaw_error = self.normalize_angle(target_bearing - current_yaw)
         angle_diff = abs(yaw_error)
 
-        if distance_error <= self.pos_tol:
-            yaw_error = self.normalize_angle(target_yaw - current_yaw)
-            angle_diff = abs(yaw_error)
+        # --- 角速度（PID + アンチワインドアップ）---
+        prev_error = self.prev_yaw_error
+        if prev_error * yaw_error < 0.0:
+            # 誤差符号が反転した場合は積分項をリセットし、飽和からの回復を早める。
+            self.integral_w = 0.0
 
-        # --- 角速度（PID）---
-        self.integral_w += yaw_error * self.dt
-        derivative_w = (yaw_error - self.prev_yaw_error) / self.dt
-        w_desired = self.kp_w * yaw_error + self.ki_w * self.integral_w + self.kd_w * derivative_w
+        integral_candidate = self.integral_w + yaw_error * self.dt
+        integral_candidate = max(
+            -self.integral_w_limit,
+            min(self.integral_w_limit, integral_candidate),
+        )
+        derivative_w = (yaw_error - prev_error) / self.dt
+        w_unsat = (
+            self.kp_w * yaw_error
+            + self.ki_w * integral_candidate
+            + self.kd_w * derivative_w
+        )
+
+        if w_unsat > self.max_w:
+            w_desired = self.max_w
+            if yaw_error < 0.0:
+                # 逆方向に誤差が出ている場合のみ積分を更新し、復帰を促す。
+                self.integral_w = integral_candidate
+        elif w_unsat < -self.max_w:
+            w_desired = -self.max_w
+            if yaw_error > 0.0:
+                self.integral_w = integral_candidate
+        else:
+            w_desired = w_unsat
+            self.integral_w = integral_candidate
+
         self.prev_yaw_error = yaw_error
-        # 角速度の上限
-        w_desired = max(-self.max_w, min(self.max_w, w_desired))
 
         # --- 線速度（加速度上限 + 角度差スケール）---
-        if distance_error > 0.0:
+        if distance_error > 0.0 and not within_pos_tolerance:
             # 上昇側の加速度制限（旧実装相当）
             v_ref = min(v_current + self.max_a_v * self.dt, self.max_v)
         else:
@@ -469,9 +688,10 @@ class RobotNavigator(Node):
         v_scaled = max(0.0, min(self.max_v, v_scaled))
 
         # ゴール到達判定（位置・角度の両方）
-        if distance_error <= self.pos_tol and abs(yaw_error) <= self.ang_tol:
+        if within_pos_tolerance and abs(yaw_error) <= self.ang_tol:
             v_scaled = 0.0
             w_desired = 0.0
+            self.integral_w = 0.0
 
         # 出力メッセージ作成
         cmd = Twist()

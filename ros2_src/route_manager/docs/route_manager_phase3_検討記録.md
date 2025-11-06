@@ -1,5 +1,5 @@
-# route_manager_phase2_検討記録.md  
-（Phase2検討記録／意思決定・状態遷移整理）
+# route_manager_phase3_検討記録.md
+（Phase3検討記録／経路封鎖・リルート対応）
 
 ## 1. 目的
 
@@ -8,8 +8,7 @@
 **再計画（replan）／スキップ（skip）／保留（hold）** のいずれかの方針を即時決定し、
 必要に応じて `route_planner` に再計画を指示する。  
 
-Phase2では、この判断過程と状態遷移を整理し、followerとの同期仕様を確立する。  
-また、Phase3以降に導入予定の **経路封鎖・動的リルート** に耐え得る拡張性を確保する。
+Phase3では、road_blocked 通報時の判断を中心に再整理し、固定ブロック継続か可変区間でのリルート専念かを即時判定できるようにする。
 
 ---
 
@@ -79,7 +78,8 @@ route_managerは、外部から観測可能な以下の4状態を持つ。
 
 | フィールド | 型 | 意味 |
 |-------------|----|------|
-| `reason` | string | followerが検知した滞留要因（"front_blocked","no_hint","no_space","avoidance_failed"等） |
+| `reason_code` | uint8 | followerが検知した滞留理由コード。0=unknown,1=front_blocked,2=road_blocked 等 |
+| `reason_detail` | string | コードに収まらない補足理由。空文字の場合は code を採用 |
 | `current_wp_label` | string | 現在のwaypointラベル |
 | `avoid_trial_count` | uint32 | followerが行った局所回避試行回数 |
 | `last_hint_blocked` | bool | 最後に受信したobstacle_hintが閉塞を示しているか |
@@ -99,6 +99,20 @@ route_managerは、外部から観測可能な以下の4状態を持つ。
 ## 6. 意思決定ロジック（3層判断モデル）
 
 `route_manager` は、滞留報告を受けた際に以下の3層手順で判断を行う。
+
+### 先行判定：road_blocked（経路封鎖）
+
+**目的**
+道路封鎖検知時に即座に固定／可変区間を区別し、再開条件を決定する。
+
+**条件と処理**
+- `ReportStuck.reason_code == ROAD_BLOCKED` を受信した場合に発火。
+- 現在の waypoint が `segment_is_fixed=True` なら minor version のみを更新した `active_route` を再配信し、
+  followerへ継続走行を指示する。
+- `segment_is_fixed=False` なら SHIFT/SKIP を実施せず `UpdateRoute` のみを試行し、失敗時は `decision_code=FAILED` とする。
+
+**備考**
+road_blocked時は `/road_blocked` トピックの解除待ちではなく、新しい `active_route` を受信させることを再開条件とする。
 
 ### 第1層：左右オフセット判定（局所回避余地の評価）
 
@@ -158,6 +172,13 @@ plannerは「左右寄せルート」再生成を実施する（Phase3対応想�
 [report_stuck受信]
        │
        ↓
+(0) reason_code == ROAD_BLOCKED ?
+       ├─ yes → segment_is_fixed ?
+       │             ├─ True  → minor+1で再配信 (REPLAN)
+       │             └─ False → UpdateRouteのみ試行 → 失敗時FAILED
+       └─ no
+            │
+            ↓
 (1) オフセット余地あり？
        ├─ yes → offset_hint付きで再計画指示
        └─ no
@@ -190,9 +211,9 @@ plannerは「左右寄せルート」再生成を実施する（Phase3対応想�
 
 | 項目 | 対応方法 | 状態追加の要否 |
 |------|-----------|----------------|
-| 経路封鎖検出 | `obstacle_monitor` から `/block_detected` イベントを購読し、`RUNNING→UPDATING_ROUTE` 遷移を発火 | 不要 |
-| 封鎖解消再開 | 封鎖解除を検知して自動replan | HOLDING内処理で対応 |
-| オフセットルート生成 | 第1層の offset_hint を route_planner へ転送 | 不要 |
+| 経路封鎖検出 | `/report_stuck` の `reason_code=ROAD_BLOCKED` と `Waypoint.segment_is_fixed` を参照 | 不要 |
+| 封鎖解消再開 | 新しい `active_route` を受信したら navigator の停止を解除 | HOLDING内処理で対応 |
+| オフセットルート生成 | 第1層の offset_hint を route_planner へ転送（road_blocked時は実施しない） | 不要 |
 | 複数候補ルート | UPDATING_ROUTE内で比較／選択 | 不要 |
 
 ---
@@ -205,7 +226,10 @@ def handle_report_stuck(req):
 
     # Layer1: offset judgment
     if (
-        req.reason in ["front_blocked", "avoidance_failed"]
+        req.reason_code in [
+            ReportStuck.Request.REASON_FRONT_BLOCKED,
+            ReportStuck.Request.REASON_AVOIDANCE_FAILED,
+        ]
         and req.avoid_trial_count < self.param.avoid_max_retry
         and req.last_hint_blocked
     ):
@@ -244,13 +268,12 @@ def handle_report_stuck(req):
 
 ## 12. 結論
 
-- **外部状態は4つに限定**：`IDLE / RUNNING / UPDATING_ROUTE / HOLDING`  
-- **判断ロジックは3層構造**で整理し、  
-  「オフセット → スキップ → 再計画／失敗」の順に評価。  
-- **Phase3の経路封鎖リルート**も本構造のままで吸収可能。  
+- **外部状態は4つに限定**：`IDLE / RUNNING / UPDATING_ROUTE / HOLDING`
+- **road_blocked先行判定**を導入し、固定区間ではminor更新による継続、可変区間ではplanner再計画専念とした。
+- **判断ロジックは (road_blocked→) オフセット → スキップ → 再計画／失敗** の順で整理し、SHIFT/SKIPの適用条件を `reason_code` によって制御する。
 - followerとの同期、GUI表示、運用制御がすべて一貫する。
 
 ---
 
-本ドキュメントは、Phase2における `route_manager` の行動設計・判断仕様の基礎を定めるものであり、
-次段階の詳細設計書（`route_manager_詳細設計書_phase2.md`）の第3章・第5章に直接反映可能である。
+本ドキュメントは、Phase3における `route_manager` の行動設計・判断仕様の基礎を定めるものであり、
+詳細設計書（`route_manager_詳細設計書_phase3.md`）の第3章・第5章に直接反映している。

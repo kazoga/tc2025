@@ -3,7 +3,7 @@
 int32 route_version
 int32 current_index
 string current_wp_label
-geometry_msgs/Pose current_pose_map
+geometry_msgs/PoseStamped current_pose
 uint8 REASON_UNKNOWN=0
 uint8 REASON_FRONT_BLOCKED=1
 uint8 REASON_ROAD_BLOCKED=2

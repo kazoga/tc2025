@@ -632,12 +632,9 @@ class RouteManagerNode(Node):
             self.get_logger().info(f"[Node] planner UpdateRoute unavailable ({self.srv_update_name})")
             return type("Resp", (), {"success": False, "message": f"{self.srv_update_name} unavailable"})
         self.get_logger().info(
-            "[Node] call planner UpdateRoute: ver(major)=%s, prev=(%s,%s), current=(%s,%s)",
-            major_version,
-            prev_index,
-            prev_label,
-            current_index,
-            current_label,
+            "[Node] call planner UpdateRoute: "
+            f"ver(major)={major_version}, prev=({prev_index},{prev_label}), "
+            f"current=({current_index},{current_label})"
         )
         req = UpdateRoute.Request()
         req.route_version = int(major_version)

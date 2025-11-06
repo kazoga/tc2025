@@ -138,6 +138,7 @@ class RobotNavigator(Node):
         self.kd_w: float = 0.02
         self.integral_w: float = 0.0
         self.prev_yaw_error: float = 0.0
+        self.integral_w_limit: float = self.max_w / max(self.ki_w, 1.0e-6)
 
         # --- 内部状態 ---
         self.current_pose: Optional[Pose] = None
@@ -256,6 +257,9 @@ class RobotNavigator(Node):
         """目標トピック（PoseStamped）から目標姿勢（Pose）を保持する。"""
         self.current_goal = msg.pose
         self._goal_sequence += 1
+        # 目標が更新された場合は PID 積分項をリセットし、残留バイアスを避ける。
+        self.integral_w = 0.0
+        self.prev_yaw_error = 0.0
         if self._road_block_active:
             if self._road_block_stop_until is None:
                 if self._has_goal_pose_change(msg.pose):
@@ -599,13 +603,38 @@ class RobotNavigator(Node):
             yaw_error = self.normalize_angle(target_yaw - current_yaw)
             angle_diff = abs(yaw_error)
 
-        # --- 角速度（PID）---
-        self.integral_w += yaw_error * self.dt
-        derivative_w = (yaw_error - self.prev_yaw_error) / self.dt
-        w_desired = self.kp_w * yaw_error + self.ki_w * self.integral_w + self.kd_w * derivative_w
+        # --- 角速度（PID + アンチワインドアップ）---
+        prev_error = self.prev_yaw_error
+        if prev_error * yaw_error < 0.0:
+            # 誤差符号が反転した場合は積分項をリセットし、飽和からの回復を早める。
+            self.integral_w = 0.0
+
+        integral_candidate = self.integral_w + yaw_error * self.dt
+        integral_candidate = max(
+            -self.integral_w_limit,
+            min(self.integral_w_limit, integral_candidate),
+        )
+        derivative_w = (yaw_error - prev_error) / self.dt
+        w_unsat = (
+            self.kp_w * yaw_error
+            + self.ki_w * integral_candidate
+            + self.kd_w * derivative_w
+        )
+
+        if w_unsat > self.max_w:
+            w_desired = self.max_w
+            if yaw_error < 0.0:
+                # 逆方向に誤差が出ている場合のみ積分を更新し、復帰を促す。
+                self.integral_w = integral_candidate
+        elif w_unsat < -self.max_w:
+            w_desired = -self.max_w
+            if yaw_error > 0.0:
+                self.integral_w = integral_candidate
+        else:
+            w_desired = w_unsat
+            self.integral_w = integral_candidate
+
         self.prev_yaw_error = yaw_error
-        # 角速度の上限
-        w_desired = max(-self.max_w, min(self.max_w, w_desired))
 
         # --- 線速度（加速度上限 + 角度差スケール）---
         if distance_error > 0.0:
@@ -644,6 +673,7 @@ class RobotNavigator(Node):
         if distance_error <= self.pos_tol and abs(yaw_error) <= self.ang_tol:
             v_scaled = 0.0
             w_desired = 0.0
+            self.integral_w = 0.0
 
         # 出力メッセージ作成
         cmd = Twist()

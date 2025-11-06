@@ -585,6 +585,9 @@ def slice_by_labels_records(
     waypoints: List[WaypointRecord],
     start_label: str,
     goal_label: str,
+    *,
+    start_index_hint: Optional[int] = None,
+    goal_index_hint: Optional[int] = None,
 ) -> Tuple[List[WaypointRecord], int]:
     """start_labelとgoal_labelでwaypoint列をスライスする."""
 
@@ -594,8 +597,22 @@ def slice_by_labels_records(
     if not waypoints:
         raise ValueError("Waypoint list is empty.")
 
+    def _validate_hint(index_hint: Optional[int], label: str) -> Optional[int]:
+        if index_hint is None:
+            return None
+        if index_hint < 0 or index_hint >= len(waypoints):
+            return None
+        if label and waypoints[index_hint].label != label:
+            return None
+        return index_hint
+
+    validated_start_hint = _validate_hint(start_index_hint, start_label)
+    validated_goal_hint = _validate_hint(goal_index_hint, goal_label)
+
     if not start_label:
         start_idx = 0
+    elif validated_start_hint is not None:
+        start_idx = validated_start_hint
     else:
         for i, wp in enumerate(waypoints):
             if wp.label == start_label:
@@ -604,6 +621,8 @@ def slice_by_labels_records(
 
     if not goal_label:
         goal_idx = len(waypoints) - 1
+    elif validated_goal_hint is not None:
+        goal_idx = validated_goal_hint
     else:
         for j in range(len(waypoints) - 1, -1, -1):
             if waypoints[j].label == goal_label:
@@ -1035,6 +1054,8 @@ class RouteBuilder:
         start_label: str,
         goal_label: str,
         checkpoint_labels: List[str],
+        *,
+        start_label_origin: Optional[Tuple[str, int]] = None,
     ) -> RouteBuildResult:
         if not self.blocks:
             raise RuntimeError("ブロック定義が読み込まれていません。")
@@ -1184,7 +1205,35 @@ class RouteBuilder:
         if not route_wps:
             raise RuntimeError("blocks定義からwaypointを生成できませんでした。")
 
-        sliced, start_offset = slice_by_labels_records(route_wps, start_label, goal_label)
+        start_index_hint: Optional[int] = None
+        if start_label and start_label_origin is not None:
+            hint_name, hint_index = start_label_origin
+            candidates: List[int] = []
+            for idx, origin in enumerate(origins):
+                if origin.block_name != hint_name or origin.block_index != hint_index:
+                    continue
+                if route_wps[idx].label == start_label:
+                    candidates.append(idx)
+                prev_idx = idx - 1
+                if prev_idx >= 0 and route_wps[prev_idx].label == start_label:
+                    candidates.append(prev_idx)
+            if candidates:
+                start_index_hint = min(candidates)
+            else:
+                self._log(
+                    "warn",
+                    (
+                        "start_label_origin hint was provided but no matching waypoint was found. "
+                        "Falling back to the first occurrence of the label."
+                    ),
+                )
+
+        sliced, start_offset = slice_by_labels_records(
+            route_wps,
+            start_label,
+            goal_label,
+            start_index_hint=start_index_hint,
+        )
         origins = origins[start_offset : start_offset + len(sliced)]
         indexing_records(sliced)
         total_distance = calc_total_distance_records(sliced)

@@ -645,6 +645,11 @@ class RoutePlannerNode(Node):
                 # 可変ブロックなのに必要メタが欠けるのは異常
                 raise RuntimeError("Failed to identify running edge metadata for closure.")
 
+            connection_node = u_node if u_first_flag else v_node
+            if not connection_node:
+                raise RuntimeError("Failed to determine reroute anchor node.")
+            connection_label = str(connection_node)
+
             removed = self.route_builder.remove_graph_edge(block_name, block_idx, u_node, v_node)
             if not removed:
                 self.get_logger().warn(
@@ -707,7 +712,7 @@ class RoutePlannerNode(Node):
             # 端点ラベル（Uラベル）を刻印（virtual_wps の末尾は U になる）
             if virtual_wps:
                 stamp_edge_end_labels(
-                    virtual_wps, src_label="current", dst_label=prev_wp_label
+                    virtual_wps, src_label="current", dst_label=connection_label
                 )
 
             # 追加（重複境界は concat 内で解消される）
@@ -737,6 +742,8 @@ class RoutePlannerNode(Node):
 
             original_checkpoints = list(builder_block.get("checkpoints") or [])
             builder_block["checkpoints"] = list(remaining_cps_block)
+            original_start = builder_block.get("start")
+            builder_block["start"] = connection_label
 
             goal_label_total = wps[-1].label if wps else ""
             if not goal_label_total:
@@ -744,12 +751,16 @@ class RoutePlannerNode(Node):
 
             try:
                 rebuild_result: RouteBuildResult = self.route_builder.build_route(
-                    start_label=prev_wp_label,
+                    start_label=connection_label,
                     goal_label=str(goal_label_total),
                     checkpoint_labels=list(remaining_global_cps),
                 )
             finally:
                 builder_block["checkpoints"] = original_checkpoints
+                if original_start is None:
+                    builder_block.pop("start", None)
+                else:
+                    builder_block["start"] = original_start
 
             rebuilt_wps: List[Waypoint] = [
                 self._record_to_waypoint(record) for record in rebuild_result.waypoints

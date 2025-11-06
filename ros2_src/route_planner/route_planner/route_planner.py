@@ -754,6 +754,7 @@ class RoutePlannerNode(Node):
                     start_label=connection_label,
                     goal_label=str(goal_label_total),
                     checkpoint_labels=list(remaining_global_cps),
+                    start_label_origin=(block_name, block_idx),
                 )
             finally:
                 builder_block["checkpoints"] = original_checkpoints

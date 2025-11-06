@@ -34,6 +34,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Header
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Image
 
 # route_msgs はユーザ環境のメッセージ/サービスに準拠
@@ -338,6 +339,7 @@ class RouteManagerNode(Node):
         ] = None
         # 1Hzで最新状態を再送するためのタイマーを追加する。
         self._state_snapshot_timer = self.create_timer(0.2, self._publish_state_snapshots)
+        self._last_report_pose: Optional[PoseStamped] = None
 
     def _resolve_topic_name(self, name: str) -> str:
         """リマップ適用後のトピック名を返す補助関数."""
@@ -514,14 +516,46 @@ class RouteManagerNode(Node):
         ):
             self._emit_route_state(self._latest_route_state_payload)
 
+    @staticmethod
+    def _copy_pose_stamped(src: PoseStamped) -> PoseStamped:
+        """PoseStampedメッセージを新規インスタンスへ複製する。"""
+
+        copied = PoseStamped()
+        copied.header = Header()
+        if hasattr(src, "header") and hasattr(src.header, "stamp"):
+            copied.header.stamp.sec = int(getattr(src.header.stamp, "sec", 0))
+            copied.header.stamp.nanosec = int(getattr(src.header.stamp, "nanosec", 0))
+        copied.header.frame_id = str(getattr(src.header, "frame_id", ""))
+        pose_field = getattr(src, "pose", None)
+        position = getattr(pose_field, "position", None)
+        orientation = getattr(pose_field, "orientation", None)
+        if position is not None:
+            copied.pose.position.x = float(getattr(position, "x", 0.0))
+            copied.pose.position.y = float(getattr(position, "y", 0.0))
+            copied.pose.position.z = float(getattr(position, "z", 0.0))
+        if orientation is not None:
+            copied.pose.orientation.x = float(getattr(orientation, "x", 0.0))
+            copied.pose.orientation.y = float(getattr(orientation, "y", 0.0))
+            copied.pose.orientation.z = float(getattr(orientation, "z", 0.0))
+            copied.pose.orientation.w = float(getattr(orientation, "w", 1.0))
+        else:
+            copied.pose.orientation.w = 1.0
+        return copied
+
     # ------------------------------------------------------------------
     # Service Server: report_stuck（Core+FSMで4段階ロジックを維持）
     # ------------------------------------------------------------------
     def _on_report_stuck(self, req: ReportStuck.Request, res: ReportStuck.Response) -> ReportStuck.Response:
-        pose_map = getattr(req, "current_pose_map", None)
+        pose_msg = getattr(req, "current_pose", None)
+        if isinstance(pose_msg, PoseStamped):
+            self._last_report_pose = self._copy_pose_stamped(pose_msg)
+        else:
+            self._last_report_pose = None
+        pose_field = getattr(pose_msg, "pose", None)
+        position = getattr(pose_field, "position", None)
         pose2d = Pose2D(
-            x=float(getattr(getattr(pose_map, "position", None), "x", 0.0)),
-            y=float(getattr(getattr(pose_map, "position", None), "y", 0.0)),
+            x=float(getattr(position, "x", 0.0)),
+            y=float(getattr(position, "y", 0.0)),
         )
         report = StuckReport(
             route_version=int(getattr(req, "route_version", 0)),
@@ -642,6 +676,8 @@ class RouteManagerNode(Node):
         req.prev_wp_label = str(prev_label)
         req.current_index = int(current_index)
         req.current_wp_label = str(current_label)
+        if self._last_report_pose is not None:
+            req.current_pose = self._copy_pose_stamped(self._last_report_pose)
         future = self.cli_update.call_async(req)
         while not future.done():
             await asyncio.sleep(0.01)

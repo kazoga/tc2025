@@ -168,6 +168,7 @@ class RouteFollowerNode(Node):
 
         # follower_stateの周期ログ用タイムスタンプを初期化する。
         self._last_state_log_time: float = 0.0
+        self._latest_pose_stamped: Optional[PoseStamped] = None
 
     def _resolve_topic_name(self, name: str) -> str:
         """リマップ適用後のトピック名を取得する。"""
@@ -223,6 +224,7 @@ class RouteFollowerNode(Node):
         pose_stamped = PoseStamped()
         pose_stamped.header = msg.header
         pose_stamped.pose = msg.pose.pose
+        self._latest_pose_stamped = self._copy_pose_stamped(pose_stamped)
         pose = CorePose(
             pose_stamped.pose.position.x,
             pose_stamped.pose.position.y,
@@ -371,8 +373,11 @@ class RouteFollowerNode(Node):
         req.current_index = int(self.core.index)
         req.current_wp_label = str(self.core.get_current_waypoint_label())
         pose = self.core.get_current_pose()
-        if pose is not None:
-            req.current_pose_map = self._pose_to_msg(pose)
+        if self._latest_pose_stamped is not None:
+            req.current_pose = self._copy_pose_stamped(self._latest_pose_stamped)
+        elif pose is not None:
+            stamped_pose = self._core_pose_to_stamped(pose)
+            req.current_pose = stamped_pose
         reason_label = str(self.core.last_stagnation_reason)
         normalized_reason = self._normalize_reason_label(reason_label)
         req.reason_code = int(self._convert_reason_code(normalized_reason))
@@ -450,6 +455,39 @@ class RouteFollowerNode(Node):
         q.w = math.cos(pose.yaw / 2.0)
         p.orientation = q
         return p
+
+    @staticmethod
+    def _copy_pose_stamped(src: PoseStamped) -> PoseStamped:
+        """PoseStampedを新しいインスタンスへ複製する。"""
+
+        copied = PoseStamped()
+        copied.header = Header()
+        if hasattr(src, "header") and hasattr(src.header, "stamp"):
+            copied.header.stamp.sec = int(getattr(src.header.stamp, "sec", 0))
+            copied.header.stamp.nanosec = int(getattr(src.header.stamp, "nanosec", 0))
+        copied.header.frame_id = str(getattr(src.header, "frame_id", ""))
+        fallback_pose = Pose()
+        pose_field = getattr(src, "pose", fallback_pose)
+        position = getattr(pose_field, "position", fallback_pose.position)
+        orientation = getattr(pose_field, "orientation", fallback_pose.orientation)
+        copied.pose.position.x = float(getattr(position, "x", 0.0))
+        copied.pose.position.y = float(getattr(position, "y", 0.0))
+        copied.pose.position.z = float(getattr(position, "z", 0.0))
+        copied.pose.orientation.x = float(getattr(orientation, "x", 0.0))
+        copied.pose.orientation.y = float(getattr(orientation, "y", 0.0))
+        copied.pose.orientation.z = float(getattr(orientation, "z", 0.0))
+        copied.pose.orientation.w = float(getattr(orientation, "w", 1.0))
+        return copied
+
+    def _core_pose_to_stamped(self, pose: CorePose) -> PoseStamped:
+        """CorePoseからPoseStampedを生成する。"""
+
+        stamped = PoseStamped()
+        stamped.header = Header()
+        stamped.header.frame_id = self.target_frame
+        stamped.header.stamp = self.get_clock().now().to_msg()
+        stamped.pose = self._pose_to_msg(pose)
+        return stamped
 
 
 # ============================================================

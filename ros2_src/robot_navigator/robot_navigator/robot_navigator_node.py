@@ -72,6 +72,7 @@ class RobotNavigator(Node):
         self.declare_parameter('max_acc_v', 1.0)
         self.declare_parameter('max_acc_w', 1.5)
         self.declare_parameter('pos_tol', 0.5)
+        self.declare_parameter('pos_tol_exit_margin', 0.2)
         self.declare_parameter('ang_tol', 0.25)
         self.declare_parameter('control_rate_hz', 20.0)
         self.declare_parameter('road_block_hold_sec', 5.0)
@@ -98,6 +99,12 @@ class RobotNavigator(Node):
         self.max_a_v: float = float(self.get_parameter('max_acc_v').value)
         self.max_a_w: float = float(self.get_parameter('max_acc_w').value)
         self.pos_tol: float = float(self.get_parameter('pos_tol').value)
+        self.pos_tol_exit_margin: float = float(
+            self.get_parameter('pos_tol_exit_margin').value
+        )
+        if self.pos_tol_exit_margin < 0.0:
+            self.get_logger().warn('pos_tol_exit_margin が負値のため 0 に切り上げます。')
+            self.pos_tol_exit_margin = 0.0
         self.ang_tol: float = float(self.get_parameter('ang_tol').value)
         self.control_rate_hz: float = float(self.get_parameter('control_rate_hz').value)
         self.dt: float = 1.0 / self.control_rate_hz
@@ -154,6 +161,8 @@ class RobotNavigator(Node):
         self._road_block_route_version: Optional[int] = None
         self._road_block_release_candidate_route_version: Optional[int] = None
         self._road_block_goal_pose: Optional[Pose] = None
+        # 位置許容範囲へ入ったことをヒステリシス付きで保持するフラグ。
+        self._within_goal_pos_tolerance: bool = False
 
         # --- Publisher/Subscriber の設定 ---
         # /cmd_vel は Reliable/Volatile で十分
@@ -260,6 +269,7 @@ class RobotNavigator(Node):
         # 目標が更新された場合は PID 積分項をリセットし、残留バイアスを避ける。
         self.integral_w = 0.0
         self.prev_yaw_error = 0.0
+        self._within_goal_pos_tolerance = False
         if self._road_block_active:
             if self._road_block_stop_until is None:
                 if self._has_goal_pose_change(msg.pose):
@@ -592,16 +602,24 @@ class RobotNavigator(Node):
         dy = ty - cy
         distance_error = math.hypot(dx, dy)
 
+        if self._within_goal_pos_tolerance:
+            if distance_error >= self.pos_tol + self.pos_tol_exit_margin:
+                self._within_goal_pos_tolerance = False
+        else:
+            if distance_error <= self.pos_tol:
+                self._within_goal_pos_tolerance = True
+
+        within_pos_tolerance = self._within_goal_pos_tolerance
+
         # 目標姿勢ではなく、目標位置へのベアリングで方向誤差を求める。
         # 旧ROS1実装同様、位置到達前に目標姿勢のヨー角を使うと、
         # ゴールを通過した際に進行方向を維持したまま離脱してしまう。
         target_bearing = math.atan2(dy, dx)
-        yaw_error = self.normalize_angle(target_bearing - current_yaw)
-        angle_diff = abs(yaw_error)
-
-        if distance_error <= self.pos_tol:
+        if within_pos_tolerance:
             yaw_error = self.normalize_angle(target_yaw - current_yaw)
-            angle_diff = abs(yaw_error)
+        else:
+            yaw_error = self.normalize_angle(target_bearing - current_yaw)
+        angle_diff = abs(yaw_error)
 
         # --- 角速度（PID + アンチワインドアップ）---
         prev_error = self.prev_yaw_error
@@ -637,7 +655,7 @@ class RobotNavigator(Node):
         self.prev_yaw_error = yaw_error
 
         # --- 線速度（加速度上限 + 角度差スケール）---
-        if distance_error > 0.0:
+        if distance_error > 0.0 and not within_pos_tolerance:
             # 上昇側の加速度制限（旧実装相当）
             v_ref = min(v_current + self.max_a_v * self.dt, self.max_v)
         else:
@@ -670,7 +688,7 @@ class RobotNavigator(Node):
         v_scaled = max(0.0, min(self.max_v, v_scaled))
 
         # ゴール到達判定（位置・角度の両方）
-        if distance_error <= self.pos_tol and abs(yaw_error) <= self.ang_tol:
+        if within_pos_tolerance and abs(yaw_error) <= self.ang_tol:
             v_scaled = 0.0
             w_desired = 0.0
             self.integral_w = 0.0

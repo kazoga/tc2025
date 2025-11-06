@@ -134,8 +134,12 @@ class RouteFollowerNode(Node):
         )
         self.sub_manual = self.create_subscription(Bool, manual_start_topic, self._on_manual_start, self.qos_vol)
         self.sub_sig = self.create_subscription(Int32, signal_recognition_topic, self._on_sig_recog, self.qos_vol)
+        # road_blockedトピックは運用ツールなど複数の発行元から送信されるが、
+        # いずれもデフォルトのVolatile QoSで運用されている。
+        # 本ノードがTransient Localを要求するとQoS不整合で購読できないため、
+        # ここではVolatileを使用しCore側でラッチ相当の保持を行う。
         self.sub_road_block = self.create_subscription(
-            Bool, road_block_topic, self._on_road_blocked, self.qos_tl
+            Bool, road_block_topic, self._on_road_blocked, self.qos_vol
         )
 
         self.pub_target = self.create_publisher(PoseStamped, active_target_topic, self.qos_vol)

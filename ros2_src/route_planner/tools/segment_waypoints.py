@@ -103,6 +103,78 @@ def is_non_negative_marker(value: object) -> bool:
 
 
 # =========================
+# 前処理
+# =========================
+def _find_nearest_node(
+    lat: float,
+    lon: float,
+    node_ids: Sequence[str],
+    node_lats: Sequence[float],
+    node_lons: Sequence[float],
+) -> Tuple[Optional[str], float]:
+    """nodes.csv から最も近いノードと距離[m]を返す."""
+
+    best_id: Optional[str] = None
+    best_dist: float = float("inf")
+    for nid, nlat, nlon in zip(node_ids, node_lats, node_lons):
+        dist = haversine_m(lat, lon, float(nlat), float(nlon))
+        if dist < best_dist:
+            best_dist = dist
+            best_id = nid
+    return best_id, best_dist
+
+
+def sanitize_waypoint_nodes(
+    wp_df: pd.DataFrame,
+    nodes_df: pd.DataFrame,
+    representative_threshold_m: float = 2.0,
+) -> pd.DataFrame:
+    """node列の値を代表点判定ルールに従い補正する."""
+
+    df = wp_df.copy()
+    node_ids: List[str] = nodes_df["id"].astype(str).tolist()
+    node_lats: List[float] = nodes_df["lat"].astype(float).tolist()
+    node_lons: List[float] = nodes_df["lon"].astype(float).tolist()
+
+    # Step A: ノード候補と最短距離を取得し、2m以上離れていればノードではないとみなす。
+    nearest_entries: List[Tuple[int, str, float]] = []
+    for idx, row in df.iterrows():
+        if not is_non_negative_marker(row["node"]):
+            continue
+        lat = float(row["latitude"])
+        lon = float(row["longitude"])
+        best_id, best_dist = _find_nearest_node(lat, lon, node_ids, node_lats, node_lons)
+        if best_id is None or best_dist >= representative_threshold_m:
+            df.at[idx, "node"] = -1
+            continue
+        nearest_entries.append((idx, best_id, best_dist))
+
+    # Step B: 同じノードに紐づく行が連続している場合は最も距離が近い行のみを残す。
+    i = 0
+    while i < len(nearest_entries):
+        _, current_id, _ = nearest_entries[i]
+        block: List[Tuple[int, str, float]] = [nearest_entries[i]]
+        j = i + 1
+        while (
+            j < len(nearest_entries)
+            and nearest_entries[j][0] == nearest_entries[j - 1][0] + 1
+            and nearest_entries[j][1] == current_id
+        ):
+            block.append(nearest_entries[j])
+            j += 1
+
+        if len(block) >= 2:
+            best_entry = min(block, key=lambda entry: entry[2])
+            for idx_entry, _, _ in block:
+                if idx_entry != best_entry[0]:
+                    df.at[idx_entry, "node"] = -1
+
+        i = j
+
+    return df
+
+
+# =========================
 # コア処理
 # =========================
 def cut_head_tail_and_save(
@@ -327,6 +399,9 @@ def run(waypoints_path: Path, nodes_path: Path) -> None:
     out_dir_fixed = Path("fixed")
     out_dir_segments = Path("variable/segments")
     out_path_edges = Path("variable/edges.csv")
+
+    # 0) node列の事前精査（代表点条件を満たさない行を除外）
+    wp_df = sanitize_waypoint_nodes(wp_df, nodes_df)
 
     # セグメント出力前に古い edge_*.csv を削除（数値名の取り込みを防ぐ）
     clean_segments_dir(out_dir_segments)

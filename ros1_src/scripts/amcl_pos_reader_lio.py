@@ -7,7 +7,7 @@ import csv
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, Vector3, Quaternion
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Int32
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import NavSatFix, Joy
 import tf
 import threading
 import os
@@ -16,6 +16,27 @@ def quaternion_to_euler(quaternion):
     e = tf.transformations.euler_from_quaternion(
         (quaternion.x, quaternion.y, quaternion.z, quaternion.w))
     return Vector3(x=e[0], y=e[1], z=e[2])
+
+def latlon_to_utm(latitude, longitude, base_lat, base_lon):
+    """
+    緯度経度をUTM座標（メートル）に変換する簡易関数
+    基準点からの相対位置を計算
+    """
+    # 地球の平均半径（メートル）
+    R = 6378137.0
+
+    # 緯度経度の差をラジアンに変換
+    dlat = math.radians(latitude - base_lat)
+    dlon = math.radians(longitude - base_lon)
+
+    # 基準点の緯度をラジアンに変換
+    base_lat_rad = math.radians(base_lat)
+
+    # UTM座標に変換（メートル単位）
+    utm_x = R * dlon * math.cos(base_lat_rad)
+    utm_y = R * dlat
+
+    return utm_x, utm_y
 
 # パラメータのデフォルト値を定義
 default_waypoint_file = '/home/nakaba/map/waypoint_tsukuba2023.csv'
@@ -44,9 +65,15 @@ current_latitude = 0.0
 current_longitude = 0.0
 gps_lock = threading.Lock()
 
-# waypoint_input からの最新値を保持
-current_waypoint_node = -1  # デフォルトは-1
-waypoint_node_lock = threading.Lock()
+# UTM基準点（つくばチャレンジ用）
+UTM_BASE_LAT = 36.0830041
+UTM_BASE_LON = 140.0763757
+UTM_BASE_ALT = 73.568
+
+# joyトピックからのボタン状態を保持
+current_joy_button_value = -1  # ボタンが押されたら1、それ以外は-1
+previous_joy_button_state = False  # 前回のボタン状態（連続入力防止用）
+joy_lock = threading.Lock()
 
 # フラグを格納する辞書を追加
 flags = {
@@ -97,13 +124,24 @@ def gps_callback(msg):
         current_latitude = msg.latitude
         current_longitude = msg.longitude
 
-def waypoint_input_callback(msg):
-    """waypoint_inputトピックからノード番号を受信"""
-    global current_waypoint_node
-    with waypoint_node_lock:
-        current_waypoint_node = msg.data
-    rospy.loginfo(f"Received waypoint_input: {msg.data}. Recording waypoint...")
-    record_waypoint_from_input()
+def joy_callback(msg):
+    """joyトピックからボタン情報を受信し、ボタンが押されたら記録（立ち上がりエッジのみ）"""
+    global current_joy_button_value, previous_joy_button_state
+
+    # ボタン配列をチェック - いずれかのボタンが1なら記録
+    button_pressed = any(button == 1 for button in msg.buttons)
+
+    # 立ち上がりエッジ検出（前回がFalseで今回がTrue）
+    if button_pressed and not previous_joy_button_state:
+        with joy_lock:
+            current_joy_button_value = 1
+        rospy.loginfo("Joy button pressed. Recording waypoint...")
+        record_waypoint_from_joy()
+        previous_joy_button_state = True
+    elif not button_pressed:
+        with joy_lock:
+            current_joy_button_value = -1
+        previous_joy_button_state = False
 
 def check_parameter_changes(event=None):
     """フラグの変化をチェックし、変化があればウェイポイントを記録する"""
@@ -141,6 +179,9 @@ def record_waypoint(parameter_change=False, node_value=-1):
         lat = current_latitude
         lon = current_longitude
 
+    # GPS座標をUTM座標に変換
+    utm_x, utm_y = latlon_to_utm(lat, lon, UTM_BASE_LAT, UTM_BASE_LON)
+
     # CSVファイルにウェイポイントを書き込む
     try:
         with open(filename, 'a') as f:
@@ -148,19 +189,19 @@ def record_waypoint(parameter_change=False, node_value=-1):
                 # パラメータ変更によるウェイポイント
                 data = f"{num},{lat},{lon},{x_current},{y_current},{z_old},0,0,{orien_z},{orien_w},"
                 data += f"{flags['right_is_open']},{flags['left_is_open']},"
-                data += f"{flags['line_is_stop']},{flags['signal_is_stop']},{flags['isnot_skipnum']},{node_value}\n"
+                data += f"{flags['line_is_stop']},{flags['signal_is_stop']},{flags['isnot_skipnum']},{node_value},{utm_x},{utm_y}\n"
             else:
                 # 走行中のウェイポイント
-                data = f"{num},{lat},{lon},{x_current},{y_current},{z_old},0,0,{orien_z},{orien_w},0,0,0,0,{flags['isnot_skipnum']},{node_value}\n"
+                data = f"{num},{lat},{lon},{x_current},{y_current},{z_old},0,0,{orien_z},{orien_w},0,0,0,0,{flags['isnot_skipnum']},{node_value},{utm_x},{utm_y}\n"
             f.write(data)
         rospy.loginfo(f"Waypoint {num} recorded{' due to parameter change' if parameter_change else ''} with node={node_value}.")
         num += 1
     except IOError as e:
         rospy.logerr(f"Failed to write to waypoint file: {e}")
 
-def record_waypoint_from_input():
-    """waypoint_inputトピックを受信した時に呼ばれる特別な記録関数"""
-    global num, x_old, y_old, q_old, z_old, orien_z, orien_w, current_waypoint_node
+def record_waypoint_from_joy():
+    """joyトピックからボタンが押された時に呼ばれる特別な記録関数"""
+    global num, x_old, y_old, q_old, z_old, orien_z, orien_w, current_joy_button_value
 
     # 現在の位置とオリエンテーションを取得
     try:
@@ -181,24 +222,27 @@ def record_waypoint_from_input():
         lat = current_latitude
         lon = current_longitude
 
-    # waypoint_nodeの値を取得
-    with waypoint_node_lock:
-        node_val = current_waypoint_node
+    # GPS座標をUTM座標に変換
+    utm_x, utm_y = latlon_to_utm(lat, lon, UTM_BASE_LAT, UTM_BASE_LON)
+
+    # joyボタンの値を取得
+    with joy_lock:
+        button_val = current_joy_button_value
 
     # CSVファイルにウェイポイントを書き込む
     try:
         with open(filename, 'a') as f:
-            # waypoint_inputから受信した値をnodeに記録（一番右）
+            # joyから受信したボタン値をnodeに記録（一番右の前）、最後にUTM座標を追加
             data = f"{num},{lat},{lon},{x_current},{y_current},{z_current},0,0,{orien_z},{orien_w},"
             data += f"{flags['right_is_open']},{flags['left_is_open']},"
-            data += f"{flags['line_is_stop']},{flags['signal_is_stop']},{flags['isnot_skipnum']},{node_val}\n"
+            data += f"{flags['line_is_stop']},{flags['signal_is_stop']},{flags['isnot_skipnum']},{button_val},{utm_x},{utm_y}\n"
             f.write(data)
-        rospy.loginfo(f"Waypoint {num} recorded from waypoint_input with node={node_val}.")
+        rospy.loginfo(f"Waypoint {num} recorded from joy with button={button_val}.")
         num += 1
 
-        # 記録後、current_waypoint_nodeを-1にリセット
-        with waypoint_node_lock:
-            current_waypoint_node = -1
+        # 記録後、current_joy_button_valueを-1にリセット
+        with joy_lock:
+            current_joy_button_value = -1
     except IOError as e:
         rospy.logerr(f"Failed to write to waypoint file: {e}")
 
@@ -272,6 +316,9 @@ def PoseCallBack(msg):
         lat = current_latitude
         lon = current_longitude
 
+    # GPS座標をUTM座標に変換
+    utm_x, utm_y = latlon_to_utm(lat, lon, UTM_BASE_LAT, UTM_BASE_LON)
+
     # 停止カウンタが一定以上ならウェイポイントを追加
     if stop_counter > 2:
         stop_counter = -100000
@@ -285,9 +332,9 @@ def PoseCallBack(msg):
         q_old = quaternion_to_euler(msg.pose.pose.orientation).z
 
         with open(filename, 'a') as f:
-            # フラグ情報をCSVに追加 (nodeは一番右で-1)
+            # フラグ情報をCSVに追加 (nodeは一番右の前で-1、最後にUTM座標)
             data = f"{num},{lat},{lon},{x_old},{y_old},{z_old},0,0,{orien_z},{orien_w},"
-            data += f"{flags['right_is_open']},{flags['left_is_open']},{flags['line_is_stop']},{flags['signal_is_stop']},{flags['isnot_skipnum']},-1\n"
+            data += f"{flags['right_is_open']},{flags['left_is_open']},{flags['line_is_stop']},{flags['signal_is_stop']},{flags['isnot_skipnum']},-1,{utm_x},{utm_y}\n"
             f.write(data)
         num += 1
 
@@ -303,8 +350,8 @@ def PoseCallBack(msg):
         q_old = quaternion_to_euler(msg.pose.pose.orientation).z
 
         with open(filename, 'a') as f:
-            # フラグ情報をCSVに追加 (nodeは一番右で-1)
-            data = f"{num},{lat},{lon},{x_old},{y_old},{z_old},0,0,{orien_z},{orien_w},0,0,0,0,{flags['isnot_skipnum']},-1\n"
+            # フラグ情報をCSVに追加 (nodeは一番右の前で-1、最後にUTM座標)
+            data = f"{num},{lat},{lon},{x_old},{y_old},{z_old},0,0,{orien_z},{orien_w},0,0,0,0,{flags['isnot_skipnum']},-1,{utm_x},{utm_y}\n"
             f.write(data)
         num += 1
 
@@ -324,8 +371,8 @@ def PoseSub():
     # GPS情報を購読
     rospy.Subscriber('/ublox/fix', NavSatFix, gps_callback)
 
-    # waypoint_inputトピックを購読
-    rospy.Subscriber('/waypoint_input', Int32, waypoint_input_callback)
+    # joyトピックを購読（waypoint_inputの代わり）
+    rospy.Subscriber('/joy', Joy, joy_callback)
 
     # 各フラグのトピックを購読
     rospy.Subscriber('right_is_open', Int32, right_is_open_callback)
@@ -342,8 +389,8 @@ def PoseSub():
 if __name__ == '__main__':
     try:
         with open(filename, 'w') as f:
-            # CSVヘッダーを修正（新フォーマット: label, latitude, longitude を追加、nodeは一番右）
-            header = "label,latitude,longitude,x,y,z,q1,q2,q3,q4,right_is_open,left_is_open,line_is_stop,signal_is_stop,isnot_skipnum,node\n"
+            # CSVヘッダーを修正（新フォーマット: label, latitude, longitude を追加、nodeは一番右の前、最後にUTM座標）
+            header = "label,latitude,longitude,x,y,z,q1,q2,q3,q4,right_is_open,left_is_open,line_is_stop,signal_is_stop,isnot_skipnum,node,utm_x,utm_y\n"
             f.write(header)
         PoseSub()
     except rospy.ROSInterruptException:

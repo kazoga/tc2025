@@ -691,22 +691,24 @@ class RoutePlannerNode(Node):
             new_wps: List[Waypoint] = []
             new_origins: List[WaypointOrigin] = []
             new_wps.append(self._make_waypoint_from_pose(request.current_pose, label="current"))
-            new_origins.append(WaypointOrigin(
-                block_name=block_name,
-                block_index=block_idx,
-                segment_id=None,
-                edge_u=None,
-                edge_v=None,
-                index_in_edge=None,
-                u_first=None,
-            ))
+            new_origins.append(
+                WaypointOrigin(
+                    block_name=block_name,
+                    block_index=block_idx,
+                    segment_id="__virtual__",
+                    edge_u=u_node,
+                    edge_v=v_node,
+                    index_in_edge=None,
+                    u_first=True,
+                )
+            )
 
             # 7-2) 仮想エッジ: current→prev→U の waypoint 群を生成して連結
             prev_wp_label = str(wps[request.prev_index].label or "")
             if not prev_wp_label:
                 raise RuntimeError("Prev waypoint label is empty.")
 
-            virtual_wps = self._make_virtual_edge_waypoints(
+            virtual_wps, virtual_indices = self._make_virtual_edge_waypoints(
                 seg_id=seg_id_running,
                 u_label=u_node,
                 local_idx_prev=local_idx_prev,
@@ -722,19 +724,36 @@ class RoutePlannerNode(Node):
 
             # 追加（重複境界は concat 内で解消される）
             start_idx_virtual = len(new_wps)
+            base_tail = new_wps[-1]
+            head_virtual = virtual_wps[0] if virtual_wps else None
+            deduped = False
+            if head_virtual is not None:
+                deduped = almost_same_xy(
+                    base_tail.pose.position.x,
+                    base_tail.pose.position.y,
+                    head_virtual.pose.position.x,
+                    head_virtual.pose.position.y,
+                )
             new_wps = concat_with_dedup(new_wps, virtual_wps)
-            end_idx_virtual = len(new_wps) - 1
-            # origin は "仮想エッジ" として記録（segment_id="__virtual__"相当）
-            for i_local in range(end_idx_virtual - start_idx_virtual + 1):
-                new_origins.append(WaypointOrigin(
-                    block_name=block_name,
-                    block_index=block_idx,
-                    segment_id="__virtual__",
-                    edge_u=u_node,
-                    edge_v=v_node,
-                    index_in_edge=i_local,
-                    u_first=True,  # virtual は current→U の向き（U側へ向かう）としてUファースト扱いで良い
-                ))
+            appended_count = len(new_wps) - start_idx_virtual
+            if deduped:
+                indices_for_origins = virtual_indices[1:]
+            else:
+                indices_for_origins = virtual_indices
+            if appended_count != len(indices_for_origins):
+                raise RuntimeError("Virtual edge concatenation length mismatch.")
+            for seg_index in indices_for_origins:
+                new_origins.append(
+                    WaypointOrigin(
+                        block_name=block_name,
+                        block_index=block_idx,
+                        segment_id="__virtual__",
+                        edge_u=u_node,
+                        edge_v=v_node,
+                        index_in_edge=seg_index,
+                        u_first=True,
+                    )
+                )
 
             # 8) RouteBuilder を用いた再構築。封鎖と未通過チェックポイントを一時的に反映する。
             builder_block: Optional[Dict[str, Any]] = None
@@ -940,7 +959,7 @@ class RoutePlannerNode(Node):
         u_first_on_route: bool,
         prev_wp: Waypoint,
         current_pose: PoseStamped,
-    ) -> List[Waypoint]:
+    ) -> Tuple[List[Waypoint], List[Optional[int]]]:
         """仮想エッジ current→prev→U の waypoint 群を生成する。
 
         ロジック:
@@ -958,7 +977,8 @@ class RoutePlannerNode(Node):
             current_pose: 現在位置の PoseStamped。
 
         Returns:
-            仮想エッジ（current→prev→U）に相当する Waypoint 配列。
+            仮想エッジ（current→prev→U）に相当する Waypoint 配列と、
+            各 Waypoint が元セグメント内で対応するindex（currentはNone）。
         """
         entry = self.segments.get(seg_id)
         if entry is None:
@@ -968,7 +988,6 @@ class RoutePlannerNode(Node):
         if not base:
             raise RuntimeError("Virtual edge source segment is empty.")
 
-        # U点に対応するwaypointが配列のどちら側にあるかをラベルから同定する。
         u_label_str = str(u_label)
 
         def _find_label_index(label: str) -> Optional[int]:
@@ -987,32 +1006,51 @@ class RoutePlannerNode(Node):
             seg_u_first = list(base)
         elif u_index == len(base) - 1:
             seg_u_first = list(reversed(base))
-            u_index = 0
         else:
             raise RuntimeError(
                 "U endpoint was found inside the segment, which is unsupported."
             )
 
-        # prev waypoint に一致するインデックスを座標で特定する。
-        prev_idx_u_first: Optional[int] = None
+        seg_len = len(seg_u_first)
+        if seg_len == 0:
+            raise RuntimeError("Virtual edge segment has no waypoints.")
+
+        if u_first_on_route:
+            prev_idx_u_first = int(local_idx_prev)
+        else:
+            prev_idx_u_first = (seg_len - 1) - int(local_idx_prev)
+
+        if not (0 <= prev_idx_u_first < seg_len):
+            raise RuntimeError("Invalid prev index in virtual edge generation.")
+
         prev_x = prev_wp.pose.position.x
         prev_y = prev_wp.pose.position.y
-        for idx, wp in enumerate(seg_u_first):
-            if almost_same_xy(prev_x, prev_y, wp.pose.position.x, wp.pose.position.y):
-                prev_idx_u_first = idx
-                break
-
-        if prev_idx_u_first is None:
-            raise RuntimeError(
-                "Failed to locate prev waypoint within the virtual edge segment."
-            )
+        candidate_prev = seg_u_first[prev_idx_u_first]
+        if not almost_same_xy(
+            prev_x,
+            prev_y,
+            candidate_prev.pose.position.x,
+            candidate_prev.pose.position.y,
+        ):
+            fallback_idx: Optional[int] = None
+            for idx, wp in enumerate(seg_u_first):
+                if almost_same_xy(prev_x, prev_y, wp.pose.position.x, wp.pose.position.y):
+                    fallback_idx = idx
+                    break
+            if fallback_idx is None:
+                raise RuntimeError(
+                    "Failed to locate prev waypoint within the virtual edge segment."
+                )
+            prev_idx_u_first = fallback_idx
 
         # Uは seg_u_first[0] に対応する（末尾は V）。
         # prev_idx_u_first から 1 ずつデクリメントし、index 0 の U まで辿って連結する。
         virtual: List[Waypoint] = []
+        indices: List[Optional[int]] = []
         # current を先頭に追加（Waypoint化）
         current_wp = self._make_waypoint_from_pose(current_pose, label="current")
         virtual.append(current_wp)
+        indices.append(None)
 
         # prev を続けて追加（既存prevをコピーして先頭重複回避。位置はそのまま）
         prev_copy = Waypoint()
@@ -1040,6 +1078,7 @@ class RoutePlannerNode(Node):
                 getattr(prev_wp, "not_skip", getattr(prev_wp, "isnot_skipnum", False))
             )
         virtual.append(prev_copy)
+        indices.append(int(prev_idx_u_first))
 
         # prev_idx_u_first から 1 ずつデクリメントして U=0 まで辿る
         # prev が U と同一（prev_idx_u_first==0）のときは追加なし（[current, prev(=U)]のみ）
@@ -1071,8 +1110,19 @@ class RoutePlannerNode(Node):
                     getattr(src, "not_skip", getattr(src, "isnot_skipnum", False))
                 )
             virtual.append(wp)
+            indices.append(int(idx))
 
-        return virtual
+        u_wp = seg_u_first[0]
+        last_wp = virtual[-1]
+        if not almost_same_xy(
+            last_wp.pose.position.x,
+            last_wp.pose.position.y,
+            u_wp.pose.position.x,
+            u_wp.pose.position.y,
+        ):
+            raise RuntimeError("Virtual edge does not reach the U endpoint.")
+
+        return virtual, indices
 
 
 # ===== エントリポイント ===============================================================

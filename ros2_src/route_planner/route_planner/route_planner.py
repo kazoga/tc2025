@@ -944,8 +944,7 @@ class RoutePlannerNode(Node):
         """仮想エッジ current→prev→U の waypoint 群を生成する。
 
         ロジック:
-          - 走行中エッジ（seg_id）の CSV を取得し、"Uが先頭" となる向き（u_first）で配列を準備する。
-            * GetRoute時に記録した u_first_on_route を使って、prev のローカルindexを u_first 基準のindexに変換する。
+          - 走行中エッジ（seg_id）の CSV を取得し、端点ラベルを用いて U 点が先頭になるように向きを整える。
           - current（Pose）を先頭に、prev（既存Waypoint）を挟み、prev→U 方向に向かう配列を切り出す。
             * prev が既に U（= index 0）なら、[current, U] の最短列になる（処理は同一）。
           - 生成した配列は、後段で stamp_edge_end_labels("current", U) で端点ラベルを刻む。
@@ -954,7 +953,7 @@ class RoutePlannerNode(Node):
             seg_id: 走行中エッジの segment_id（CSVを特定）。
             u_label: 手前側ノードのラベル（U）。
             local_idx_prev: prev のエッジ内ローカルindex（GetRoute時の向き基準）。
-            u_first_on_route: GetRoute時にそのエッジを U→V 向きで使ったかどうかのフラグ。
+            u_first_on_route: GetRoute時に推定したエッジ向きのメタデータ（整合性確認用に保持）。
             prev_wp: 現ルート上の prev Waypoint（座標/姿勢を持つ）。
             current_pose: 現在位置の PoseStamped。
 
@@ -966,25 +965,50 @@ class RoutePlannerNode(Node):
             raise RuntimeError(f"Virtual edge source segment not loaded: {seg_id}")
 
         base = entry.waypoints  # CSV由来の素の配列（端点ラベルは未刻印）
+        if not base:
+            raise RuntimeError("Virtual edge source segment is empty.")
 
-        # "Uが先頭" となる向きの配列を作る（u_first=True の配列）
-        # GetRoute時の向きが U→V (u_first_on_route=True) なら、そのまま。
-        # 逆なら反転して U→V 向きに合わせる。
-        if u_first_on_route:
+        # U点に対応するwaypointが配列のどちら側にあるかをラベルから同定する。
+        u_label_str = str(u_label)
+
+        def _find_label_index(label: str) -> Optional[int]:
+            for idx, wp in enumerate(base):
+                if str(wp.label or "") == label:
+                    return idx
+            return None
+
+        u_index = _find_label_index(u_label_str)
+        if u_index is None:
+            raise RuntimeError(
+                "Failed to locate U endpoint in virtual edge source segment."
+            )
+
+        if u_index == 0:
             seg_u_first = list(base)
-            # prev のindexはそのまま
-            prev_idx_u_first = int(local_idx_prev)
-        else:
+        elif u_index == len(base) - 1:
             seg_u_first = list(reversed(base))
-            # 反転したため prev の index は変換（len-1 - idx）
-            prev_idx_u_first = (len(seg_u_first) - 1) - int(local_idx_prev)
+            u_index = 0
+        else:
+            raise RuntimeError(
+                "U endpoint was found inside the segment, which is unsupported."
+            )
 
-        if not (0 <= prev_idx_u_first < len(seg_u_first)):
-            raise RuntimeError("Invalid prev index in virtual edge generation.")
+        # prev waypoint に一致するインデックスを座標で特定する。
+        prev_idx_u_first: Optional[int] = None
+        prev_x = prev_wp.pose.position.x
+        prev_y = prev_wp.pose.position.y
+        for idx, wp in enumerate(seg_u_first):
+            if almost_same_xy(prev_x, prev_y, wp.pose.position.x, wp.pose.position.y):
+                prev_idx_u_first = idx
+                break
 
-        # Uは seg_u_first[0] に対応する（末尾は V）
-        # prev→U 方向に向かう配列は seg_u_first[0:prev_idx_u_first+1] を逆順にせず、
-        # current→prev→  →U となるように、current, prev, seg_u_first[prev_idx_u_first-1  0] を連結する。
+        if prev_idx_u_first is None:
+            raise RuntimeError(
+                "Failed to locate prev waypoint within the virtual edge segment."
+            )
+
+        # Uは seg_u_first[0] に対応する（末尾は V）。
+        # prev_idx_u_first から 1 ずつデクリメントし、index 0 の U まで辿って連結する。
         virtual: List[Waypoint] = []
         # current を先頭に追加（Waypoint化）
         current_wp = self._make_waypoint_from_pose(current_pose, label="current")

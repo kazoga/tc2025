@@ -127,7 +127,7 @@ def _find_nearest_node(
 def sanitize_waypoint_nodes(
     wp_df: pd.DataFrame,
     nodes_df: pd.DataFrame,
-    representative_threshold_m: float = 2.0,
+    representative_threshold_m: float = 10.0,
 ) -> pd.DataFrame:
     """node列の値を代表点判定ルールに従い補正する."""
 
@@ -136,7 +136,7 @@ def sanitize_waypoint_nodes(
     node_lats: List[float] = nodes_df["lat"].astype(float).tolist()
     node_lons: List[float] = nodes_df["lon"].astype(float).tolist()
 
-    # Step A: ノード候補と最短距離を取得し、2m以上離れていればノードではないとみなす。
+    # Step A: ノード候補と最短距離を取得し、判定閾値以上離れていればノードではないとみなす。
     nearest_entries: List[Tuple[int, str, float]] = []
     for idx, row in df.iterrows():
         if not is_non_negative_marker(row["node"]):
@@ -150,6 +150,7 @@ def sanitize_waypoint_nodes(
         nearest_entries.append((idx, best_id, best_dist))
 
     # Step B: 同じノードに紐づく行が連続している場合は最も距離が近い行のみを残す。
+    nearest_entries.sort(key=lambda entry: entry[0])
     i = 0
     while i < len(nearest_entries):
         idx_i, current_id, _ = nearest_entries[i]
@@ -157,14 +158,12 @@ def sanitize_waypoint_nodes(
             i += 1
             continue
 
-        block: List[Tuple[int, str, float]] = [nearest_entries[i]]
         j = i + 1
+        block: List[Tuple[int, str, float]] = [(idx_i, current_id, nearest_entries[i][2])]
         while j < len(nearest_entries) and nearest_entries[j][1] == current_id:
-            idx_j = nearest_entries[j][0]
-            if not is_non_negative_marker(df.at[idx_j, "node"]):
-                j += 1
-                continue
-            block.append(nearest_entries[j])
+            idx_j, _, dist_j = nearest_entries[j]
+            if is_non_negative_marker(df.at[idx_j, "node"]):
+                block.append((idx_j, current_id, dist_j))
             j += 1
 
         if len(block) >= 2:

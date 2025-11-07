@@ -34,6 +34,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Header
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Image
 
 # route_msgs はユーザ環境のメッセージ/サービスに準拠
@@ -338,6 +339,7 @@ class RouteManagerNode(Node):
         ] = None
         # 1Hzで最新状態を再送するためのタイマーを追加する。
         self._state_snapshot_timer = self.create_timer(0.2, self._publish_state_snapshots)
+        self._last_report_pose: Optional[PoseStamped] = None
 
     def _resolve_topic_name(self, name: str) -> str:
         """リマップ適用後のトピック名を返す補助関数."""
@@ -514,21 +516,54 @@ class RouteManagerNode(Node):
         ):
             self._emit_route_state(self._latest_route_state_payload)
 
+    @staticmethod
+    def _copy_pose_stamped(src: PoseStamped) -> PoseStamped:
+        """PoseStampedメッセージを新規インスタンスへ複製する。"""
+
+        copied = PoseStamped()
+        copied.header = Header()
+        if hasattr(src, "header") and hasattr(src.header, "stamp"):
+            copied.header.stamp.sec = int(getattr(src.header.stamp, "sec", 0))
+            copied.header.stamp.nanosec = int(getattr(src.header.stamp, "nanosec", 0))
+        copied.header.frame_id = str(getattr(src.header, "frame_id", ""))
+        pose_field = getattr(src, "pose", None)
+        position = getattr(pose_field, "position", None)
+        orientation = getattr(pose_field, "orientation", None)
+        if position is not None:
+            copied.pose.position.x = float(getattr(position, "x", 0.0))
+            copied.pose.position.y = float(getattr(position, "y", 0.0))
+            copied.pose.position.z = float(getattr(position, "z", 0.0))
+        if orientation is not None:
+            copied.pose.orientation.x = float(getattr(orientation, "x", 0.0))
+            copied.pose.orientation.y = float(getattr(orientation, "y", 0.0))
+            copied.pose.orientation.z = float(getattr(orientation, "z", 0.0))
+            copied.pose.orientation.w = float(getattr(orientation, "w", 1.0))
+        else:
+            copied.pose.orientation.w = 1.0
+        return copied
+
     # ------------------------------------------------------------------
     # Service Server: report_stuck（Core+FSMで4段階ロジックを維持）
     # ------------------------------------------------------------------
     def _on_report_stuck(self, req: ReportStuck.Request, res: ReportStuck.Response) -> ReportStuck.Response:
-        pose_map = getattr(req, "current_pose_map", None)
+        pose_msg = getattr(req, "current_pose", None)
+        if isinstance(pose_msg, PoseStamped):
+            self._last_report_pose = self._copy_pose_stamped(pose_msg)
+        else:
+            self._last_report_pose = None
+        pose_field = getattr(pose_msg, "pose", None)
+        position = getattr(pose_field, "position", None)
         pose2d = Pose2D(
-            x=float(getattr(getattr(pose_map, "position", None), "x", 0.0)),
-            y=float(getattr(getattr(pose_map, "position", None), "y", 0.0)),
+            x=float(getattr(position, "x", 0.0)),
+            y=float(getattr(position, "y", 0.0)),
         )
         report = StuckReport(
             route_version=int(getattr(req, "route_version", 0)),
             current_index=int(getattr(req, "current_index", -1)),
             current_label=str(getattr(req, "current_wp_label", "") or ""),
             current_pose=pose2d,
-            reason=str(getattr(req, "reason", "")),
+            reason_code=int(getattr(req, "reason_code", ReportStuck.Request.REASON_UNKNOWN)),
+            reason_detail=str(getattr(req, "reason_detail", "")),
             avoid_trial_count=int(getattr(req, "avoid_trial_count", 0)),
             last_hint_blocked=bool(getattr(req, "last_hint_blocked", False)),
             last_applied_offset_m=float(getattr(req, "last_applied_offset_m", 0.0)),
@@ -536,7 +571,8 @@ class RouteManagerNode(Node):
 
         self.get_logger().info(
             f"[Node] {self.report_stuck_service_name}: received -> delegate to Core/FSM "
-            f"idx={report.current_index} label='{report.current_label}' reason='{report.reason}'"
+            f"idx={report.current_index} label='{report.current_label}' reason='{report.reason_label()}' "
+            f"(code={report.reason_code})"
         )
         # Coreのイベントループ上でFSM処理を非同期実行し、結果を同期的に取得
         result = self.core.run_async(self.core.on_report_stuck(report)).result()
@@ -619,19 +655,29 @@ class RouteManagerNode(Node):
         return type("Resp", (), {"success": False, "message": "invalid response"})
 
     async def _planner_update_async(
-        self, major_version: int, prev_index: int, prev_label: str, next_index: Optional[int], next_label: str
+        self,
+        major_version: int,
+        prev_index: int,
+        prev_label: str,
+        current_index: int,
+        current_label: str,
     ):
         if not self.cli_update.wait_for_service(timeout_sec=self.timeout_sec):
             self.get_logger().info(f"[Node] planner UpdateRoute unavailable ({self.srv_update_name})")
             return type("Resp", (), {"success": False, "message": f"{self.srv_update_name} unavailable"})
-        self.get_logger().info(f"[Node] call planner UpdateRoute: ver(major)={major_version}, prev=({prev_index},{prev_label}), next=({next_index},{next_label})")
+        self.get_logger().info(
+            "[Node] call planner UpdateRoute: "
+            f"ver(major)={major_version}, prev=({prev_index},{prev_label}), "
+            f"current=({current_index},{current_label})"
+        )
         req = UpdateRoute.Request()
         req.route_version = int(major_version)
         req.prev_index = int(prev_index)
         req.prev_wp_label = str(prev_label)
-        if next_index is not None:
-            req.next_index = int(next_index)
-            req.next_wp_label = str(next_label)
+        req.current_index = int(current_index)
+        req.current_wp_label = str(current_label)
+        if self._last_report_pose is not None:
+            req.current_pose = self._copy_pose_stamped(self._last_report_pose)
         future = self.cli_update.call_async(req)
         while not future.done():
             await asyncio.sleep(0.01)

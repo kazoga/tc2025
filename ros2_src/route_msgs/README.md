@@ -1,11 +1,11 @@
-# route_msgs パッケージ README (phase2正式版)
+# route_msgs パッケージ README (phase3正式版)
 
 ## 概要
 `route_msgs` は経路計画・走行系で共通利用するメッセージ／サービス型を定義する
-インタフェース専用パッケージです。Phase2 ではルートバージョン管理、滞留報告、
-障害物回避ヒントなどのフィールドを拡張し、`route_manager`・`route_planner`・
-`route_follower`・`obstacle_monitor`・`robot_navigator` など複数ノード間のデータ交換を
-統一しました。
+インタフェース専用パッケージです。Phase3 ではルートバージョン管理、滞留報告の
+理由コード化（`reason_code` / `reason_detail`）、経路封鎖判定用フラグなどのフィールドを拡張し、
+`route_manager`・`route_planner`・`route_follower`・`obstacle_monitor`・`robot_navigator` など
+複数ノード間のデータ交換を統一しました。
 
 ## 主な機能
 - 経路データ (`Route`・`Waypoint`) と状態通知 (`RouteState`・`ManagerStatus`) のメッセージ定義。
@@ -40,15 +40,15 @@ ros2 interface show route_msgs/srv/ReportStuck
 | 名称 | 概要 | リクエスト主要項目 | 主な利用ノード |
 |------|------|------------------|---------------|
 | `GetRoute` | 初期ルートを取得。応答で `Route` を返す。 | `mission_id` 相当フィールドは無し。 | `route_manager` → `route_planner` |
-| `UpdateRoute` | 滞留時の部分ルート差し替え。 | `prev_index`・`next_index`・`route_version`・`reason`。 | `route_manager` ↔ `route_planner` |
-| `ReportStuck` | 滞留報告と再計画結果返却。 | `route_version`・`current_index`・`reason`・`avoid_trial_count`。 | `route_follower` → `route_manager` |
+| `UpdateRoute` | 滞留時の部分ルート差し替え。 | `prev_index`・`current_index`・`route_version`・`reason`。 | `route_manager` ↔ `route_planner` |
+| `ReportStuck` | 滞留報告と再計画結果返却。 | `route_version`・`current_index`・`reason_code`・`reason_detail`・`avoid_trial_count`。 | `route_follower` → `route_manager` |
 
 ## パラメータ
 - 本パッケージが公開するパラメータはありません。
 
 ## 状態管理・処理フロー
 - `Route.version` は `route_manager` が major/minor を 100 倍で符号化し、`/active_route` 配信の世代管理に利用します。
-- `RouteState.status` は Phase2 の FSM (`STATUS_IDLE`～`STATUS_ERROR`) と 1 対 1 に対応します。
+- `RouteState.status` は Phase3 の FSM (`STATUS_IDLE`～`STATUS_ERROR`) と 1 対 1 に対応します。
 - `ReportStuck.Response.decision_code` は `route_manager` の再計画・シフト・スキップ判断に一致し、
   `offset_hint` が `route_follower` への横オフセット指示となります。
 - `ObstacleAvoidanceHint.front_clearance_m` は `robot_navigator`・`route_follower` の減速／停止条件に利用されます。

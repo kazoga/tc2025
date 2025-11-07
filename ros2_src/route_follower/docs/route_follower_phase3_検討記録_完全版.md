@@ -1,15 +1,15 @@
-# route_follower_phase2_検討記録（最終更新版・完全版）
+# route_follower_phase3_検討記録（最終更新版・完全版）
 
 ## 0. 文書目的
-本書は route_follower ノードの Phase2 設計に関する検討経緯・決定事項を体系的に整理したものである。  
-従来の Phase1 実装から拡張された要素（滞留検知・障害物回避・L字サブゴール制御・状態骨格構造化など）を中心に、
+本書は route_follower ノードの Phase3 設計に関する検討経緯・決定事項を体系的に整理したものである。
+従来の Phase1/Phase2 実装から拡張された要素（滞留検知・障害物回避・L字サブゴール制御・状態骨格構造化・reason_code拡張など）を中心に、
 開発上の論点・判断理由・今後の発展方針を含む。
 
 ---
 
 ## 1. Phase1 からの変更点
 
-| 区分 | Phase1 | Phase2 |
+| 区分 | Phase1 | Phase3 |
 |------|---------|--------|
 | 障害物対処 | 無し（停止のみ） | 滞留検知を契機とした局所回避（Hint使用） |
 | 状態管理 | 単純フロー | FollowerStateEnum による明示的状態遷移管理 |
@@ -18,6 +18,7 @@
 | STOP解除 | manual_start共通 | signal_stop は sig_recog(GO) も可 |
 | ソース構造 | 単一関数集中 | 状態骨格明示 + 関数分離（on_xxx） |
 | 異常検知 | 無 | Pose未受信・index越え・route無設定をWARN出力 |
+| ReportStuck通報 | 理由文字列のみ | reason_code + reason_detail を追加し road_blocked を明示 |
 
 ---
 
@@ -25,7 +26,7 @@
 
 つくばチャレンジ等の実環境走行を想定し、経路上の一時的障害や環境誤差に対して、
 安全かつ単純な挙動で回避を行うことを目的とする。  
-Phase2ではグローバル経路の再計算までは行わず、ローカルな「横ずれ＋前進」での回避を実装範囲とした。
+Phase3でもグローバル経路の再計算までは行わず、ローカルな「横ずれ＋前進」での回避を実装範囲とした。
 
 ---
 
@@ -93,7 +94,7 @@ dy2 =  sin(yaw)*forward
 | 項目 | 値 |
 |------|----|
 | サービス型 | route_msgs/srv/ReportStuck |
-| リクエスト | route_version:int32, current_index:int32, current_wp_label:string, current_pose_map:Pose, reason:string, avoid_trial_count:uint32, last_hint_blocked:bool, last_applied_offset_m:float |
+| リクエスト | route_version:int32, current_index:int32, current_wp_label:string, current_pose_map:Pose, reason_code:uint8, reason_detail:string, avoid_trial_count:uint32, last_hint_blocked:bool, last_applied_offset_m:float |
 | レスポンス | decision_code:uint8(1=replan/2=skip/3=failed), waiting_deadline:Duration, offset_hint:float, note:string |
 | 呼出方式 | 同期（timeout=30s） |
 | decision_code処理 | replan/skip→WAITING_REROUTE, failed→ERROR |
@@ -110,7 +111,7 @@ dy2 =  sin(yaw)*forward
 
 ---
 
-## 8. 状態管理構成（Phase2最終）
+## 8. 状態管理構成（Phase3最終）
 
 ### 8.1 状態一覧
 
@@ -175,6 +176,7 @@ RUNNING
 ---
 
 ## 12. 結論
-Phase2では、滞留を唯一のトリガとした堅牢な局所回避ロジックを確立し、
-L字サブゴール制御・状態骨格構成によりフェーズ3以降の拡張基盤を整えた。  
-本仕様に基づき、route_follower_phase2_final.py が正式実装版である。
+Phase3でも滞留を唯一のトリガとした局所回避ロジックを維持しつつ、
+L字サブゴール制御・状態骨格構成に加えて reason_code 拡張を実装し、
+経路封鎖通報の明示化と route_manager との連携強化を実現した。
+本仕様に基づき、`route_follower_node.py` が正式実装版である。

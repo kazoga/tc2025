@@ -11,7 +11,7 @@ import math
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -85,6 +85,120 @@ class WaypointOrigin:
     edge_v: Optional[str]
     index_in_edge: Optional[int]
     u_first: Optional[bool]
+
+
+@dataclass
+class GraphEdgeRecord:
+    """可変ブロックのエッジを表現するシンプルなデータ構造."""
+
+    source: str
+    target: str
+    segment_id: str
+    reversible: int = 0
+
+    def key(self) -> frozenset:
+        """エッジ対（無向）を一意に表すキーを返す。"""
+
+        return frozenset({self.source, self.target})
+
+    def to_dict(self) -> Dict[str, Any]:
+        """RouteBuilder内部で扱う辞書形式へ変換する。"""
+
+        return {
+            "source": self.source,
+            "target": self.target,
+            "segment_id": self.segment_id,
+            "waypoint_list": self.segment_id,
+            "reversible": int(self.reversible),
+        }
+
+
+class VariableGraphBuilder:
+    """可変ブロックのノード・エッジ集合を管理するビルダ."""
+
+    def __init__(
+        self,
+        nodes: List[Dict[str, Any]],
+        edges: Iterable[Dict[str, Any]],
+    ) -> None:
+        self._nodes: List[Dict[str, Any]] = [dict(node) for node in nodes]
+        self._edges: List[GraphEdgeRecord] = []
+        self._original_edges: List[GraphEdgeRecord] = []
+        self.replace_edges(edges)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_edge(edge: Dict[str, Any]) -> GraphEdgeRecord:
+        """edges.csv由来の辞書を GraphEdgeRecord に正規化する。"""
+
+        src = edge.get("source")
+        dst = edge.get("target")
+        seg = edge.get("segment_id") or edge.get("waypoint_list")
+        if src is None or dst is None or seg is None:
+            raise ValueError("Edge definition requires source/target/segment_id")
+        reversible_raw = edge.get("reversible", 0)
+        try:
+            reversible = int(reversible_raw)
+        except (TypeError, ValueError):
+            reversible = 0
+        return GraphEdgeRecord(str(src), str(dst), str(seg), 1 if reversible else 0)
+
+    # ------------------------------------------------------------------
+    def replace_edges(self, edges: Iterable[Dict[str, Any]]) -> None:
+        """内部エッジ集合を与えられた内容で置き換える。"""
+
+        normalized = [self._normalize_edge(edge) for edge in edges]
+        self._edges = list(normalized)
+        self._original_edges = list(normalized)
+
+    # ------------------------------------------------------------------
+    def reset(self) -> None:
+        """最初に読み込んだエッジ集合へ戻す。"""
+
+        self._edges = list(self._original_edges)
+
+    # ------------------------------------------------------------------
+    def remove_edge_pair(self, node_u: str, node_v: str) -> bool:
+        """指定したノード対に該当するエッジ（双方向）を削除する。"""
+
+        key = frozenset({str(node_u), str(node_v)})
+        filtered: List[GraphEdgeRecord] = []
+        removed = False
+        for edge in self._edges:
+            if edge.key() == key:
+                removed = True
+                continue
+            filtered.append(edge)
+        self._edges = filtered
+        return removed
+
+    # ------------------------------------------------------------------
+    def add_edge(self, edge: Dict[str, Any]) -> GraphEdgeRecord:
+        """新たなエッジを追加する（既存と同一なら無視）。"""
+
+        record = self._normalize_edge(edge)
+        for current in self._edges:
+            if (
+                current.source == record.source
+                and current.target == record.target
+                and current.segment_id == record.segment_id
+                and current.reversible == record.reversible
+            ):
+                return current
+        self._edges.append(record)
+        return record
+
+    # ------------------------------------------------------------------
+    def get_nodes(self) -> List[Dict[str, Any]]:
+        """ノード集合をコピーで返す。"""
+
+        return [dict(node) for node in self._nodes]
+
+    # ------------------------------------------------------------------
+    def get_edges(self) -> List[Dict[str, Any]]:
+        """現在のエッジ集合を辞書形式で返す。"""
+
+        return [edge.to_dict() for edge in self._edges]
 
 
 @dataclass
@@ -471,6 +585,9 @@ def slice_by_labels_records(
     waypoints: List[WaypointRecord],
     start_label: str,
     goal_label: str,
+    *,
+    start_index_hint: Optional[int] = None,
+    goal_index_hint: Optional[int] = None,
 ) -> Tuple[List[WaypointRecord], int]:
     """start_labelとgoal_labelでwaypoint列をスライスする."""
 
@@ -480,8 +597,22 @@ def slice_by_labels_records(
     if not waypoints:
         raise ValueError("Waypoint list is empty.")
 
+    def _validate_hint(index_hint: Optional[int], label: str) -> Optional[int]:
+        if index_hint is None:
+            return None
+        if index_hint < 0 or index_hint >= len(waypoints):
+            return None
+        if label and waypoints[index_hint].label != label:
+            return None
+        return index_hint
+
+    validated_start_hint = _validate_hint(start_index_hint, start_label)
+    validated_goal_hint = _validate_hint(goal_index_hint, goal_label)
+
     if not start_label:
         start_idx = 0
+    elif validated_start_hint is not None:
+        start_idx = validated_start_hint
     else:
         for i, wp in enumerate(waypoints):
             if wp.label == start_label:
@@ -490,6 +621,8 @@ def slice_by_labels_records(
 
     if not goal_label:
         goal_idx = len(waypoints) - 1
+    elif validated_goal_hint is not None:
+        goal_idx = validated_goal_hint
     else:
         for j in range(len(waypoints) - 1, -1, -1):
             if waypoints[j].label == goal_label:
@@ -616,6 +749,7 @@ class RouteBuilder:
         self.logger = logger
         self.blocks: List[Dict[str, Any]] = []
         self.segments: Dict[str, SegmentRecord] = {}
+        self.graph_builders: Dict[Tuple[str, int], VariableGraphBuilder] = {}
 
     # ------------------------------------------------------------------
     def _log(self, level: str, message: str) -> None:
@@ -631,6 +765,44 @@ class RouteBuilder:
 
         self._load_blocks_from_yaml()
         self._load_csv_segments()
+
+    # ------------------------------------------------------------------
+    def _find_block(self, name: str, index: int) -> Optional[Dict[str, Any]]:
+        for block in self.blocks:
+            if block.get("name") == name and block.get("index") == index:
+                return block
+        return None
+
+    # ------------------------------------------------------------------
+    def get_graph_builder(self, name: str, index: int) -> Optional[VariableGraphBuilder]:
+        """可変ブロックに対応するグラフビルダを取得する。"""
+
+        return self.graph_builders.get((name, index))
+
+    # ------------------------------------------------------------------
+    def remove_graph_edge(self, name: str, index: int, node_u: str, node_v: str) -> bool:
+        """指定ブロックからエッジを削除し、ブロック定義へ反映する。"""
+
+        builder = self.get_graph_builder(name, index)
+        if builder is None:
+            return False
+        removed = builder.remove_edge_pair(node_u, node_v)
+        block = self._find_block(name, index)
+        if block is not None:
+            block["edges"] = builder.get_edges()
+        return removed
+
+    # ------------------------------------------------------------------
+    def add_graph_edge(self, name: str, index: int, edge: Dict[str, Any]) -> None:
+        """指定ブロックへエッジを追加し、ブロック定義へ反映する。"""
+
+        builder = self.get_graph_builder(name, index)
+        if builder is None:
+            raise RuntimeError(f"Graph builder not found for block: {name}[{index}]")
+        builder.add_edge(edge)
+        block = self._find_block(name, index)
+        if block is not None:
+            block["edges"] = builder.get_edges()
 
     # ------------------------------------------------------------------
     def _load_blocks_from_yaml(self) -> None:
@@ -736,6 +908,7 @@ class RouteBuilder:
     # ------------------------------------------------------------------
     def _load_csv_segments(self) -> None:
         self.segments = {}
+        self.graph_builders = {}
         if not self.blocks:
             return
 
@@ -814,12 +987,16 @@ class RouteBuilder:
                                         f"segment '{seg_path}' の読み込みに失敗しました: {exc}"
                                     )
                     block["edges"] = edges
+                    key = (block["name"], block["index"])
+                    self.graph_builders[key] = VariableGraphBuilder(nodes, edges)
                 except Exception as exc:
                     self._log(
                         "error",
                         f"可変ブロック '{name}' のedges読み込みに失敗しました: {exc}",
                     )
                     block["edges"] = []
+                    key = (block["name"], block["index"])
+                    self.graph_builders[key] = VariableGraphBuilder(nodes, [])
 
     # ------------------------------------------------------------------
     def _prepare_edges_for_solver(
@@ -877,6 +1054,8 @@ class RouteBuilder:
         start_label: str,
         goal_label: str,
         checkpoint_labels: List[str],
+        *,
+        start_label_origin: Optional[Tuple[str, int]] = None,
     ) -> RouteBuildResult:
         if not self.blocks:
             raise RuntimeError("ブロック定義が読み込まれていません。")
@@ -922,8 +1101,15 @@ class RouteBuilder:
                         (block.get("checkpoints", []) or []) + list(checkpoint_labels)
                     )
                 )
-                nodes_raw = block.get("nodes") or []
-                edges = block.get("edges") or []
+                graph_builder = self.graph_builders.get((bname, bindex))
+                if graph_builder is not None:
+                    nodes_raw = graph_builder.get_nodes()
+                    edges = graph_builder.get_edges()
+                    block["edges"] = edges
+                    block["nodes"] = nodes_raw
+                else:
+                    nodes_raw = block.get("nodes") or []
+                    edges = block.get("edges") or []
                 start = block.get("start")
                 goal = block.get("goal")
                 if not nodes_raw or not edges:
@@ -1019,7 +1205,36 @@ class RouteBuilder:
         if not route_wps:
             raise RuntimeError("blocks定義からwaypointを生成できませんでした。")
 
-        sliced, start_offset = slice_by_labels_records(route_wps, start_label, goal_label)
+        self._log("info", f"start_label: {start_label}, goal_label: {goal_label}, route: {route_wps}")
+        start_index_hint: Optional[int] = None
+        if start_label and start_label_origin is not None:
+            hint_name, hint_index = start_label_origin
+            candidates: List[int] = []
+            for idx, origin in enumerate(origins):
+                if origin.block_name != hint_name or origin.block_index != hint_index:
+                    continue
+                if route_wps[idx].label == start_label:
+                    candidates.append(idx)
+                prev_idx = idx - 1
+                if prev_idx >= 0 and route_wps[prev_idx].label == start_label:
+                    candidates.append(prev_idx)
+            if candidates:
+                start_index_hint = min(candidates)
+            else:
+                self._log(
+                    "warn",
+                    (
+                        "start_label_origin hint was provided but no matching waypoint was found. "
+                        "Falling back to the first occurrence of the label."
+                    ),
+                )
+
+        sliced, start_offset = slice_by_labels_records(
+            route_wps,
+            start_label,
+            goal_label,
+            start_index_hint=start_index_hint,
+        )
         origins = origins[start_offset : start_offset + len(sliced)]
         indexing_records(sliced)
         total_distance = calc_total_distance_records(sliced)

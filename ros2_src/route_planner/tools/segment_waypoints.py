@@ -152,14 +152,18 @@ def sanitize_waypoint_nodes(
     # Step B: 同じノードに紐づく行が連続している場合は最も距離が近い行のみを残す。
     i = 0
     while i < len(nearest_entries):
-        _, current_id, _ = nearest_entries[i]
+        idx_i, current_id, _ = nearest_entries[i]
+        if not is_non_negative_marker(df.at[idx_i, "node"]):
+            i += 1
+            continue
+
         block: List[Tuple[int, str, float]] = [nearest_entries[i]]
         j = i + 1
-        while (
-            j < len(nearest_entries)
-            and nearest_entries[j][0] == nearest_entries[j - 1][0] + 1
-            and nearest_entries[j][1] == current_id
-        ):
+        while j < len(nearest_entries) and nearest_entries[j][1] == current_id:
+            idx_j = nearest_entries[j][0]
+            if not is_non_negative_marker(df.at[idx_j, "node"]):
+                j += 1
+                continue
             block.append(nearest_entries[j])
             j += 1
 

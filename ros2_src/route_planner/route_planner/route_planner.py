@@ -645,7 +645,12 @@ class RoutePlannerNode(Node):
                 # 可変ブロックなのに必要メタが欠けるのは異常
                 raise RuntimeError("Failed to identify running edge metadata for closure.")
 
-            connection_node = u_node if u_first_flag else v_node
+            # u_first_flag はCSVの向きとルート走行向きの一致可否を示すメタデータであり、
+            # 走行中エッジの手前側ノード（U点）がどちらかを判別する指標にはならない。
+            # GetRoute 時に記録した edge_u は常に "prev 側の端点" を指すため、
+            # UpdateRoute では無条件に edge_u をリルート起点として採用する必要がある。
+            # そのため u_first_flag による条件分岐を廃し、常に U 点から再探索を開始する。
+            connection_node = u_node
             if not connection_node:
                 raise RuntimeError("Failed to determine reroute anchor node.")
             connection_label = str(connection_node)

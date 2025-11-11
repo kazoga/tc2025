@@ -33,10 +33,10 @@ def generate_launch_description() -> LaunchDescription:
         'active_target_topic',
         default_value='/active_target',
         description='PoseStamped 目標入力トピック',
-    )cmd_vel_topic
+    )
     cmd_vel_topic_arg = DeclareLaunchArgument(
-        'cmd_vel_topic', default_value='/ypspur_ros/cmd_vel', description='Twist 出力トピック'
-    )marker_topic
+        'cmd_vel_topic', default_value='/cmd_vel', description='Twist 出力トピック'
+    )
     marker_topic_arg = DeclareLaunchArgument(
         'marker_topic',
         default_value='/direction_marker',

@@ -890,6 +890,21 @@ class UiMain:
                 ),
             )
 
+            current_row = 2
+            override_widgets: Dict[str, Dict[str, object]] = {}
+            if state.user_arguments:
+                for arg_key in state.user_arguments:
+                    label_text = self._format_override_label(arg_key)
+                    ttk.Label(card, text=label_text).grid(row=current_row, column=0, sticky='w')
+                    current_row += 1
+                    var = tk.StringVar(value=state.override_inputs.get(arg_key, ''))
+                    entry = ttk.Entry(card, textvariable=var)
+                    entry.grid(row=current_row, column=0, sticky='ew', pady=1)
+                    callback = self._create_override_callback(profile_id, arg_key, var)
+                    trace_id = var.trace_add('write', callback)
+                    override_widgets[arg_key] = {'var': var, 'callback': callback, 'trace': trace_id}
+                    current_row += 1
+
             simulator_var = tk.BooleanVar(value=state.simulator_enabled)
             if state.simulator_launch_file:
                 chk = ttk.Checkbutton(
@@ -901,28 +916,42 @@ class UiMain:
                         var.get(),
                     ),
                 )
-                chk.grid(row=2, column=0, sticky='w')
-                button_row_index = 3
-            else:
-                button_row_index = 2
+                chk.grid(row=current_row, column=0, sticky='w')
+                current_row += 1
 
             ttk.Button(
                 card,
                 text='起動',
                 command=lambda pid=profile_id: self._core.request_launch(pid),
-            ).grid(row=button_row_index, column=0, sticky='ew', pady=2)
+            ).grid(row=current_row, column=0, sticky='ew', pady=2)
             ttk.Button(
                 card,
                 text='停止',
                 command=lambda pid=profile_id: self._core.request_stop(pid),
-            ).grid(row=button_row_index + 1, column=0, sticky='ew', pady=2)
+            ).grid(row=current_row + 1, column=0, sticky='ew', pady=2)
 
             self._launch_widgets[profile_id] = {
                 'status': status_var,
                 'param': param_var,
                 'sim': simulator_var,
                 'combo': combo,
+                'overrides': override_widgets,
             }
+
+    def _create_override_callback(self, profile_id: str, key: str, var: tk.StringVar):
+        def _callback(*_args: object) -> None:
+            self._core.update_launch_override(profile_id, key, var.get())
+
+        return _callback
+
+    @staticmethod
+    def _format_override_label(key: str) -> str:
+        label_map = {
+            'start_label': 'Start Label',
+            'goal_label': 'Goal Label',
+            'checkpoint_labels': 'Checkpoint Labels (comma separated)',
+        }
+        return label_map.get(key, key)
 
     def _build_logs(self, parent: ttk.Frame) -> None:
         columns = 2
@@ -1443,6 +1472,20 @@ class UiMain:
                 desired_values = tuple(state.available_params)
                 if current_values != desired_values:
                     combo_widget['values'] = state.available_params
+            override_entries = widgets.get('overrides')  # type: ignore[index]
+            if isinstance(override_entries, dict):
+                for key, holder in override_entries.items():
+                    var = None
+                    if isinstance(holder, dict):
+                        candidate = holder.get('var')
+                        if isinstance(candidate, tk.StringVar):
+                            var = candidate
+                    elif isinstance(holder, tk.StringVar):
+                        var = holder
+                    if isinstance(var, tk.StringVar):
+                        desired = state.override_inputs.get(key, '')
+                        if var.get() != desired:
+                            var.set(desired)
 
     def _update_logs(self, snapshot: GuiSnapshot) -> None:
         for profile_id, text_widget in self._log_texts.items():

@@ -56,6 +56,7 @@ class NodeLaunchProfile:
     default_param: Optional[str] = None
     param_argument: Optional[str] = 'param_file'
     simulator_launch_file: Optional[str] = None
+    user_arguments: Optional[List[str]] = None
 
 
 class NodeLaunchManager:
@@ -88,6 +89,7 @@ class NodeLaunchManager:
         profile: NodeLaunchProfile,
         param_path: Optional[str],
         simulator_enabled: bool,
+        overrides: Optional[Dict[str, str]] = None,
     ) -> None:
         """指定ノードを起動する。"""
 
@@ -104,6 +106,9 @@ class NodeLaunchManager:
             ]
             if param_path and profile.param_argument:
                 args.append(f"{profile.param_argument}:={param_path}")
+            if overrides:
+                for key, value in overrides.items():
+                    args.append(f"{key}:={value}")
 
             process = subprocess.Popen(
                 args,
@@ -367,6 +372,10 @@ class GuiCore:
                 simulator_launch_file=profile.simulator_launch_file,
                 selected_param=profile.default_param,
             )
+            if profile.user_arguments:
+                state.user_arguments = list(profile.user_arguments)
+                for key in state.user_arguments:
+                    state.override_inputs[key] = ''
             params = self._discover_params(profile)
             display_map = self._build_param_display_map(params)
             state.param_display_map = display_map
@@ -468,6 +477,37 @@ class GuiCore:
         state.param_display_map[candidate] = param_path
         state.available_params = sorted(state.param_display_map.keys())
         return candidate
+
+    def _build_launch_overrides(
+        self, profile: NodeLaunchProfile, state: NodeLaunchState
+    ) -> Dict[str, str]:
+        overrides: Dict[str, str] = {}
+        if profile.profile_id == 'route_manager':
+            start = state.override_inputs.get('start_label', '').strip()
+            if start:
+                overrides['start_label'] = start
+            goal = state.override_inputs.get('goal_label', '').strip()
+            if goal:
+                overrides['goal_label'] = goal
+            checkpoint_raw = state.override_inputs.get('checkpoint_labels', '')
+            labels = self._parse_label_list(checkpoint_raw)
+            if labels:
+                overrides['checkpoint_labels'] = ','.join(labels)
+        return overrides
+
+    @staticmethod
+    def _parse_label_list(raw_value: str) -> List[str]:
+        text = raw_value.replace('\n', ',').strip()
+        if not text:
+            return []
+        if text.startswith('[') and text.endswith(']'):
+            text = text[1:-1]
+        labels: List[str] = []
+        for chunk in text.split(','):
+            label = chunk.strip().strip("\"'")
+            if label:
+                labels.append(label)
+        return labels
 
     # ---------- 状態更新メソッド ----------
     def update_route_state(self, msg) -> None:
@@ -722,6 +762,14 @@ class GuiCore:
             )
         )
 
+    def update_launch_override(self, profile_id: str, key: str, value: str) -> None:
+        self._command_queue.put(
+            GuiCommand(
+                GuiCommandType.UPDATE_OVERRIDE,
+                {'profile_id': profile_id, 'key': key, 'value': value},
+            )
+        )
+
     def get_next_command(self, timeout: Optional[float] = None) -> Optional[GuiCommand]:
         try:
             return self._command_queue.get(timeout=timeout)
@@ -791,6 +839,9 @@ class GuiCore:
 
     # ---------- コマンド適用（ROS ノード側で使用） ----------
     def handle_command(self, command: GuiCommand) -> None:
+        if command.command_type == GuiCommandType.UPDATE_OVERRIDE:
+            self._apply_override_update(command.payload)
+            return
         if command.command_type == GuiCommandType.UPDATE_PARAM:
             self._apply_param_update(command.payload)
             return
@@ -809,12 +860,23 @@ class GuiCore:
                 self._handle_stop_request(profile.profile_id)
 
     def _handle_launch_request(self, profile_id: str) -> None:
-        state = self._launch_states.get(profile_id)
         profile = next((p for p in self._profiles if p.profile_id == profile_id), None)
-        if not state or not profile:
+        if not profile:
             return
+        with self._lock:
+            state = self._launch_states.get(profile_id)
+            if not state:
+                return
+            param_path = state.selected_param
+            simulator_enabled = state.simulator_enabled
+            overrides = self._build_launch_overrides(profile, state)
         try:
-            self._launch_manager.launch(profile, state.selected_param, state.simulator_enabled)
+            self._launch_manager.launch(
+                profile,
+                param_path,
+                simulator_enabled,
+                overrides if overrides else None,
+            )
         except Exception as exc:  # pylint: disable=broad-except
             self._on_launch_status(profile_id, NodeLaunchStatus.ERROR, None, str(exc))
 
@@ -843,6 +905,20 @@ class GuiCore:
             else:
                 state.selected_param = None
                 state.selected_param_display = None
+
+    def _apply_override_update(self, payload: Dict[str, object]) -> None:
+        profile_id = payload.get('profile_id')
+        key = payload.get('key')
+        value = payload.get('value')
+        if not isinstance(profile_id, str) or not isinstance(key, str):
+            return
+        if not isinstance(value, str):
+            value = ''
+        with self._lock:
+            state = self._launch_states.get(profile_id)
+            if not state:
+                return
+            state.override_inputs[key] = value
 
     def _apply_simulator_toggle(self, payload: Dict[str, object]) -> None:
         profile_id = payload.get('profile_id')
@@ -906,6 +982,7 @@ def default_launch_profiles() -> List[NodeLaunchProfile]:
             display_name='Route Manager',
             package='route_manager',
             launch_file='route_manager.launch.py',
+            user_arguments=['start_label', 'goal_label', 'checkpoint_labels'],
         ),
         NodeLaunchProfile(
             profile_id='route_follower',

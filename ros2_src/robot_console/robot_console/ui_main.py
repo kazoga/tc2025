@@ -956,26 +956,35 @@ class UiMain:
             row = index // columns
             col = index % columns
             index += 1
-            frame = ttk.LabelFrame(parent, text=state.display_name, padding=6)
+            frame = ttk.LabelFrame(parent, padding=6)
             frame.grid(row=row, column=col, sticky='nsew', padx=6, pady=6)
             frame.columnconfigure(0, weight=1)
+            frame.columnconfigure(1, weight=0)
             frame.rowconfigure(0, weight=1)
             frame.rowconfigure(1, weight=0)
-            frame.rowconfigure(2, weight=0)
+
+            header = ttk.Frame(frame)
+            header.columnconfigure(0, weight=1)
+            header.columnconfigure(1, weight=0)
+            ttk.Label(header, text=state.display_name).grid(
+                row=0, column=0, sticky='w'
+            )
+            button = ttk.Button(
+                header,
+                text='ログファイルを開く',
+                command=lambda pid=profile_id: self._open_log_file(pid),
+            )
+            button.grid(row=0, column=1, sticky='e')
+            frame.configure(labelwidget=header)
+
             text = tk.Text(frame, wrap='none', state='disabled')
-            text.grid(row=0, column=0, sticky='nsew')
+            text.grid(row=0, column=0, sticky='nsew', pady=(6, 0))
             v_scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
-            v_scrollbar.grid(row=0, column=1, sticky='ns')
+            v_scrollbar.grid(row=0, column=1, sticky='ns', pady=(6, 0))
             h_scrollbar = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
             h_scrollbar.grid(row=1, column=0, sticky='ew')
             text.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
             self._log_texts[profile_id] = text
-            button = ttk.Button(
-                frame,
-                text='ログファイルを開く',
-                command=lambda pid=profile_id: self._open_log_file(pid),
-            )
-            button.grid(row=2, column=0, columnspan=2, sticky='e', pady=(6, 0))
             button.state(['disabled'])
             self._log_open_buttons[profile_id] = button
             self._log_file_paths[profile_id] = None

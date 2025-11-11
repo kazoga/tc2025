@@ -190,10 +190,11 @@ class ObstacleMonitorNode(Node):
 
         self._last_points_xy = xy.copy() if xy.size > 0 else None
 
-        # ---- x <= max_obstacle_distance_m で抽出 ----
+        # ---- x <= max_obstacle_distance_m で抽出 & 前方0.15m未満の点を除外 ----
         max_dist = float(self.get_parameter('max_obstacle_distance_m').value)
         hint_range = self._ensure_hint_range(max_dist)
-        xy_extract = xy[xy[:, 0] <= max_dist] if xy.size > 0 else np.empty((0, 2), dtype=np.float32)
+        # 前方距離(x)が0.15m未満の点を除外してから、最大距離でフィルタリング
+        xy_extract = xy[(xy[:, 0] >= 0.15) & (xy[:, 0] <= max_dist)] if xy.size > 0 else np.empty((0, 2), dtype=np.float32)
 
         # ---- 左右に分割（y 符号）し、|y| 昇順で並べ替え ----
         left = xy_extract[xy_extract[:, 1] >= 0.0] if xy_extract.size > 0 else np.empty((0, 2), dtype=np.float32)

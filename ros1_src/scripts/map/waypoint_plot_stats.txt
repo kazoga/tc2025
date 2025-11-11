@@ -1,0 +1,96 @@
+Waypoint Statistics
+==================================================
+
+Total waypoints: 1306
+Label interval: 20
+Waypoints with node=1: 75
+
+Error Statistics:
+  Mean error:   2.046506 m
+  Max error:    11.356431 m
+  Min error:    0.022047 m
+  Std deviation: 1.619733 m
+
+Waypoints with node=1:
+  Label 0: error = 0.024223 m
+  Label 118: error = 3.626942 m
+  Label 140: error = 0.394751 m
+  Label 170: error = 1.044232 m
+  Label 183: error = 1.060549 m
+  Label 204: error = 1.389739 m
+  Label 248: error = 2.715010 m
+  Label 252: error = 2.419584 m
+  Label 255: error = 1.496264 m
+  Label 262: error = 4.036087 m
+  Label 265: error = 4.156219 m
+  Label 274: error = 4.498009 m
+  Label 289: error = 4.799877 m
+  Label 317: error = 4.617947 m
+  Label 340: error = 5.378264 m
+  Label 355: error = 2.516784 m
+  Label 376: error = 2.156777 m
+  Label 389: error = 4.469542 m
+  Label 396: error = 4.539731 m
+  Label 402: error = 4.552241 m
+  Label 409: error = 3.783216 m
+  Label 419: error = 2.682983 m
+  Label 426: error = 2.159017 m
+  Label 439: error = 2.181267 m
+  Label 451: error = 0.710092 m
+  Label 465: error = 0.426540 m
+  Label 477: error = 0.821268 m
+  Label 500: error = 0.931944 m
+  Label 514: error = 1.103491 m
+  Label 529: error = 1.987272 m
+  Label 546: error = 1.813148 m
+  Label 577: error = 1.611962 m
+  Label 592: error = 1.510032 m
+  Label 604: error = 0.491274 m
+  Label 615: error = 0.085428 m
+  Label 625: error = 0.087338 m
+  Label 640: error = 0.421329 m
+  Label 647: error = 0.645573 m
+  Label 658: error = 1.456889 m
+  Label 693: error = 3.520872 m
+  Label 696: error = 4.256829 m
+  Label 704: error = 1.769473 m
+  Label 711: error = 1.530669 m
+  Label 717: error = 1.012926 m
+  Label 719: error = 0.758182 m
+  Label 725: error = 0.425617 m
+  Label 765: error = 1.072639 m
+  Label 783: error = 0.832059 m
+  Label 793: error = 1.011918 m
+  Label 802: error = 1.383367 m
+  Label 812: error = 1.841175 m
+  Label 850: error = 1.979783 m
+  Label 860: error = 0.462001 m
+  Label 871: error = 0.189642 m
+  Label 873: error = 0.109410 m
+  Label 914: error = 0.853447 m
+  Label 937: error = 0.854225 m
+  Label 952: error = 1.062403 m
+  Label 966: error = 0.706460 m
+  Label 975: error = 0.386977 m
+  Label 1009: error = 0.741029 m
+  Label 1012: error = 1.288698 m
+  Label 1059: error = 2.802148 m
+  Label 1070: error = 4.954119 m
+  Label 1073: error = 9.250172 m
+  Label 1152: error = 1.429780 m
+  Label 1154: error = 1.785654 m
+  Label 1221: error = 1.121794 m
+  Label 1226: error = 1.092575 m
+  Label 1233: error = 1.291642 m
+  Label 1237: error = 1.382677 m
+  Label 1242: error = 1.145588 m
+  Label 1306: error = 1.150848 m
+  Label 1342: error = 3.426843 m
+  Label 1370: error = 2.495756 m
+
+Waypoints with largest errors (top 5):
+  Label 36: 11.356431 m
+  Label 1075: 9.925009 m
+  Label 37: 9.652784 m
+  Label 35: 9.489146 m
+  Label 1073: 9.250172 m (node=1)

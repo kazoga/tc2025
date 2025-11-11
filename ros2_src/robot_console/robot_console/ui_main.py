@@ -963,7 +963,7 @@ class UiMain:
             frame.rowconfigure(0, weight=1)
             frame.rowconfigure(1, weight=0)
 
-            header = ttk.Frame(frame)
+            header = ttk.Frame(frame, padding=(0, 0, 30, 0))
             header.columnconfigure(0, weight=1)
             header.columnconfigure(1, weight=0)
             ttk.Label(header, text=state.display_name).grid(
@@ -976,6 +976,13 @@ class UiMain:
             )
             button.grid(row=0, column=1, sticky='e', padx=(20, 0))
             frame.configure(labelwidget=header)
+
+            def _sync_header_width(event: tk.Event, hdr: ttk.Frame = header) -> None:
+                """フレーム幅に合わせてヘッダー幅を更新する。"""
+
+                hdr.configure(width=max(event.width, 0))
+
+            frame.bind('<Configure>', _sync_header_width, add='+')
 
             text = tk.Text(frame, wrap='none', state='disabled')
             text.grid(row=0, column=0, sticky='nsew', pady=(6, 0))

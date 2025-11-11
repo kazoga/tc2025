@@ -135,6 +135,7 @@ class RobotNavigator(Node):
         goal_topic = 'active_target'
         road_block_topic = 'road_blocked'
         active_route_topic = 'active_route'
+        # リマップでの変更を確実に反映させるため、既定は相対名とする
         cmd_vel_topic = 'cmd_vel'
         marker_topic = 'direction_marker'
         hint_topic = 'obstacle_avoidance_hint'

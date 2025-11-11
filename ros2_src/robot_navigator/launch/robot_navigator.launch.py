@@ -40,7 +40,7 @@ def generate_launch_description() -> LaunchDescription:
     marker_topic_arg = DeclareLaunchArgument(
         'marker_topic',
         default_value='/direction_marker',
-        description='可視化 Marker 出力トピック',
+        description='可視化 cmd_vel_topicMarker 出力トピック',
     )
     obstacle_hint_topic_arg = DeclareLaunchArgument(
         'obstacle_hint_topic',
@@ -68,7 +68,6 @@ def generate_launch_description() -> LaunchDescription:
         remappings=[
             ('scan', scan_topic),
             ('odom', odom_topic),
-            ('/odom', odom_topic),
             ('amcl_pose', amcl_pose_topic),
             ('active_target', active_target_topic),
             ('cmd_vel', cmd_vel_topic),

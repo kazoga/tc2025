@@ -67,6 +67,10 @@ class WaypointMapView:
                 header = next(reader)
 
                 for row in reader:
+                    # Skip empty rows
+                    if len(row) < 16:
+                        continue
+
                     # Mark arrow
                     marker_data = Marker()
                     marker_data.header.frame_id = "map"
@@ -77,14 +81,14 @@ class WaypointMapView:
 
                     marker_data.action = Marker.ADD
 
-                    marker_data.pose.position.x = float(row[1])
-                    marker_data.pose.position.y = float(row[2])
-                    marker_data.pose.position.z = float(row[3])
+                    marker_data.pose.position.x = float(row[3])
+                    marker_data.pose.position.y = float(row[4])
+                    marker_data.pose.position.z = float(row[5])
 
-                    marker_data.pose.orientation.x = float(row[4])
-                    marker_data.pose.orientation.y = float(row[5])
-                    marker_data.pose.orientation.z = float(row[6])
-                    marker_data.pose.orientation.w = float(row[7])
+                    marker_data.pose.orientation.x = float(row[6])
+                    marker_data.pose.orientation.y = float(row[7])
+                    marker_data.pose.orientation.z = float(row[8])
+                    marker_data.pose.orientation.w = float(row[9])
 
                     if int(row[10]) == 1:
                         marker_data.color.r = 1.0
@@ -163,14 +167,14 @@ class WaypointMapView:
 
                     marker_data.action = Marker.ADD
 
-                    marker_data.pose.position.x = float(row[1])
-                    marker_data.pose.position.y = float(row[2])
-                    marker_data.pose.position.z = float(row[3])
+                    marker_data.pose.position.x = float(row[3])
+                    marker_data.pose.position.y = float(row[4])
+                    marker_data.pose.position.z = float(row[5])
 
-                    marker_data.pose.orientation.x = float(row[4])
-                    marker_data.pose.orientation.y = float(row[5])
-                    marker_data.pose.orientation.z = float(row[6])
-                    marker_data.pose.orientation.w = float(row[7])
+                    marker_data.pose.orientation.x = float(row[6])
+                    marker_data.pose.orientation.y = float(row[7])
+                    marker_data.pose.orientation.z = float(row[8])
+                    marker_data.pose.orientation.w = float(row[9])
 
                     marker_data.color.r = 0.0
                     marker_data.color.g = 0.0

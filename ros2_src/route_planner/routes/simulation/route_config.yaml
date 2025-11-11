@@ -1,2 +1,2 @@
 blocks:
-  - { type: fixed, name: 20250920, segment_id: "fixed/straight.csv" }
+  - { type: fixed, name: 20250920, segment_id: "/home/nkb/catkin_ws/src/FAST_LIO/PCD/waypoint.csv" }

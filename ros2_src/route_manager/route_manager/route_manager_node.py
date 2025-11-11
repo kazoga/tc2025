@@ -362,10 +362,10 @@ class RouteManagerNode(Node):
         """チェックポイントパラメータを配列へ正規化する。"""
 
         param = self.get_parameter("checkpoint_labels")
-        if param.type_ == Parameter.Type.PARAMETER_STRING_ARRAY:
+        if param.type_ == Parameter.Type.STRING_ARRAY:
             raw_values = list(param.get_parameter_value().string_array_value)
             return [label.strip() for label in raw_values if label.strip()]
-        if param.type_ == Parameter.Type.PARAMETER_STRING:
+        if param.type_ == Parameter.Type.STRING:
             text = param.get_parameter_value().string_value
             return self._parse_checkpoint_text(text)
         # YAMLで不明な型が渡された場合はフォールバックとして iterable を走査する。

@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import Any, Dict, List
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -49,7 +49,7 @@ def _create_node(context, *args, **kwargs):
     checkpoint_value = _get_config_value(context, 'checkpoint_labels')
 
     parameters: List[object] = [param_file_value]
-    overrides = {}
+    overrides: Dict[str, object] = {}
     if start_label_value:
         overrides['start_label'] = start_label_value
     if goal_label_value:
@@ -58,7 +58,9 @@ def _create_node(context, *args, **kwargs):
     if checkpoint_labels:
         overrides['checkpoint_labels'] = checkpoint_labels
     if overrides:
-        parameters.append(overrides)
+        # YAML 側ではノード名付きのセクションを用意しているため、同じ階層に
+        # 上書き値を配置して優先順位の逆転を防ぐ。
+        parameters.append({'route_manager': {'ros__parameters': overrides}})
 
     active_route_topic = LaunchConfiguration('active_route_topic')
     route_state_topic = LaunchConfiguration('route_state_topic')

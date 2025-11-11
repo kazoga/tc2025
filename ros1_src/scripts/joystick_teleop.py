@@ -41,7 +41,7 @@ class JoystickTeleop:
         publish_rate = rospy.get_param("~publish_rate", 20.0)  # Hz
         self.publish_period = rospy.Duration(1.0 / max(publish_rate, 1.0))
 
-        self.cmd_vel_pub = rospy.Publisher("ypspur_ros/cmd_vel", Twist, queue_size=1)
+        self.cmd_vel_pub = rospy.Publisher("cmd_vel", Twist, queue_size=1)
         self.last_cmd = Twist()
         self.last_input_time = rospy.Time.now()
         self.prev_buttons = []  # ボタン状態の上昇エッジ検出用

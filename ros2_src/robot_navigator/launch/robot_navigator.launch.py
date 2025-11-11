@@ -33,14 +33,14 @@ def generate_launch_description() -> LaunchDescription:
         'active_target_topic',
         default_value='/active_target',
         description='PoseStamped 目標入力トピック',
-    )
+    )cmd_vel_topic
     cmd_vel_topic_arg = DeclareLaunchArgument(
-        'cmd_vel_topic', default_value='/cmd_vel', description='Twist 出力トピック'
-    )
+        'cmd_vel_topic', default_value='/ypspur_ros/cmd_vel', description='Twist 出力トピック'
+    )marker_topic
     marker_topic_arg = DeclareLaunchArgument(
         'marker_topic',
         default_value='/direction_marker',
-        description='可視化 Marker 出力トピック',
+        description='可視化 cmd_vel_topicMarker 出力トピック',
     )
     obstacle_hint_topic_arg = DeclareLaunchArgument(
         'obstacle_hint_topic',
@@ -68,7 +68,6 @@ def generate_launch_description() -> LaunchDescription:
         remappings=[
             ('scan', scan_topic),
             ('odom', odom_topic),
-            ('/odom', odom_topic),
             ('amcl_pose', amcl_pose_topic),
             ('active_target', active_target_topic),
             ('cmd_vel', cmd_vel_topic),

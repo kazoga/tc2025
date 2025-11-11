@@ -6,6 +6,7 @@ obstacle_monitor:
     front_clearance_percentile: 5.0
     front_clearance_min_points: 5
     max_obstacle_distance_m: 1.5
+    front_block_ignore_dist_m: 0.15
     robot_width_m: 0.6
     avoid_offset_min_m: 0.75
     viewer_map_range_m: 8.0

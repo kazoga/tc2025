@@ -51,6 +51,8 @@ class ObstacleMonitorNode(Node):
         self.declare_parameter('front_cone_half_deg', 10.0)
         # 停止しきい値 [m]（くさび内で x < stop_dist_m なら閉塞）
         self.declare_parameter('stop_dist_m', 1.0)
+        # front_blocked 判定のために無視する近距離データの閾値 [m]
+        self.declare_parameter('front_block_ignore_dist_m', 0.15)
 
         # 前方閉塞判定で利用する分位点[%]（帯内の下位何%を評価するか）
         self.declare_parameter('front_clearance_percentile', 5.0)
@@ -195,11 +197,16 @@ class ObstacleMonitorNode(Node):
 
         self._last_points_xy = xy.copy() if xy.size > 0 else None
 
-        # ---- x <= max_obstacle_distance_m で抽出 & 前方0.15m未満の点を除外 ----
+        # ---- x <= max_obstacle_distance_m で抽出 & 近距離点を除外 ----
         max_dist = float(self.get_parameter('max_obstacle_distance_m').value)
         hint_range = self._ensure_hint_range(max_dist)
-        # 前方距離(x)が0.15m未満の点を除外してから、最大距離でフィルタリング
-        xy_extract = xy[(xy[:, 0] >= 0.15) & (xy[:, 0] <= max_dist)] if xy.size > 0 else np.empty((0, 2), dtype=np.float32)
+        ignore_dist = float(self.get_parameter('front_block_ignore_dist_m').value)
+        # 前方距離(x)が閾値未満の点を除外してから、最大距離でフィルタリング
+        xy_extract = (
+            xy[(xy[:, 0] >= ignore_dist) & (xy[:, 0] <= max_dist)]
+            if xy.size > 0
+            else np.empty((0, 2), dtype=np.float32)
+        )
 
         # ---- 左右に分割（y 符号）し、|y| 昇順で並べ替え ----
         left = xy_extract[xy_extract[:, 1] >= 0.0] if xy_extract.size > 0 else np.empty((0, 2), dtype=np.float32)

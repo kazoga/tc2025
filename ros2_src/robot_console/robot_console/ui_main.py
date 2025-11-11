@@ -5,11 +5,12 @@ from __future__ import annotations
 import base64
 import logging
 import math
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import Any, Dict, Optional, Tuple
 
 try:
@@ -302,6 +303,8 @@ class UiMain:
         self._param_last_display: Dict[str, str] = {}
         self._file_cache: Dict[str, Tuple[float, str]] = {}
         self._log_texts: Dict[str, tk.Text] = {}
+        self._log_open_buttons: Dict[str, ttk.Button] = {}
+        self._log_file_paths: Dict[str, Optional[str]] = {}
 
         self._build_layout()
         self._on_obstacle_params_changed()
@@ -943,6 +946,8 @@ class UiMain:
             parent.rowconfigure(row, weight=1)
 
         self._log_texts.clear()
+        self._log_open_buttons.clear()
+        self._log_file_paths.clear()
         index = 0
         for profile_id in ordered:
             state = snapshot.launch_states.get(profile_id)
@@ -955,6 +960,8 @@ class UiMain:
             frame.grid(row=row, column=col, sticky='nsew', padx=6, pady=6)
             frame.columnconfigure(0, weight=1)
             frame.rowconfigure(0, weight=1)
+            frame.rowconfigure(1, weight=0)
+            frame.rowconfigure(2, weight=0)
             text = tk.Text(frame, wrap='none', state='disabled')
             text.grid(row=0, column=0, sticky='nsew')
             v_scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
@@ -963,6 +970,15 @@ class UiMain:
             h_scrollbar.grid(row=1, column=0, sticky='ew')
             text.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
             self._log_texts[profile_id] = text
+            button = ttk.Button(
+                frame,
+                text='ログファイルを開く',
+                command=lambda pid=profile_id: self._open_log_file(pid),
+            )
+            button.grid(row=2, column=0, columnspan=2, sticky='e', pady=(6, 0))
+            button.state(['disabled'])
+            self._log_open_buttons[profile_id] = button
+            self._log_file_paths[profile_id] = None
 
     def _build_params(self, parent: ttk.Frame) -> None:
         columns = 2
@@ -1223,6 +1239,7 @@ class UiMain:
         self._update_launch_states(snapshot)
         self._update_param_views(snapshot)
         self._update_logs(snapshot)
+        self._update_log_buttons(snapshot)
         if self._shutdown_pending and not self._has_active_nodes(snapshot):
             self._finalize_shutdown()
 
@@ -1468,6 +1485,22 @@ class UiMain:
             text_widget.xview_moveto(max(min(x_first, 1.0), 0.0))
             text_widget.configure(state='disabled')
 
+    def _update_log_buttons(self, snapshot: GuiSnapshot) -> None:
+        for profile_id, button in self._log_open_buttons.items():
+            path = snapshot.console_log_paths.get(profile_id)
+            if path:
+                self._log_file_paths[profile_id] = path
+                try:
+                    button.state(['!disabled'])
+                except tk.TclError:
+                    continue
+            else:
+                self._log_file_paths[profile_id] = None
+                try:
+                    button.state(['disabled'])
+                except tk.TclError:
+                    continue
+
     def _update_param_views(self, snapshot: GuiSnapshot) -> None:
         for profile_id, text_widget in self._param_texts.items():
             state = snapshot.launch_states.get(profile_id)
@@ -1496,6 +1529,22 @@ class UiMain:
             text_widget.xview_moveto(max(min(x_first, 1.0), 0.0))
             text_widget.configure(state='disabled')
             self._param_last_display[profile_id] = display_text
+
+    def _open_log_file(self, profile_id: str) -> None:
+        path = self._log_file_paths.get(profile_id)
+        if not path:
+            messagebox.showinfo('ログファイル未保存', 'このノードのログファイルはまだ作成されていません。')
+            return
+        file_path = Path(path)
+        if not file_path.exists():
+            messagebox.showinfo(
+                'ログファイル未存在', f'ログファイルが見つかりません: {file_path}'
+            )
+            return
+        try:
+            subprocess.Popen(['gedit', str(file_path)])
+        except OSError as exc:
+            messagebox.showerror('ログファイル起動エラー', f'gedit の起動に失敗しました: {exc}')
 
     def _generate_param_display(self, profile_id: str, state: NodeLaunchState) -> str:
         target_path, error_message = self._resolve_param_target(profile_id, state)

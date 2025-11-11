@@ -69,7 +69,7 @@ class RobotConsoleNode(Node):
             self._core.update_amcl_pose,
             10,
         )
-        self.create_subscription(Twist, '/cmd_vel', self._core.update_cmd_vel, 10)
+        self.create_subscription(Twist, '/ypspur_ros/cmd_vel', self._core.update_cmd_vel, 10)
         self.create_subscription(Bool, '/manual_start', self._core.update_manual_start, 10)
         self.create_subscription(Int32, '/sig_recog', self._core.update_sig_recog, 10)
         self.create_subscription(Bool, '/road_blocked', self._on_road_blocked, 10)

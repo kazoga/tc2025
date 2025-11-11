@@ -51,6 +51,13 @@ class ObstacleMonitorNode(Node):
         self.declare_parameter('front_cone_half_deg', 10.0)
         # 停止しきい値 [m]（くさび内で x < stop_dist_m なら閉塞）
         self.declare_parameter('stop_dist_m', 1.0)
+        # front_blocked 判定のために無視する近距離データの閾値 [m]
+        self.declare_parameter('front_block_ignore_dist_m', 0.15)
+
+        # 前方閉塞判定で利用する分位点[%]（帯内の下位何%を評価するか）
+        self.declare_parameter('front_clearance_percentile', 5.0)
+        # 前方閉塞判定を有効にするために必要な最小点数
+        self.declare_parameter('front_clearance_min_points', 5)
 
         # 回避対象障害物の最大距離 [m]（legacy: 1.5m 固定）
         self.declare_parameter('max_obstacle_distance_m', 1.5)
@@ -190,10 +197,16 @@ class ObstacleMonitorNode(Node):
 
         self._last_points_xy = xy.copy() if xy.size > 0 else None
 
-        # ---- x <= max_obstacle_distance_m で抽出 ----
+        # ---- x <= max_obstacle_distance_m で抽出 & 近距離点を除外 ----
         max_dist = float(self.get_parameter('max_obstacle_distance_m').value)
         hint_range = self._ensure_hint_range(max_dist)
-        xy_extract = xy[xy[:, 0] <= max_dist] if xy.size > 0 else np.empty((0, 2), dtype=np.float32)
+        ignore_dist = float(self.get_parameter('front_block_ignore_dist_m').value)
+        # 前方距離(x)が閾値未満の点を除外してから、最大距離でフィルタリング
+        xy_extract = (
+            xy[(xy[:, 0] >= ignore_dist) & (xy[:, 0] <= max_dist)]
+            if xy.size > 0
+            else np.empty((0, 2), dtype=np.float32)
+        )
 
         # ---- 左右に分割（y 符号）し、|y| 昇順で並べ替え ----
         left = xy_extract[xy_extract[:, 1] >= 0.0] if xy_extract.size > 0 else np.empty((0, 2), dtype=np.float32)
@@ -216,7 +229,19 @@ class ObstacleMonitorNode(Node):
 
         # ---- 前方閉塞判定（±front_cone_half_deg くさび & x < stop_dist_m） ----
         stop_dist_m = float(self.get_parameter('stop_dist_m').value)
-        front_blocked, front_clearance_raw = self._is_front_blocked(xy_extract, robot_width, stop_dist_m, 5.0, 5)
+        front_clearance_percentile = float(
+            self.get_parameter('front_clearance_percentile').value
+        )
+        front_clearance_min_points = int(
+            self.get_parameter('front_clearance_min_points').value
+        )
+        front_blocked, front_clearance_raw = self._is_front_blocked(
+            xy_extract,
+            robot_width,
+            stop_dist_m,
+            front_clearance_percentile,
+            front_clearance_min_points,
+        )
         if math.isfinite(front_clearance_raw) and front_clearance_raw <= hint_range:
             front_clearance_hint = float(front_clearance_raw)
         else:
@@ -324,7 +349,7 @@ class ObstacleMonitorNode(Node):
         pts: np.ndarray,
         robot_width_m: float,
         stop_dist_m: float,
-        perc: float = 5.0,
+        percentile: float = 5.0,
         min_points: int = 5,
     ) -> Tuple[bool, float]:
         """前方閉塞判定（帯＋分位点）と距離算出。
@@ -333,7 +358,7 @@ class ObstacleMonitorNode(Node):
             pts: _scan_to_xy() が出力した XY点群 [ [x0, y0], [x1, y1], ... ]。
             robot_width_m: ロボット全幅[m]（安全マージン込み）。
             stop_dist_m: 停止距離[m]。
-            perc: 分位点[%]（例: 5.0 → 帯内x距離の下位5%を評価）。
+            percentile: 分位点[%]（例: 5.0 → 帯内x距離の下位5%を評価）。
             min_points: 判定に必要な最小点数。
 
         Returns:
@@ -352,7 +377,7 @@ class ObstacleMonitorNode(Node):
             return False, float('inf')
 
         x_band = xs[mask]
-        x_q = float(np.percentile(x_band, perc))
+        x_q = float(np.percentile(x_band, percentile))
         return x_q <= stop_dist_m, x_q
 
 

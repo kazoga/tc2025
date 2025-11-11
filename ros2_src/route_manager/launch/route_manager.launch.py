@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any, List
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -23,13 +23,30 @@ def _parse_checkpoint_labels(raw_value: str) -> List[str]:
     return labels
 
 
+def _get_config_value(context: Any, name: str) -> str:
+    """LaunchContext から指定名の設定値を取得するユーティリティ."""
+
+    # LaunchConfiguration.perform() で取得を試み、失敗した場合は直接辞書を参照する。
+    try:
+        value = LaunchConfiguration(name).perform(context)
+    except Exception:  # pragma: no cover - context 実装差異へのフォールバック
+        value = None
+    if value is None:
+        launch_configs = getattr(context, 'launch_configurations', None)
+        if isinstance(launch_configs, dict):
+            value = launch_configs.get(name, '')
+    if value is None:
+        return ''
+    return str(value)
+
+
 def _create_node(context, *args, **kwargs):
     """LaunchDescription生成時に評価されるノード設定を構築する。"""
 
-    param_file_value = LaunchConfiguration('param_file').perform(context)
-    start_label_value = LaunchConfiguration('start_label').perform(context).strip()
-    goal_label_value = LaunchConfiguration('goal_label').perform(context).strip()
-    checkpoint_value = LaunchConfiguration('checkpoint_labels').perform(context)
+    param_file_value = _get_config_value(context, 'param_file')
+    start_label_value = _get_config_value(context, 'start_label').strip()
+    goal_label_value = _get_config_value(context, 'goal_label').strip()
+    checkpoint_value = _get_config_value(context, 'checkpoint_labels')
 
     parameters: List[object] = [param_file_value]
     overrides = {}

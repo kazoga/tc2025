@@ -169,6 +169,7 @@ class GuiSnapshot:
     images: ImageBundle
     launch_states: Dict[str, NodeLaunchState]
     console_logs: Dict[str, List[str]]
+    console_log_paths: Dict[str, Optional[str]] = field(default_factory=dict)
 
 
 class ConsoleLogBuffer:

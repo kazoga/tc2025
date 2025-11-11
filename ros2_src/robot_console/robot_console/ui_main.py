@@ -974,7 +974,7 @@ class UiMain:
                 text='ログファイルを開く',
                 command=lambda pid=profile_id: self._open_log_file(pid),
             )
-            button.grid(row=0, column=1, sticky='e')
+            button.grid(row=0, column=1, sticky='e', padx=(20, 0))
             frame.configure(labelwidget=header)
 
             text = tk.Text(frame, wrap='none', state='disabled')

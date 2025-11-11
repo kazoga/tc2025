@@ -52,6 +52,8 @@ ros2 run obstacle_monitor obstacle_monitor
 |------|----|--------|------|
 | `front_cone_half_deg` | double | `10.0` | 前方閉塞判定の半角 [deg]。
 | `stop_dist_m` | double | `1.0` | くさび内で停止を指示する距離 [m]。
+| `front_clearance_percentile` | double | `5.0` | 前方閉塞判定で使用する距離分位点[%]。
+| `front_clearance_min_points` | int | `5` | 前方閉塞判定を行うために必要な最小点数。
 | `max_obstacle_distance_m` | double | `1.5` | 避障対象とする最大距離 [m]。
 | `hint_range_m` | double | `5.0` | front_clearance を通知する最大距離 [m]。
 | `robot_width_m` | double | `0.8` | ロボットの全幅 [m]。

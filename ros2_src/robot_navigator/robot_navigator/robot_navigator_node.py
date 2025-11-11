@@ -135,6 +135,7 @@ class RobotNavigator(Node):
         goal_topic = 'active_target'
         road_block_topic = 'road_blocked'
         active_route_topic = 'active_route'
+        # リマップでの変更を確実に反映させるため、既定は相対名とする
         cmd_vel_topic = 'cmd_vel'
         marker_topic = 'direction_marker'
         hint_topic = 'obstacle_avoidance_hint'
@@ -152,6 +153,7 @@ class RobotNavigator(Node):
         self.current_velocity: Optional[Twist] = None
         self.current_goal: Optional[Pose] = None
         self.obstacle_distance: Optional[float] = None
+        self.prev_cmd_vel: Twist = Twist()  # 前回のcmd_vel（odometry代替用）
         self._goal_sequence: int = 0
         self._road_block_active: bool = False
         self._road_block_stop_until: Optional[float] = None
@@ -391,6 +393,9 @@ class RobotNavigator(Node):
         # 指令を発行
         self.cmd_pub.publish(cmd_vel)
 
+        # 前回のcmd_velを保存（odometryがない場合の代替用）
+        self.prev_cmd_vel = cmd_vel
+
         # 進行方向の可視化
         self.publish_direction_marker(self.current_pose, dbg['v_desired'], dbg['w_desired'])
 
@@ -588,9 +593,13 @@ class RobotNavigator(Node):
         Returns:
             Tuple[Twist, Dict[str, float]]: 出力 Twist とデバッグ辞書。
         """
-        # 現在速度を抽出
-        v_current = float(current_velocity.linear.x) if current_velocity else 0.0
-        w_current = float(current_velocity.angular.z) if current_velocity else 0.0
+        # 現在速度を抽出（odometryがない場合は前回のcmd_velを使用）
+        if current_velocity:
+            v_current = float(current_velocity.linear.x)
+            w_current = float(current_velocity.angular.z)
+        else:
+            v_current = float(self.prev_cmd_vel.linear.x)
+            w_current = float(self.prev_cmd_vel.angular.z)
 
         # 位置・姿勢誤差を算出
         cx, cy = current_pose.position.x, current_pose.position.y
@@ -668,8 +677,9 @@ class RobotNavigator(Node):
         # --- 障害物に応じた減速/停止 ---
         if self.obstacle_distance is not None:
             max_decel = self.max_a_v
-            # 停止距離 = v^2/(2a) + 最小許容距離（バッファ）
-            stopping_distance = (v_current ** 2) / (2.0 * max_decel) + self.min_obstacle_distance
+            # 停止距離を計算する際は、次のステップでの速度（v_scaled）を使用
+            # これにより、停止状態からの加速を許可する
+            stopping_distance = (v_scaled ** 2) / (2.0 * max_decel) + self.min_obstacle_distance
 
             if self.obstacle_distance <= stopping_distance:
                 # 完全停止（緊急停止領域）

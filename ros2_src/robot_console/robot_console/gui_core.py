@@ -78,6 +78,7 @@ class NodeLaunchManager:
         self._log_paths: Dict[str, Path] = {}
         self._log_locks: Dict[str, threading.Lock] = {}
         self._log_stream_counters: Dict[str, int] = {}
+        self._latest_log_paths: Dict[str, Path] = {}
         self._base_log_directory: Optional[Path] = None
         self._run_log_directory: Optional[Path] = None
         if log_directory:
@@ -249,6 +250,7 @@ class NodeLaunchManager:
             self._log_paths[profile_id] = path
             self._log_locks[profile_id] = threading.Lock()
             self._log_stream_counters[profile_id] = stream_count
+            self._latest_log_paths[profile_id] = path
 
     def _append_log_line(self, profile_id: str, line: str) -> None:
         """ログ行をファイルへ追記する。"""
@@ -315,6 +317,13 @@ class NodeLaunchManager:
         thread = threading.Thread(target=_monitor, daemon=True)
         thread.start()
         self._threads.append(thread)
+
+    def get_latest_log_path(self, profile_id: str) -> Optional[Path]:
+        """指定ノードの直近のログファイルパスを返す。"""
+
+        with self._log_meta_lock:
+            path = self._latest_log_paths.get(profile_id)
+        return path
 
 
 class GuiCore:
@@ -781,6 +790,10 @@ class GuiCore:
         with self._lock:
             launch_states = {pid: clone_launch_state(state) for pid, state in self._launch_states.items()}
             logs = {pid: buf.snapshot() for pid, buf in self._log_buffers.items()}
+            log_paths = {}
+            for pid in launch_states.keys():
+                latest = self._launch_manager.get_latest_log_path(pid)
+                log_paths[pid] = str(latest) if latest is not None else None
             images = ImageBundle(
                 route_map=self._images.route_map,
                 obstacle_view=self._images.obstacle_view,
@@ -798,6 +811,7 @@ class GuiCore:
                 images=images,
                 launch_states=launch_states,
                 console_logs=logs,
+                console_log_paths=log_paths,
             )
         return snapshot
 

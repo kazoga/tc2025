@@ -3,6 +3,8 @@ obstacle_monitor:
     front_cone_half_deg: 10.0
     hint_range_m: 5.0
     stop_dist_m: 0.75
+    front_clearance_percentile: 5.0
+    front_clearance_min_points: 5
     max_obstacle_distance_m: 1.5
     robot_width_m: 0.6
     avoid_offset_min_m: 0.75

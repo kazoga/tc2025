@@ -236,11 +236,17 @@ class RouteManagerNode(Node):
         self.declare_parameter("offset_step_max_m", 1.0)  # shift 最大横ずれ[m]
 
         # ---------------- パラメータ取得 ----------------
-        self.start_label: str = self.get_parameter("start_label").get_parameter_value().string_value
-        self.goal_label: str = self.get_parameter("goal_label").get_parameter_value().string_value
-        self.checkpoint_labels: List[str] = list(
-            self.get_parameter("checkpoint_labels").get_parameter_value().string_array_value
+        self.start_label: str = (
+            self.get_parameter("start_label").get_parameter_value().string_value.strip()
         )
+        self.goal_label: str = (
+            self.get_parameter("goal_label").get_parameter_value().string_value.strip()
+        )
+        self.checkpoint_labels: List[str] = [
+            label.strip()
+            for label in self.get_parameter("checkpoint_labels").get_parameter_value().string_array_value
+            if label.strip()
+        ]
         self.timeout_sec: float = float(self.get_parameter("planner_timeout_sec").get_parameter_value().double_value)
         self.retry_count: int = int(self.get_parameter("planner_retry_count").get_parameter_value().integer_value)
         self.connect_timeout_sec: float = float(

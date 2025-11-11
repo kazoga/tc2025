@@ -125,6 +125,8 @@ class NodeLaunchState:
     selected_param_display: Optional[str] = None
     simulator_launch_file: Optional[str] = None
     simulator_enabled: bool = False
+    user_arguments: List[str] = field(default_factory=list)
+    override_inputs: Dict[str, str] = field(default_factory=dict)
     status: NodeLaunchStatus = NodeLaunchStatus.STOPPED
     last_action_time: Optional[datetime] = None
     process_id: Optional[int] = None
@@ -146,6 +148,7 @@ class GuiCommandType(Enum):
     STOP_ALL = auto()
     UPDATE_PARAM = auto()
     TOGGLE_SIMULATOR = auto()
+    UPDATE_OVERRIDE = auto()
 
 
 @dataclass
@@ -220,6 +223,8 @@ def clone_launch_state(state: NodeLaunchState) -> NodeLaunchState:
         selected_param_display=state.selected_param_display,
         simulator_launch_file=state.simulator_launch_file,
         simulator_enabled=state.simulator_enabled,
+        user_arguments=list(state.user_arguments),
+        override_inputs=dict(state.override_inputs),
         status=state.status,
         last_action_time=state.last_action_time,
         process_id=state.process_id,

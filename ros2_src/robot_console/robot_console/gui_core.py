@@ -95,8 +95,14 @@ class NodeLaunchManager:
         """指定ノードを起動する。"""
 
         with self._lock:
+            self._cleanup_finished_process_locked()
+            already_running = profile.profile_id in self._processes
+        if already_running:
+            self.stop(profile.profile_id)
+        with self._lock:
+            self._cleanup_finished_process_locked()
             if profile.profile_id in self._processes:
-                raise RuntimeError(f"{profile.profile_id} は既に起動中です")
+                raise RuntimeError(f"{profile.profile_id} の停止完了を待っています")
             self._status_callback(profile.profile_id, NodeLaunchStatus.STARTING, None, None)
 
             args = [
@@ -181,6 +187,15 @@ class NodeLaunchManager:
             self._terminate_process(sim_process)
         else:
             self._status_callback(f"{profile_id}:sim", NodeLaunchStatus.STOPPED, None, None)
+        with self._lock:
+            self._cleanup_finished_process_locked()
+
+    def is_running(self, profile_id: str) -> bool:
+        """指定ノードが稼働中かどうかを判定する。"""
+
+        with self._lock:
+            self._cleanup_finished_process_locked()
+            return profile_id in self._processes
 
     def _terminate_process(self, process: subprocess.Popen[str]) -> None:
         """プロセスに対し SIGINT → SIGTERM → SIGKILL の順で停止要求を行う。"""
@@ -233,6 +248,16 @@ class NodeLaunchManager:
             )
             thread.start()
             self._threads.append(thread)
+
+    def _cleanup_finished_process_locked(self) -> None:
+        """監視用辞書から終了済みプロセスを除去する。"""
+
+        for key, process in list(self._processes.items()):
+            if process.poll() is not None:
+                self._processes.pop(key, None)
+        for key, process in list(self._sim_processes.items()):
+            if process.poll() is not None:
+                self._sim_processes.pop(key, None)
 
     def _prepare_log_file(self, profile_id: str, pid: int, stream_count: int) -> None:
         """ログファイルの作成準備を行う。"""
@@ -884,6 +909,12 @@ class GuiCore:
             param_path = state.selected_param
             simulator_enabled = state.simulator_enabled
             overrides = self._build_launch_overrides(profile, state)
+        if self._launch_manager.is_running(profile_id):
+            try:
+                self._launch_manager.stop(profile_id)
+            except Exception as exc:  # pylint: disable=broad-except
+                self._on_launch_status(profile_id, NodeLaunchStatus.ERROR, None, str(exc))
+                return
         try:
             self._launch_manager.launch(
                 profile,

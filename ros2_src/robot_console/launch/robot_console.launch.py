@@ -29,32 +29,17 @@ _TOPIC_CONFIGS = [
     ('manual_start_topic', 'manual_start', '/manual_start', '手動開始トピック'),
     ('sig_recog_topic', 'sig_recog', '/sig_recog', '信号認識トピック'),
     ('road_blocked_topic', 'road_blocked', '/road_blocked', '通行止めトピック'),
-    (
-        'obstacle_hint_topic',
-        'obstacle_avoidance_hint',
-        '/obstacle_avoidance_hint',
-        '障害物ヒントトピック',
-    ),
+    ('obstacle_hint_topic', 'obstacle_avoidance_hint', '/obstacle_avoidance_hint', '障害物ヒントトピック'),
     ('route_state_topic', 'route_state', '/route_state', '経路状態トピック'),
     ('manager_status_topic', 'manager_status', '/manager_status', 'マネージャ状態トピック'),
     ('active_route_topic', 'active_route', '/active_route', '経路情報トピック'),
     ('follower_state_topic', 'follower_state', '/follower_state', '追従状態トピック'),
     ('sensor_viewer_topic', 'sensor_viewer', '/sensor_viewer', 'センサビューアトピック'),
-    (
-        'drive_camera_topic',
-        'usb_cam/image_raw',
-        '/usb_cam/image_raw',
-        '走行カメラ画像トピック',
-    ),
-    (
-        'signal_camera_topic',
-        'sig_det_imgs',
-        '/sig_det_imgs',
-        '信号検知画像トピック',
-    ),
+    ('drive_camera_topic', 'usb_cam/image_raw', '/usb_cam/image_raw', '走行カメラ画像トピック'),
+    ('signal_camera_topic', 'sig_det_imgs', '/sig_det_imgs', '信号検知画像トピック'),
     ('active_target_topic', 'active_target', '/active_target', 'ターゲット姿勢トピック'),
     ('amcl_pose_topic', 'amcl_pose', '/amcl_pose', 'AMCL 推定姿勢トピック'),
-    ('cmd_vel_topic', 'cmd_vel', '/ypspur_ros/cmd_vel', '速度指令トピック'),
+    ('cmd_vel_topic', 'cmd_vel', '/cmd_vel', '速度指令トピック'),
 ]
 
 

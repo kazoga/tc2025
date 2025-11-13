@@ -662,8 +662,8 @@ class FollowerCore:
         side, offset = options[0]
 
         yaw = cur_pose.yaw
-        forward = self.avoid_forward_clearance_m
         back_offset = max(self.avoid_back_offset_m, 0.0)
+        forward = back_offset + self.avoid_forward_clearance_m
 
         # 起点を現在姿勢から進行方向後方へシフトして余裕を確保する。
         pivot_x = cur_pose.x - math.cos(yaw) * back_offset

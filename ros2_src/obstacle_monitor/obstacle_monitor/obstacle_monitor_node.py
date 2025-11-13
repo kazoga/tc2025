@@ -325,8 +325,8 @@ class ObstacleMonitorNode(Node):
             y = abs(float(xy[i][1]))
             # 隣の点との間が (幅 + 半幅) よりも開いている場合 … ギャップとして採用
             if y - y_prev > thresh:
-                # 車幅半分のマージンを設けてオフセット算出
-                offset = y_prev + (thresh) / 2.0
+                # 車幅分のマージンを設けてオフセット算出
+                offset = y_prev + robot_width
                 # 直進経路上（y_prev==0）に障害物が無ければ回避不要（offset=0 のまま）
                 if y_prev == 0.0:
                     break
@@ -549,8 +549,8 @@ class ObstacleMonitorNode(Node):
         # 表示用リサイズ（ウィンドウ表示は行わず、画像トピックとして配信）
         grid_show = cv2.resize(grid, (resize_px, resize_px), interpolation=cv2.INTER_AREA)
         # デバッグ表示
-        cv2.imshow("Sensor Viewer", grid_show)
-        cv2.waitKey(1)
+        #cv2.imshow("Sensor Viewer", grid_show)
+        #cv2.waitKey(1)
 
         # bgr8 で publish
         img_msg = self.bridge.cv2_to_imgmsg(grid_show, encoding='bgr8')

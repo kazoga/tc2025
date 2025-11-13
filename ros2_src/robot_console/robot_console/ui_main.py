@@ -965,7 +965,13 @@ class UiMain:
                     entry.grid(row=current_row, column=0, sticky='ew', pady=1)
                     callback = self._create_override_callback(profile_id, arg_key, var)
                     trace_id = var.trace_add('write', callback)
-                    override_widgets[arg_key] = {'var': var, 'callback': callback, 'trace': trace_id}
+                    override_widgets[arg_key] = {
+                        'var': var,
+                        'callback': callback,
+                        'trace': trace_id,
+                        'entry': entry,
+                        'last_synced': var.get(),
+                    }
                     current_row += 1
 
             simulator_var = tk.BooleanVar(value=state.simulator_enabled)
@@ -1040,7 +1046,13 @@ class UiMain:
             entry.grid(row=1, column=0, sticky='ew', pady=(2, 0))
             callback = self._create_override_callback(profile_id, key, var)
             trace_id = var.trace_add('write', callback)
-            override_widgets[key] = {'var': var, 'callback': callback, 'trace': trace_id}
+            override_widgets[key] = {
+                'var': var,
+                'callback': callback,
+                'trace': trace_id,
+                'entry': entry,
+                'last_synced': var.get(),
+            }
 
         _create_entry(0, 'start_label', (0, 2))
         _create_entry(1, 'goal_label', (2, 0))
@@ -1708,16 +1720,24 @@ class UiMain:
             if isinstance(override_entries, dict):
                 for key, holder in override_entries.items():
                     var = None
+                    last_synced: Optional[str] = None
                     if isinstance(holder, dict):
                         candidate = holder.get('var')
                         if isinstance(candidate, tk.StringVar):
                             var = candidate
+                        synced_candidate = holder.get('last_synced')
+                        if isinstance(synced_candidate, str):
+                            last_synced = synced_candidate
                     elif isinstance(holder, tk.StringVar):
                         var = holder
                     if isinstance(var, tk.StringVar):
                         desired = state.override_inputs.get(key, '')
+                        if last_synced is not None and desired == last_synced:
+                            continue
                         if var.get() != desired:
                             var.set(desired)
+                        if isinstance(holder, dict):
+                            holder['last_synced'] = desired
 
     def _update_logs(self, snapshot: GuiSnapshot) -> None:
         for profile_id, text_widget in self._log_texts.items():

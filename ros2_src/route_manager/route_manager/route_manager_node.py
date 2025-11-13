@@ -25,13 +25,14 @@ from pathlib import Path
 import asyncio
 import time
 from concurrent.futures import Future
-from typing import Any, List, Optional
+from typing import Any, Iterable, List, Optional
 
 import rclpy
 from builtin_interfaces.msg import Duration
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Header
 from geometry_msgs.msg import PoseStamped
@@ -236,11 +237,13 @@ class RouteManagerNode(Node):
         self.declare_parameter("offset_step_max_m", 1.0)  # shift 最大横ずれ[m]
 
         # ---------------- パラメータ取得 ----------------
-        self.start_label: str = self.get_parameter("start_label").get_parameter_value().string_value
-        self.goal_label: str = self.get_parameter("goal_label").get_parameter_value().string_value
-        self.checkpoint_labels: List[str] = list(
-            self.get_parameter("checkpoint_labels").get_parameter_value().string_array_value
+        self.start_label: str = (
+            self.get_parameter("start_label").get_parameter_value().string_value.strip()
         )
+        self.goal_label: str = (
+            self.get_parameter("goal_label").get_parameter_value().string_value.strip()
+        )
+        self.checkpoint_labels: List[str] = self._resolve_checkpoint_labels()
         self.timeout_sec: float = float(self.get_parameter("planner_timeout_sec").get_parameter_value().double_value)
         self.retry_count: int = int(self.get_parameter("planner_retry_count").get_parameter_value().integer_value)
         self.connect_timeout_sec: float = float(
@@ -354,6 +357,41 @@ class RouteManagerNode(Node):
             return self.resolve_service_name(name)
         except AttributeError:
             return name
+
+    def _resolve_checkpoint_labels(self) -> List[str]:
+        """チェックポイントパラメータを配列へ正規化する。"""
+
+        param = self.get_parameter("checkpoint_labels")
+        if param.type_ == Parameter.Type.STRING_ARRAY:
+            raw_values = list(param.get_parameter_value().string_array_value)
+            return [label.strip() for label in raw_values if label.strip()]
+        if param.type_ == Parameter.Type.STRING:
+            text = param.get_parameter_value().string_value
+            return self._parse_checkpoint_text(text)
+        # YAMLで不明な型が渡された場合はフォールバックとして iterable を走査する。
+        raw_value = param.get_parameter_value()
+        candidate: Iterable[str]
+        try:
+            candidate = list(raw_value.string_array_value)
+        except AttributeError:
+            candidate = []
+        return [label.strip() for label in candidate if isinstance(label, str) and label.strip()]
+
+    @staticmethod
+    def _parse_checkpoint_text(raw_value: str) -> List[str]:
+        """文字列で与えられたチェックポイント一覧を分割する。"""
+
+        text = (raw_value or "").replace("\n", ",").strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        labels: List[str] = []
+        for chunk in text.split(","):
+            label = chunk.strip().strip("\"'")
+            if label:
+                labels.append(label)
+        return labels
 
     def _add_future_logging(self, future: Future, context: str) -> None:
         """Future完了時に例外を検知してログ出力する補助関数."""

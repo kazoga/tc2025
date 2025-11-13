@@ -109,7 +109,7 @@ class FollowerCore:
         # 追従
         self.arrival_threshold = 0.6
         self.control_rate_hz = 20.0
-        self.republish_target_hz = 1.0
+        self.republish_target_hz = 1e-9
 
         # 滞留検知
         self.window_sec = 2.0

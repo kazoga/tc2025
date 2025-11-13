@@ -515,6 +515,25 @@ class FollowerCore:
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
                     # Hint統計（Node側集約）に基づく判断。
+                    # waypointの開放度を先に確認し、横方向余裕なしの場合は即座にRUNNINGへ復帰する。
+                    right_open = max(
+                        float(getattr(cur_wp, "right_open", 0.0)),
+                        float(getattr(cur_wp, "right_isopen", 0.0)),
+                    )
+                    left_open = max(
+                        float(getattr(cur_wp, "left_open", 0.0)),
+                        float(getattr(cur_wp, "left_isopen", 0.0)),
+                    )
+
+                    if right_open <= 0.0 and left_open <= 0.0:
+                        # waypointに横方向余裕がない場合は回避やreport_stuckを行わず継続する。
+                        self.status = FollowerStatus.RUNNING
+                        self.last_stagnation_reason = ""
+                        self.log(
+                            "[FollowerCore] No lateral opening at waypoint -> continue RUNNING"
+                        )
+                        return FollowerOutput(self.last_target, self._make_state_dict())
+
                     if not enough:
                         self.last_stagnation_reason = "no_hint"
                         self._enter_waiting_reroute()
@@ -527,7 +546,6 @@ class FollowerCore:
                         self.log("[FollowerCore] Stagnation cleared by hint -> continue RUNNING")
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
-                    # 前方ブロック True → L字回避トライ。
                     self.last_stagnation_reason = "front_blocked"
                     success = self._start_avoidance_sequence(cur_wp, cur_pose, med_l, med_r)
                     if success:

@@ -515,19 +515,7 @@ class FollowerCore:
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
                     # Hint統計（Node側集約）に基づく判断。
-                    if not enough:
-                        self.last_stagnation_reason = "no_hint"
-                        self._enter_waiting_reroute()
-                        return FollowerOutput(self.last_target, self._make_state_dict())
-
-                    if not fb_major:
-                        # 前方遮蔽が継続していないため監視継続のみ行う。
-                        self.status = FollowerStatus.RUNNING
-                        self.last_stagnation_reason = ""
-                        self.log("[FollowerCore] Stagnation cleared by hint -> continue RUNNING")
-                        return FollowerOutput(self.last_target, self._make_state_dict())
-
-                    # 前方ブロック True → waypointの開放度に応じて分岐する。
+                    # waypointの開放度を先に確認し、横方向余裕なしの場合は即座にRUNNINGへ復帰する。
                     right_open = max(
                         float(getattr(cur_wp, "right_open", 0.0)),
                         float(getattr(cur_wp, "right_isopen", 0.0)),
@@ -544,6 +532,18 @@ class FollowerCore:
                         self.log(
                             "[FollowerCore] No lateral opening at waypoint -> continue RUNNING"
                         )
+                        return FollowerOutput(self.last_target, self._make_state_dict())
+
+                    if not enough:
+                        self.last_stagnation_reason = "no_hint"
+                        self._enter_waiting_reroute()
+                        return FollowerOutput(self.last_target, self._make_state_dict())
+
+                    if not fb_major:
+                        # 前方遮蔽が継続していないため監視継続のみ行う。
+                        self.status = FollowerStatus.RUNNING
+                        self.last_stagnation_reason = ""
+                        self.log("[FollowerCore] Stagnation cleared by hint -> continue RUNNING")
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
                     self.last_stagnation_reason = "front_blocked"

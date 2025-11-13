@@ -170,7 +170,7 @@ IDLE → RUNNING → WAITING_STOP → RUNNING/FINISHED
 ### 7.2 回避動作
 1. Hintキャッシュ評価により左右オフセット中央値を取得。
 2. waypoint上限と比較し、小さい方を採用。
-3. waypointの `right_isopen` / `left_isopen`（フォールバックで `right_open` / `left_open`）がともに0の場合は横方向余裕なしとみなし、回避・`/report_stuck` を行わずRUNNINGへ復帰する。
+3. waypointの `right_isopen` / `left_isopen`（フォールバックで `right_open` / `left_open`）がともに0の場合は横方向余裕なしと判断し、Hintの十分性にかかわらず回避・`/report_stuck` を行わずRUNNINGへ復帰する。
 4. offset_min=0.35m〜offset_max=5.0mに制限。
 5. L字回避を2段階サブゴール（横→前進）として `_avoid_queue` に登録。
 6. 各サブゴール到達判定で次段発行。

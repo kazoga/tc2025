@@ -18,11 +18,12 @@ import sys
 import math
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, Pose, Quaternion
 from std_msgs.msg import Header, Bool, Int32
 from route_msgs.msg import Route, Waypoint, FollowerState, ObstacleAvoidanceHint  # type: ignore
@@ -166,6 +167,8 @@ class RouteFollowerNode(Node):
         # Timer
         self._last_pub_target_pose = None
         self._last_pub_time = 0.0
+        self._last_pub_stamp: Optional[Time] = None
+        self._last_pub_target_identity: Optional[Tuple[int, int, str]] = None
         self._republish_interval = resend_interval
         timer_period = 1.0 / control_rate
         self.timer = self.create_timer(timer_period, self._on_timer)
@@ -306,26 +309,42 @@ class RouteFollowerNode(Node):
         now_ros = self.get_clock().now()
         now_sec = now_ros.seconds_nanoseconds()[0] + now_ros.seconds_nanoseconds()[1] * 1e-9
         pose = output.target_pose
-        need_pub = False
-
-        if pose is not None:
-            if (self._last_pub_target_pose is None
-                or self._euclid_diff(pose, self._last_pub_target_pose) > 1e-6
-                or (now_sec - self._last_pub_time) >= self._republish_interval):
-                need_pub = True
-
-        if not need_pub:
+        if pose is None:
             return
-
+        state = output.state or {}
+        route_version = int(
+            state.get("route_version", getattr(self.core, "route_version", -1))
+        )
+        active_index = int(
+            state.get("active_waypoint_index", getattr(self.core, "index", -1))
+        )
+        default_label = self.core.get_current_waypoint_label()
+        active_label = str(state.get("active_waypoint_label", default_label))
+        target_identity: Tuple[int, int, str] = (route_version, active_index, active_label)
+        identity_changed = self._last_pub_target_identity != target_identity
+        pose_changed = (
+            self._last_pub_target_pose is None
+            or self._euclid_diff(pose, self._last_pub_target_pose) > 1e-6
+        )
+        is_new_directive = identity_changed or pose_changed
+        time_elapsed = (now_sec - self._last_pub_time) >= self._republish_interval
+        if not is_new_directive and not time_elapsed:
+            return
         pose_msg = PoseStamped()
         pose_msg.header = Header()
-        pose_msg.header.stamp = now_ros.to_msg()
+        if is_new_directive:
+            stamp_msg = now_ros.to_msg()
+        else:
+            # 同じターゲットを周期再送する場合は、header.stampを更新しない。
+            stamp_msg = self._last_pub_stamp or now_ros.to_msg()
+        pose_msg.header.stamp = stamp_msg
         pose_msg.header.frame_id = self.target_frame
         pose_msg.pose = self._pose_to_msg(pose)
-        print("publish target:", pose)
         self.pub_target.publish(pose_msg)
         self._last_pub_target_pose = pose
         self._last_pub_time = now_sec
+        self._last_pub_stamp = stamp_msg
+        self._last_pub_target_identity = target_identity
 
     def _handle_state_publish(self, output):
         """FollowerState メッセージを生成・publish"""

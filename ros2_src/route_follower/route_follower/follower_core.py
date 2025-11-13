@@ -124,6 +124,7 @@ class FollowerCore:
         self.avoid_max_offset_m = 5.0
         self.avoid_forward_clearance_m = 2.0
         self.max_avoidance_attempts_per_wp = 2
+        self.avoid_back_offset_m = 0.5
 
         # 再経路待機
         self.reroute_timeout_sec = 30.0
@@ -662,13 +663,19 @@ class FollowerCore:
 
         yaw = cur_pose.yaw
         forward = self.avoid_forward_clearance_m
+        back_offset = max(self.avoid_back_offset_m, 0.0)
+
+        # 起点を現在姿勢から進行方向後方へシフトして余裕を確保する。
+        pivot_x = cur_pose.x - math.cos(yaw) * back_offset
+        pivot_y = cur_pose.y - math.sin(yaw) * back_offset
 
         # (1) 横シフト点 p1
         offset_y = +offset if side == "L" else -offset
         dx1 = -math.sin(yaw) * offset_y
-        dy1 =  math.cos(yaw) * offset_y
-        p1 = Pose(cur_pose.x + dx1, cur_pose.y + dy1,
-                  self._yaw_between(cur_pose.x, cur_pose.y, cur_pose.x + dx1, cur_pose.y + dy1))
+        dy1 = math.cos(yaw) * offset_y
+        p1_x = pivot_x + dx1
+        p1_y = pivot_y + dy1
+        p1 = Pose(p1_x, p1_y, self._yaw_between(pivot_x, pivot_y, p1_x, p1_y))
 
         # (2) 前進点 p2
         dx2 = math.cos(yaw) * forward

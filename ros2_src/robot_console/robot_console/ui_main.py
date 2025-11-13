@@ -1135,7 +1135,8 @@ class UiMain:
 
             header = ttk.Frame(frame)
             header.columnconfigure(0, weight=1)
-            header.columnconfigure(1, weight=0)
+            header.columnconfigure(1, weight=0, minsize=50)
+            header.columnconfigure(2, weight=0)
             ttk.Label(header, text=state.display_name).grid(
                 row=0, column=0, sticky='w'
             )
@@ -1144,7 +1145,7 @@ class UiMain:
                 text='ログファイルを開く',
                 command=lambda pid=profile_id: self._open_log_file(pid),
             )
-            button.grid(row=0, column=1, sticky='e', padx=(0, 30))
+            button.grid(row=0, column=2, sticky='e', padx=(0, 30))
             frame.configure(labelwidget=header)
 
             def _sync_header_width(event: tk.Event, hdr: ttk.Frame = header) -> None:

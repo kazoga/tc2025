@@ -527,7 +527,25 @@ class FollowerCore:
                         self.log("[FollowerCore] Stagnation cleared by hint -> continue RUNNING")
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
-                    # 前方ブロック True → L字回避トライ。
+                    # 前方ブロック True → waypointの開放度に応じて分岐する。
+                    right_open = max(
+                        float(getattr(cur_wp, "right_open", 0.0)),
+                        float(getattr(cur_wp, "right_isopen", 0.0)),
+                    )
+                    left_open = max(
+                        float(getattr(cur_wp, "left_open", 0.0)),
+                        float(getattr(cur_wp, "left_isopen", 0.0)),
+                    )
+
+                    if right_open <= 0.0 and left_open <= 0.0:
+                        # waypointに横方向余裕がない場合は回避やreport_stuckを行わず継続する。
+                        self.status = FollowerStatus.RUNNING
+                        self.last_stagnation_reason = ""
+                        self.log(
+                            "[FollowerCore] No lateral opening at waypoint -> continue RUNNING"
+                        )
+                        return FollowerOutput(self.last_target, self._make_state_dict())
+
                     self.last_stagnation_reason = "front_blocked"
                     success = self._start_avoidance_sequence(cur_wp, cur_pose, med_l, med_r)
                     if success:

@@ -25,6 +25,7 @@ import dataclasses
 import datetime as dt
 import math
 import sys
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -482,6 +483,7 @@ class WaypointStore:
         self.df = df
         self._changed: bool = False
         self._backup_made: bool = False
+        self._change_labels: "OrderedDict[str, str]" = OrderedDict()
 
     # ---- DataFrame ユーティリティ ----
 
@@ -496,12 +498,30 @@ class WaypointStore:
     def mark_changed(self) -> None:
         self._changed = True
 
+    def _record_change_label(self, label: str, action: str = "更新") -> None:
+        """変更の対象ラベルと種別を履歴に記録する。"""
+        self._changed = True
+        current = self._change_labels.get(label)
+        if action == "削除":
+            self._change_labels[label] = action
+            return
+        if current == "削除":
+            # 既に削除が記録されていれば上書きしない。
+            return
+        if current is None:
+            self._change_labels[label] = action
+
+    def _record_change_idx(self, idx: int, action: str = "更新") -> None:
+        label = self.get_label_display(idx)
+        self._record_change_label(label, action)
+
     def get_row(self, idx: int) -> pd.Series:
         return self.df.iloc[idx]
 
     def delete_row(self, idx: int) -> None:
+        label = self.get_label_display(idx)
+        self._record_change_label(label, "削除")
         self.df = self.df.drop(self.df.index[idx]).reset_index(drop=True)
-        self.mark_changed()
 
     def iter_latlon(self) -> Iterable[Tuple[float, float]]:
         for _, r in self.df.iterrows():
@@ -528,7 +548,7 @@ class WaypointStore:
         yaw2 = normalize_angle_rad(yaw + deg2rad(ddeg))
         qx2, qy2, qz2, qw2 = yaw_to_quat(yaw2)
         self._write_quat(idx, qx2, qy2, qz2, qw2)
-        self.mark_changed()
+        self._record_change_idx(idx)
 
     def read_latlon(self, idx: int) -> Tuple[float, float]:
         r = self.df.iloc[idx]
@@ -537,7 +557,7 @@ class WaypointStore:
     def write_latlon(self, idx: int, lat: float, lon: float) -> None:
         self.df.iat[idx, self.df.columns.get_loc("latitude")] = float(lat)
         self.df.iat[idx, self.df.columns.get_loc("longitude")] = float(lon)
-        self.mark_changed()
+        self._record_change_idx(idx)
 
     def read_xy(self, idx: int) -> Tuple[float, float]:
         r = self.df.iloc[idx]
@@ -546,7 +566,7 @@ class WaypointStore:
     def write_xy(self, idx: int, x: float, y: float) -> None:
         self.df.iat[idx, self.df.columns.get_loc("x")] = float(x)
         self.df.iat[idx, self.df.columns.get_loc("y")] = float(y)
-        self.mark_changed()
+        self._record_change_idx(idx)
 
     def read_z(self, idx: int) -> float:
         return float(self.df.iloc[idx]["z"])
@@ -577,7 +597,7 @@ class WaypointStore:
         self.df.iat[idx, self.df.columns.get_loc(self.FLAG_LINE_STOP)] = ls
         self.df.iat[idx, self.df.columns.get_loc(self.FLAG_SIGNAL_STOP)] = ss
         self.df.iat[idx, self.df.columns.get_loc(self.FLAG_ISNOT_SKIP)] = sk
-        self.mark_changed()
+        self._record_change_idx(idx)
 
     def _read_quat(self, idx: int) -> Tuple[float, float, float, float]:
         assert self.q_cols is not None
@@ -603,14 +623,26 @@ class WaypointStore:
         self.df.to_csv(backup, index=False)
         self._backup_made = True
 
-    def save(self) -> Path:
-        """<元名>_edited.csv へ保存（初回はバックアップを作る）。"""
+    def save(self) -> Tuple[Path, List[str]]:
+        """<元名>_edited.csv へ保存し、変更ラベル一覧を返す。"""
         self._make_backup_once()
         out = self.csv_path.with_name(self.csv_path.stem + "_edited" + self.csv_path.suffix)
         # 浮動小数の桁は既定（差分安定化のため最大 7 桁程度）
         self.df.to_csv(out, index=False, float_format="%.7f")
+        changes = self.get_change_log_strings()
+        self._change_labels.clear()
         self._changed = False
-        return out
+        return out, changes
+
+    def get_change_log_strings(self) -> List[str]:
+        """保存時に表示するラベル一覧を返す。"""
+        formatted: List[str] = []
+        for label, action in self._change_labels.items():
+            if action == "削除":
+                formatted.append(f"[削除] {label}")
+            else:
+                formatted.append(label)
+        return formatted
 
 
 # =============================================================================
@@ -644,6 +676,8 @@ class Viewer:
         self._quiver = None
         self._highlight_pt = None
         self._highlight_quiv = None
+        self._highlight_text = None
+        self._quiver_indices: Optional[np.ndarray] = None
 
         # 表示状態
         self._pix: Optional[np.ndarray] = None  # shape=(N,2)
@@ -667,6 +701,12 @@ class Viewer:
         # 初期表示範囲
         self.ax.set_xlim(0, self._map_width)
         self.ax.set_ylim(self._map_height, 0)
+
+        # ズーム・パンに合わせて矢印長やラベル表示を調整するコールバック
+        self._axis_callbacks = [
+            self.ax.callbacks.connect("xlim_changed", self._on_axes_changed),
+            self.ax.callbacks.connect("ylim_changed", self._on_axes_changed),
+        ]
 
     # ---- 公開 API ----
 
@@ -765,11 +805,14 @@ class Viewer:
         dx = np.cos(np.deg2rad(yaw_deg))
         dy = np.sin(np.deg2rad(yaw_deg))
         if valid.any():
+            arrow_len = self._estimate_arrow_length()
+            valid_idx = np.where(valid)[0]
+            self._quiver_indices = valid_idx
             self._quiver = self.ax.quiver(
-                pix[valid, 0],
-                pix[valid, 1],
-                dx[valid],
-                dy[valid],
+                pix[valid_idx, 0],
+                pix[valid_idx, 1],
+                dx[valid_idx] * arrow_len,
+                dy[valid_idx] * arrow_len,
                 angles="xy",
                 scale_units="xy",
                 scale=1.0,
@@ -778,6 +821,7 @@ class Viewer:
                 zorder=3,
             )
         else:
+            self._quiver_indices = None
             self._quiver = None
 
         self._redraw_highlight()
@@ -800,7 +844,38 @@ class Viewer:
             if self._valid_mask is not None:
                 self._valid_mask[idx] = True
         self._yaw_deg[idx] = self.store.read_pose_yaw_deg(idx)
-        self.draw_all()
+
+        # 散布図の座標を差分更新
+        if self._scatter is not None:
+            self._scatter.set_offsets(self._pix)
+
+        # 矢印は一旦描画し直す（本数は多くない前提）
+        if self._quiver is not None:
+            self._quiver.remove()
+            self._quiver = None
+
+        valid = self._valid_mask if self._valid_mask is not None else np.ones(len(self._pix), dtype=bool)
+        if valid.any():
+            arrow_len = self._estimate_arrow_length()
+            valid_idx = np.where(valid)[0]
+            self._quiver_indices = valid_idx
+            yaw_rad = np.deg2rad(self._yaw_deg[valid_idx])
+            self._quiver = self.ax.quiver(
+                self._pix[valid_idx, 0],
+                self._pix[valid_idx, 1],
+                np.cos(yaw_rad) * arrow_len,
+                np.sin(yaw_rad) * arrow_len,
+                angles="xy",
+                scale_units="xy",
+                scale=1.0,
+                width=self.arrow_width,
+                color="#333333",
+                zorder=3,
+            )
+        else:
+            self._quiver_indices = None
+
+        self._redraw_highlight()
 
     def set_view_rect_meters_around(
         self,
@@ -849,6 +924,7 @@ class Viewer:
         y_max = clamp(cy + half_y, 0, self._map_height)
         self.ax.set_xlim(x_min, x_max)
         self.ax.set_ylim(y_max, y_min)
+        self._refresh_quiver_vectors()
         self._redraw_highlight()
 
     def pick_nearest_index(self, x_px: float, y_px: float) -> Optional[int]:
@@ -868,6 +944,8 @@ class Viewer:
 
     def highlight_index(self, idx: Optional[int]) -> None:
         """指定 index をハイライトする。None で解除。"""
+        if idx == self._highlight_index:
+            return
         self._highlight_index = idx
         self._redraw_highlight()
 
@@ -875,6 +953,7 @@ class Viewer:
         """地図全体を表示範囲に設定する。"""
         self.ax.set_xlim(0, self._map_width)
         self.ax.set_ylim(self._map_height, 0)
+        self._refresh_quiver_vectors()
         self._redraw_highlight()
 
     # ---- 内部ヘルパ ----
@@ -886,6 +965,9 @@ class Viewer:
         if self._highlight_quiv is not None:
             self._highlight_quiv.remove()
             self._highlight_quiv = None
+        if self._highlight_text is not None:
+            self._highlight_text.remove()
+            self._highlight_text = None
 
     def _redraw_highlight(self) -> None:
         self._clear_highlight()
@@ -908,11 +990,12 @@ class Viewer:
             zorder=4,
         )
         yaw = float(self._yaw_deg[idx])
+        arrow_len = self._estimate_arrow_length()
         self._highlight_quiv = self.ax.quiver(
             [px],
             [py],
-            [math.cos(math.radians(yaw))],
-            [math.sin(math.radians(yaw))],
+            [math.cos(math.radians(yaw)) * arrow_len],
+            [math.sin(math.radians(yaw)) * arrow_len],
             angles="xy",
             scale_units="xy",
             scale=1.0,
@@ -920,7 +1003,57 @@ class Viewer:
             color="#00ffff",
             zorder=4,
         )
+        if self._should_show_label_text():
+            label = self.store.get_label_display(idx)
+            self._highlight_text = self.ax.text(
+                px + 6.0,
+                py - 6.0,
+                label,
+                color="#ffffff",
+                fontsize=9,
+                fontweight="bold",
+                bbox={"facecolor": "#000000", "alpha": 0.6, "edgecolor": "none", "pad": 2},
+                zorder=5,
+            )
         self.fig.canvas.draw_idle()
+
+    def _estimate_arrow_length(self) -> float:
+        """現在の描画領域に基づく矢印長（データ座標）を返す。"""
+        bbox = self.ax.get_window_extent()
+        width_px = max(bbox.width, 1.0)
+        height_px = max(bbox.height, 1.0)
+        x_span = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
+        y_span = abs(self.ax.get_ylim()[1] - self.ax.get_ylim()[0])
+        data_per_px_x = x_span / width_px
+        data_per_px_y = y_span / height_px
+        data_per_px = max((data_per_px_x + data_per_px_y) * 0.5, 1e-6)
+        desired_px = 40.0
+        return max(data_per_px * desired_px, 5.0)
+
+    def _refresh_quiver_vectors(self) -> None:
+        """ズーム倍率に合わせて矢印ベクトルを再計算する。"""
+        if self._quiver is None or self._yaw_deg is None or self._quiver_indices is None:
+            return
+        arrow_len = self._estimate_arrow_length()
+        idx = self._quiver_indices
+        yaw_rad = np.deg2rad(self._yaw_deg[idx])
+        u = np.cos(yaw_rad) * arrow_len
+        v = np.sin(yaw_rad) * arrow_len
+        self._quiver.set_UVC(u, v)
+        self.fig.canvas.draw_idle()
+
+    def _should_show_label_text(self) -> bool:
+        """高倍率表示か判定する。"""
+        x_span = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
+        y_span = abs(self.ax.get_ylim()[1] - self.ax.get_ylim()[0])
+        short_span = min(x_span, y_span)
+        return short_span <= max(self._map_width, self._map_height) / 3.0
+
+    def _on_axes_changed(self, _axis) -> None:
+        """パン・ズーム時に矢印とラベルを更新する。"""
+        self._refresh_quiver_vectors()
+        if self._highlight_index is not None:
+            self._redraw_highlight()
 
 
 # =============================================================================
@@ -1044,6 +1177,7 @@ class App:
 
         # キャンバスのクリックイベント（ナビ: 選択／フォーカス: 無し）
         self.canvas.mpl_connect("button_press_event", self._on_canvas_click)
+        self.canvas.mpl_connect("motion_notify_event", self._on_canvas_motion)
 
         # 下部：編集パネル
         self._build_editor_panel()
@@ -1209,6 +1343,7 @@ class App:
                 WaypointStore.FLAG_ISNOT_SKIP: int(self.var_isnot_skip.get()),
             }
             self.store.write_flags(idx, flags)
+            self.viewer.draw_all()
             return True
         except Exception as e:
             messagebox.showerror("入力エラー", f"フラグの値が不正です: {e}")
@@ -1233,6 +1368,16 @@ class App:
                 return
         self.mode = "focus"
         self._enter_focus(idx)
+
+    def _on_canvas_motion(self, event) -> None:
+        """ナビモード時のホバーで近傍 waypoint をハイライトする。"""
+        if self.mode != "nav":
+            return
+        if event.xdata is None or event.ydata is None:
+            self.viewer.highlight_index(None)
+            return
+        idx = self.viewer.pick_nearest_index(event.xdata, event.ydata)
+        self.viewer.highlight_index(idx)
 
     def _enter_focus(self, idx: int) -> None:
         """フォーカスモードへ。自動ズーム＋右ペイン更新。"""
@@ -1311,8 +1456,14 @@ class App:
                 # フォーカス中はフラグ編集の書戻しを優先（失敗なら保存中止）
                 if not self._apply_flags_from_panel():
                     return
-            out = self.store.save()
-            messagebox.showinfo("保存完了", f"保存しました: {out.name}")
+            out, labels = self.store.save()
+            if labels:
+                summary = f"\n変更件数: {len(labels)}\n対象: {', '.join(labels)}"
+            else:
+                summary = "\n変更件数: 0\n対象: なし"
+            message = f"保存しました: {out.name}{summary}"
+            messagebox.showinfo("保存完了", message)
+            print(f"[保存] {out} 変更件数={len(labels)} 対象={labels}")
         except Exception as e:
             messagebox.showerror("保存エラー", str(e))
 

@@ -24,8 +24,8 @@ import argparse
 import dataclasses
 import datetime as dt
 import math
-import os
 import sys
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -34,18 +34,51 @@ import pandas as pd
 
 # Tkinter / matplotlib 埋め込み
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib import image as mpimg
 
 # --- 重要 ---
-# 座標変換は必ず既存の mapper API を呼ぶ。名称の差異に対応するためラッパを用意する。
-try:
-    import latlon_to_pixel_mapper as mapper_mod  # ユーザ提供の既存モジュール
-except Exception as e:  # pragma: no cover - 起動時の明示エラー
-    print("ERROR: latlon_to_pixel_mapper.py をインポートできません。スクリプトと同ディレクトリに配置してください。", file=sys.stderr)
-    raise
+# 座標変換は既存 mapper モジュール（latlon_to_pixel_mapper.py）を利用する。
+# 実行場所に依らず確実に import できるよう経路を調整する。
+
+
+def _import_mapper_module() -> Any:
+    """latlon_to_pixel_mapper モジュールをロードして返す。"""
+
+    import importlib
+
+    candidates = [
+        "route_planner.route_planner.latlon_to_pixel_mapper",
+        str((Path(__file__).resolve().parents[1] / "route_planner")),
+        "/mnt/data",
+    ]
+
+    # 1. パッケージ経由
+    try:
+        return importlib.import_module(candidates[0])
+    except Exception:
+        pass
+
+    # 2. スクリプト相対 / 追加候補を sys.path へ入れて順に import
+    for p in candidates[1:]:
+        if p not in sys.path:
+            sys.path.insert(0, p)
+        try:
+            return importlib.import_module("latlon_to_pixel_mapper")
+        except Exception:
+            continue
+
+    print(
+        "ERROR: latlon_to_pixel_mapper.py を import できません。route_planner/route_planner/ 配下を確認してください。",
+        file=sys.stderr,
+    )
+    raise ImportError("latlon_to_pixel_mapper import failed")
+
+
+mapper_mod = _import_mapper_module()
 
 
 # =============================================================================
@@ -172,6 +205,9 @@ class MapAdapter:
         else:
             self._load_map = None  # pragma: no cover
 
+        self._map_path: Optional[str] = None
+        self._pgw_path: Optional[str] = None
+
     def _resolve(self, names: Sequence[str]) -> Callable:
         """必須 API を名前候補から解決。存在しなければ例外。"""
         for n in names:
@@ -190,16 +226,47 @@ class MapAdapter:
 
     def load_map(self, map_path: Union[str, Path], pgw_path: Union[str, Path]) -> None:
         """マップ・ワールドファイルのロード（mapper 側に API がある場合のみ呼ぶ）。"""
+        self._map_path = str(map_path)
+        self._pgw_path = str(pgw_path)
         if self._load_map is not None:
-            self._load_map(str(map_path), str(pgw_path))
+            self._load_map(self._map_path, self._pgw_path)
+        else:
+            # load_map が無い場合でも、新APIであれば latlon_to_pixel のキャッシュ用途に空呼出しを行う
+            try:
+                self._latlon_to_pixel(0.0, 0.0)  # type: ignore[arg-type]
+            except TypeError:
+                # 旧APIのみの場合は、ダミーでキャッシュを作る
+                if self._map_path is not None and self._pgw_path is not None:
+                    try:
+                        self._latlon_to_pixel(self._map_path, self._pgw_path, [(0.0, 0.0)])  # type: ignore[arg-type]
+                    except Exception:
+                        pass
 
-    def latlon_to_pixel(self, lat: float, lon: float) -> Tuple[float, float]:
-        """(lat,lon) → (px,py)。"""
-        return tuple(self._latlon_to_pixel(float(lat), float(lon)))  # type: ignore[return-value]
+    def latlon_to_pixel(self, lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
+        """(lat,lon) → (px,py)。画像外は None を返す。"""
+        try:
+            px, py = self._latlon_to_pixel(float(lat), float(lon))  # type: ignore[assignment]
+        except TypeError:
+            if self._map_path is None or self._pgw_path is None:
+                raise RuntimeError("load_map() を先に実行してください。")
+            res = self._latlon_to_pixel(self._map_path, self._pgw_path, [(float(lat), float(lon))])  # type: ignore[arg-type]
+            if not res:
+                return None, None
+            px, py = res[0]
+        if px is None or py is None:
+            return None, None
+        return float(px), float(py)
 
     def pixel_to_latlon(self, px: float, py: float) -> Tuple[float, float]:
         """(px,py) → (lat,lon)。"""
-        return tuple(self._pixel_to_latlon(float(px), float(py)))  # type: ignore[return-value]
+        try:
+            return tuple(self._pixel_to_latlon(float(px), float(py)))  # type: ignore[return-value]
+        except TypeError:
+            if self._map_path is None or self._pgw_path is None:
+                raise RuntimeError("load_map() を先に実行してください。")
+            return tuple(
+                self._pixel_to_latlon(float(px), float(py), image_path=self._map_path, worldfile_path=self._pgw_path)  # type: ignore[arg-type, return-value]
+            )
 
     def latlon_to_local_m(self, lat: float, lon: float) -> Tuple[float, float]:
         """(lat,lon) → (E,N) [m]。APIが無ければ例外。"""
@@ -416,6 +483,7 @@ class WaypointStore:
         self.df = df
         self._changed: bool = False
         self._backup_made: bool = False
+        self._change_labels: "OrderedDict[str, str]" = OrderedDict()
 
     # ---- DataFrame ユーティリティ ----
 
@@ -430,12 +498,30 @@ class WaypointStore:
     def mark_changed(self) -> None:
         self._changed = True
 
+    def _record_change_label(self, label: str, action: str = "更新") -> None:
+        """変更の対象ラベルと種別を履歴に記録する。"""
+        self._changed = True
+        current = self._change_labels.get(label)
+        if action == "削除":
+            self._change_labels[label] = action
+            return
+        if current == "削除":
+            # 既に削除が記録されていれば上書きしない。
+            return
+        if current is None:
+            self._change_labels[label] = action
+
+    def _record_change_idx(self, idx: int, action: str = "更新") -> None:
+        label = self.get_label_display(idx)
+        self._record_change_label(label, action)
+
     def get_row(self, idx: int) -> pd.Series:
         return self.df.iloc[idx]
 
     def delete_row(self, idx: int) -> None:
+        label = self.get_label_display(idx)
+        self._record_change_label(label, "削除")
         self.df = self.df.drop(self.df.index[idx]).reset_index(drop=True)
-        self.mark_changed()
 
     def iter_latlon(self) -> Iterable[Tuple[float, float]]:
         for _, r in self.df.iterrows():
@@ -462,7 +548,7 @@ class WaypointStore:
         yaw2 = normalize_angle_rad(yaw + deg2rad(ddeg))
         qx2, qy2, qz2, qw2 = yaw_to_quat(yaw2)
         self._write_quat(idx, qx2, qy2, qz2, qw2)
-        self.mark_changed()
+        self._record_change_idx(idx)
 
     def read_latlon(self, idx: int) -> Tuple[float, float]:
         r = self.df.iloc[idx]
@@ -471,7 +557,7 @@ class WaypointStore:
     def write_latlon(self, idx: int, lat: float, lon: float) -> None:
         self.df.iat[idx, self.df.columns.get_loc("latitude")] = float(lat)
         self.df.iat[idx, self.df.columns.get_loc("longitude")] = float(lon)
-        self.mark_changed()
+        self._record_change_idx(idx)
 
     def read_xy(self, idx: int) -> Tuple[float, float]:
         r = self.df.iloc[idx]
@@ -480,7 +566,7 @@ class WaypointStore:
     def write_xy(self, idx: int, x: float, y: float) -> None:
         self.df.iat[idx, self.df.columns.get_loc("x")] = float(x)
         self.df.iat[idx, self.df.columns.get_loc("y")] = float(y)
-        self.mark_changed()
+        self._record_change_idx(idx)
 
     def read_z(self, idx: int) -> float:
         return float(self.df.iloc[idx]["z"])
@@ -511,7 +597,7 @@ class WaypointStore:
         self.df.iat[idx, self.df.columns.get_loc(self.FLAG_LINE_STOP)] = ls
         self.df.iat[idx, self.df.columns.get_loc(self.FLAG_SIGNAL_STOP)] = ss
         self.df.iat[idx, self.df.columns.get_loc(self.FLAG_ISNOT_SKIP)] = sk
-        self.mark_changed()
+        self._record_change_idx(idx)
 
     def _read_quat(self, idx: int) -> Tuple[float, float, float, float]:
         assert self.q_cols is not None
@@ -537,14 +623,26 @@ class WaypointStore:
         self.df.to_csv(backup, index=False)
         self._backup_made = True
 
-    def save(self) -> Path:
-        """<元名>_edited.csv へ保存（初回はバックアップを作る）。"""
+    def save(self) -> Tuple[Path, List[str]]:
+        """<元名>_edited.csv へ保存し、変更ラベル一覧を返す。"""
         self._make_backup_once()
         out = self.csv_path.with_name(self.csv_path.stem + "_edited" + self.csv_path.suffix)
         # 浮動小数の桁は既定（差分安定化のため最大 7 桁程度）
         self.df.to_csv(out, index=False, float_format="%.7f")
+        changes = self.get_change_log_strings()
+        self._change_labels.clear()
         self._changed = False
-        return out
+        return out, changes
+
+    def get_change_log_strings(self) -> List[str]:
+        """保存時に表示するラベル一覧を返す。"""
+        formatted: List[str] = []
+        for label, action in self._change_labels.items():
+            if action == "削除":
+                formatted.append(f"[削除] {label}")
+            else:
+                formatted.append(label)
+        return formatted
 
 
 # =============================================================================
@@ -554,23 +652,40 @@ class WaypointStore:
 class Viewer:
     """matplotlib 図の管理（描画・強調表示・近傍選択・自動ズーム）。"""
 
-    def __init__(self, fig: Figure, ax, map_adapter: MapAdapter, store: WaypointStore) -> None:
+    def __init__(
+        self,
+        fig: Figure,
+        ax,
+        map_adapter: MapAdapter,
+        store: WaypointStore,
+        map_image: np.ndarray,
+    ) -> None:
         self.fig = fig
         self.ax = ax
         self.map = map_adapter
         self.store = store
+
+        # 背景地図
+        self._map_image = map_image
+        self._map_height = int(map_image.shape[0])
+        self._map_width = int(map_image.shape[1])
+        self._map_extent = (0, self._map_width, self._map_height, 0)
 
         # 可視化ハンドル
         self._scatter = None
         self._quiver = None
         self._highlight_pt = None
         self._highlight_quiv = None
+        self._highlight_text = None
+        self._quiver_indices: Optional[np.ndarray] = None
 
         # 表示状態
-        self._pix = None  # 全点のピクセル座標 (N,2)
-        self._yaw_deg = None  # 各点の yaw[deg] (N,)
+        self._pix: Optional[np.ndarray] = None  # shape=(N,2)
+        self._yaw_deg: Optional[np.ndarray] = None  # shape=(N,)
+        self._valid_mask: Optional[np.ndarray] = None  # shape=(N,)
         self._near_px_threshold = 10.0  # 近傍選択しきい値 [px]
         self._arrow_px_len = 16.0  # 矢印表示の基準長 [px]
+        self._highlight_index: Optional[int] = None
 
         # 色・強調（優先順位: signal > line > *_is_open > isnot_skipnum）
         self.color_default = "#202020"
@@ -583,6 +698,16 @@ class Viewer:
         # 矢印スタイル
         self.arrow_width = 0.003  # 軽い太さ（相対）
 
+        # 初期表示範囲
+        self.ax.set_xlim(0, self._map_width)
+        self.ax.set_ylim(self._map_height, 0)
+
+        # ズーム・パンに合わせて矢印長やラベル表示を調整するコールバック
+        self._axis_callbacks = [
+            self.ax.callbacks.connect("xlim_changed", self._on_axes_changed),
+            self.ax.callbacks.connect("ylim_changed", self._on_axes_changed),
+        ]
+
     # ---- 公開 API ----
 
     def set_near_threshold_px(self, px: float) -> None:
@@ -591,15 +716,21 @@ class Viewer:
     def compute_all_pixels(self) -> None:
         """全点の (lat,lon) をピクセル座標に変換。yaw 度配列も作成。"""
         N = self.store.n
-        pix = np.zeros((N, 2), dtype=float)
+        pix = np.full((N, 2), np.nan, dtype=float)
         yaw_deg = np.zeros((N,), dtype=float)
+        valid = np.zeros((N,), dtype=bool)
         for i, (lat, lon) in enumerate(self.store.iter_latlon()):
-            px, py = self.map.latlon_to_pixel(lat, lon)
+            pxpy = self.map.latlon_to_pixel(lat, lon)
+            if pxpy[0] is None or pxpy[1] is None:
+                continue
+            px, py = pxpy
             pix[i, 0] = px
             pix[i, 1] = py
             yaw_deg[i] = self.store.read_pose_yaw_deg(i)
+            valid[i] = True
         self._pix = pix
         self._yaw_deg = yaw_deg
+        self._valid_mask = valid
 
     def draw_all(self) -> None:
         """全点を scatter + quiver で描画（初回／全体更新）。"""
@@ -608,6 +739,7 @@ class Viewer:
 
         pix = self._pix
         yaw_deg = self._yaw_deg
+        valid = self._valid_mask if self._valid_mask is not None else np.ones(len(pix), dtype=bool)
 
         # 色決定（優先順位に応じて枠色/マーカーサイズ/色相を決める）
         edgecolors = []
@@ -648,8 +780,14 @@ class Viewer:
         # 既存アーティストを消して描画
         self.ax.clear()
         self.ax.set_aspect("equal", adjustable="box")
-        # 背景画像は mapper 側が処理する前提のため、ここでは座標系のみ扱い。
-        # もし背景を imshow する必要がある場合は、mapper 側の関数に従って貼ること。
+        self.ax.imshow(
+            self._map_image,
+            extent=self._map_extent,
+            origin="upper",
+            zorder=0,
+        )
+        self.ax.set_xlim(0, self._map_width)
+        self.ax.set_ylim(self._map_height, 0)
 
         # 散布
         self._scatter = self.ax.scatter(
@@ -666,29 +804,78 @@ class Viewer:
         # とりあえず単位長ベクトルを置き、後で draw_idle の直前にスケーリング
         dx = np.cos(np.deg2rad(yaw_deg))
         dy = np.sin(np.deg2rad(yaw_deg))
-        self._quiver = self.ax.quiver(
-            pix[:, 0],
-            pix[:, 1],
-            dx,
-            dy,
-            angles="xy",
-            scale_units="xy",
-            scale=1.0,
-            width=self.arrow_width,
-            color="#333333",
-        )
-        self.fig.canvas.draw_idle()
+        if valid.any():
+            arrow_len = self._estimate_arrow_length()
+            valid_idx = np.where(valid)[0]
+            self._quiver_indices = valid_idx
+            self._quiver = self.ax.quiver(
+                pix[valid_idx, 0],
+                pix[valid_idx, 1],
+                dx[valid_idx] * arrow_len,
+                dy[valid_idx] * arrow_len,
+                angles="xy",
+                scale_units="xy",
+                scale=1.0,
+                width=self.arrow_width,
+                color="#333333",
+                zorder=3,
+            )
+        else:
+            self._quiver_indices = None
+            self._quiver = None
+
+        self._redraw_highlight()
 
     def update_one(self, idx: int) -> None:
         """単一点の再計算・再描画。"""
         if self._pix is None or self._yaw_deg is None:
             self.compute_all_pixels()
         lat, lon = self.store.read_latlon(idx)
-        px, py = self.map.latlon_to_pixel(lat, lon)
-        self._pix[idx, 0] = px
-        self._pix[idx, 1] = py
+        pxpy = self.map.latlon_to_pixel(lat, lon)
+        if pxpy[0] is None or pxpy[1] is None:
+            self._pix[idx, 0] = np.nan
+            self._pix[idx, 1] = np.nan
+            if self._valid_mask is not None:
+                self._valid_mask[idx] = False
+        else:
+            px, py = pxpy
+            self._pix[idx, 0] = px
+            self._pix[idx, 1] = py
+            if self._valid_mask is not None:
+                self._valid_mask[idx] = True
         self._yaw_deg[idx] = self.store.read_pose_yaw_deg(idx)
-        self.draw_all()
+
+        # 散布図の座標を差分更新
+        if self._scatter is not None:
+            self._scatter.set_offsets(self._pix)
+
+        # 矢印は一旦描画し直す（本数は多くない前提）
+        if self._quiver is not None:
+            self._quiver.remove()
+            self._quiver = None
+
+        valid = self._valid_mask if self._valid_mask is not None else np.ones(len(self._pix), dtype=bool)
+        if valid.any():
+            arrow_len = self._estimate_arrow_length()
+            valid_idx = np.where(valid)[0]
+            self._quiver_indices = valid_idx
+            yaw_rad = np.deg2rad(self._yaw_deg[valid_idx])
+            self._quiver = self.ax.quiver(
+                self._pix[valid_idx, 0],
+                self._pix[valid_idx, 1],
+                np.cos(yaw_rad) * arrow_len,
+                np.sin(yaw_rad) * arrow_len,
+                angles="xy",
+                scale_units="xy",
+                scale=1.0,
+                width=self.arrow_width,
+                color="#333333",
+                zorder=3,
+            )
+        else:
+            self._quiver_indices = None
+
+        self._redraw_highlight()
 
     def set_view_rect_meters_around(
         self,
@@ -731,21 +918,142 @@ class Viewer:
             half_y = half_px_long
 
         # 表示範囲を設定（地図端ではクランプするのが望ましいが、ここでは簡易にそのまま）
-        self.ax.set_xlim(cx - half_x, cx + half_x)
-        self.ax.set_ylim(cy - half_y, cy + half_y)
-        self.ax.invert_yaxis()  # 画像座標系に合わせることが多い
-        self.fig.canvas.draw_idle()
+        x_min = clamp(cx - half_x, 0, self._map_width)
+        x_max = clamp(cx + half_x, 0, self._map_width)
+        y_min = clamp(cy - half_y, 0, self._map_height)
+        y_max = clamp(cy + half_y, 0, self._map_height)
+        self.ax.set_xlim(x_min, x_max)
+        self.ax.set_ylim(y_max, y_min)
+        self._refresh_quiver_vectors()
+        self._redraw_highlight()
 
     def pick_nearest_index(self, x_px: float, y_px: float) -> Optional[int]:
         """クリック位置（px）に最も近い点の index を返す（しきい値外なら None）。"""
         if self._pix is None:
             self.compute_all_pixels()
         assert self._pix is not None
+        if len(self._pix) == 0:
+            return None
         d = np.hypot(self._pix[:, 0] - x_px, self._pix[:, 1] - y_px)
+        if self._valid_mask is not None:
+            d = np.where(self._valid_mask, d, np.inf)
         i = int(np.argmin(d))
         if d[i] <= self._near_px_threshold:
             return i
         return None
+
+    def highlight_index(self, idx: Optional[int]) -> None:
+        """指定 index をハイライトする。None で解除。"""
+        if idx == self._highlight_index:
+            return
+        self._highlight_index = idx
+        self._redraw_highlight()
+
+    def show_full_extent(self) -> None:
+        """地図全体を表示範囲に設定する。"""
+        self.ax.set_xlim(0, self._map_width)
+        self.ax.set_ylim(self._map_height, 0)
+        self._refresh_quiver_vectors()
+        self._redraw_highlight()
+
+    # ---- 内部ヘルパ ----
+
+    def _clear_highlight(self) -> None:
+        if self._highlight_pt is not None:
+            self._highlight_pt.remove()
+            self._highlight_pt = None
+        if self._highlight_quiv is not None:
+            self._highlight_quiv.remove()
+            self._highlight_quiv = None
+        if self._highlight_text is not None:
+            self._highlight_text.remove()
+            self._highlight_text = None
+
+    def _redraw_highlight(self) -> None:
+        self._clear_highlight()
+        if self._highlight_index is None or self._pix is None or self._yaw_deg is None:
+            self.fig.canvas.draw_idle()
+            return
+        idx = self._highlight_index
+        px = float(self._pix[idx, 0])
+        py = float(self._pix[idx, 1])
+        if not np.isfinite(px) or not np.isfinite(py):
+            self.fig.canvas.draw_idle()
+            return
+        self._highlight_pt = self.ax.scatter(
+            [px],
+            [py],
+            s=160.0,
+            facecolors="none",
+            edgecolors="#00ffff",
+            linewidths=2.0,
+            zorder=4,
+        )
+        yaw = float(self._yaw_deg[idx])
+        arrow_len = self._estimate_arrow_length()
+        self._highlight_quiv = self.ax.quiver(
+            [px],
+            [py],
+            [math.cos(math.radians(yaw)) * arrow_len],
+            [math.sin(math.radians(yaw)) * arrow_len],
+            angles="xy",
+            scale_units="xy",
+            scale=1.0,
+            width=self.arrow_width * 1.5,
+            color="#00ffff",
+            zorder=4,
+        )
+        if self._should_show_label_text():
+            label = self.store.get_label_display(idx)
+            self._highlight_text = self.ax.text(
+                px + 6.0,
+                py - 6.0,
+                label,
+                color="#ffffff",
+                fontsize=9,
+                fontweight="bold",
+                bbox={"facecolor": "#000000", "alpha": 0.6, "edgecolor": "none", "pad": 2},
+                zorder=5,
+            )
+        self.fig.canvas.draw_idle()
+
+    def _estimate_arrow_length(self) -> float:
+        """現在の描画領域に基づく矢印長（データ座標）を返す。"""
+        bbox = self.ax.get_window_extent()
+        width_px = max(bbox.width, 1.0)
+        height_px = max(bbox.height, 1.0)
+        x_span = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
+        y_span = abs(self.ax.get_ylim()[1] - self.ax.get_ylim()[0])
+        data_per_px_x = x_span / width_px
+        data_per_px_y = y_span / height_px
+        data_per_px = max((data_per_px_x + data_per_px_y) * 0.5, 1e-6)
+        desired_px = 40.0
+        return max(data_per_px * desired_px, 5.0)
+
+    def _refresh_quiver_vectors(self) -> None:
+        """ズーム倍率に合わせて矢印ベクトルを再計算する。"""
+        if self._quiver is None or self._yaw_deg is None or self._quiver_indices is None:
+            return
+        arrow_len = self._estimate_arrow_length()
+        idx = self._quiver_indices
+        yaw_rad = np.deg2rad(self._yaw_deg[idx])
+        u = np.cos(yaw_rad) * arrow_len
+        v = np.sin(yaw_rad) * arrow_len
+        self._quiver.set_UVC(u, v)
+        self.fig.canvas.draw_idle()
+
+    def _should_show_label_text(self) -> bool:
+        """高倍率表示か判定する。"""
+        x_span = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
+        y_span = abs(self.ax.get_ylim()[1] - self.ax.get_ylim()[0])
+        short_span = min(x_span, y_span)
+        return short_span <= max(self._map_width, self._map_height) / 3.0
+
+    def _on_axes_changed(self, _axis) -> None:
+        """パン・ズーム時に矢印とラベルを更新する。"""
+        self._refresh_quiver_vectors()
+        if self._highlight_index is not None:
+            self._redraw_highlight()
 
 
 # =============================================================================
@@ -766,14 +1074,17 @@ class App:
             # 無ければスルー（mapper 側の設計に依存）
             pass
 
+        self.map_image = mpimg.imread(str(map_path))
+
         # (E,N) と (x,y) の相似変換を推定
         self.aligner = XYAligner()
-        self._fit_similarity_model(max_points=20)
+        self._similarity_rms: Optional[float] = None
 
         # ---- UI 構築 ----
         self.root = tk.Tk()
         self.root.title("Waypoint 地図連携エディタ")
         self.root.geometry("1280x720")  # 16:9 推奨（ウィンドウ比は調整可）
+        self.status_var = tk.StringVar(value="RMS: ---")
         self._build_widgets()
 
         # 状態
@@ -781,30 +1092,51 @@ class App:
         self.focus_idx: Optional[int] = None
         self.last_deleted: Optional[Tuple[int, pd.Series]] = None  # 簡易 Undo 用（1段）
 
+        # 初期の相似変換推定と描画
+        self._fit_similarity_model(max_points=20)
         # 初期描画
         self.viewer.compute_all_pixels()
         self.viewer.draw_all()
+        self._update_similarity_status()
 
     # ---- 相似変換の推定 ----
 
     def _fit_similarity_model(self, max_points: int = 20) -> None:
         """CSV 先頭から K 点で (E,N)↔(x,y) の相似変換を推定。"""
         K = min(max_points, self.store.n)
+        if K == 0:
+            self._similarity_rms = None
+            self._update_similarity_status()
+            return
+
         EN = np.zeros((K, 2), dtype=float)
         XY = np.zeros((K, 2), dtype=float)
-        for i in range(K):
-            lat, lon = self.store.read_latlon(i)
-            e, n = self.map.latlon_to_local_m(lat, lon)
-            EN[i, 0] = e
-            EN[i, 1] = n
-            x, y = self.store.read_xy(i)
-            XY[i, 0] = x
-            XY[i, 1] = y
+        try:
+            for i in range(K):
+                lat, lon = self.store.read_latlon(i)
+                e, n = self.map.latlon_to_local_m(lat, lon)
+                EN[i, 0] = e
+                EN[i, 1] = n
+                x, y = self.store.read_xy(i)
+                XY[i, 0] = x
+                XY[i, 1] = y
+        except Exception as e:
+            messagebox.showwarning("相似変換推定エラー", f"(E,N) 変換に失敗しました: {e}")
+            self._similarity_rms = None
+            self._update_similarity_status()
+            return
+
         sim, rms, mask = self.aligner.fit(EN, XY)
         if sim is None:
-            print("警告: x,y と (E,N) の相似変換の推定に失敗しました。x,y の更新は恒等変換で行います。", file=sys.stderr)
+            print(
+                "警告: x,y と (E,N) の相似変換の推定に失敗しました。x,y の更新は恒等変換で行います。",
+                file=sys.stderr,
+            )
+            self._similarity_rms = None
         else:
             print(f"相似変換推定: s={sim.s:.6f}, R=\n{sim.R}\n t={sim.t}, RMS={rms:.3f} m")
+            self._similarity_rms = rms
+        self._update_similarity_status()
 
     # ---- UI 構築 ----
 
@@ -841,10 +1173,11 @@ class App:
         self.nav_toolbar.pack(side=tk.TOP, fill=tk.X)
 
         # Viewer を構築
-        self.viewer = Viewer(self.fig, self.ax, self.map, self.store)
+        self.viewer = Viewer(self.fig, self.ax, self.map, self.store, np.asarray(self.map_image))
 
         # キャンバスのクリックイベント（ナビ: 選択／フォーカス: 無し）
         self.canvas.mpl_connect("button_press_event", self._on_canvas_click)
+        self.canvas.mpl_connect("motion_notify_event", self._on_canvas_motion)
 
         # 下部：編集パネル
         self._build_editor_panel()
@@ -941,6 +1274,9 @@ class App:
         ttk.Button(ctl, text="削除", width=8, command=self._on_delete).pack(side=tk.LEFT, padx=4)
         ttk.Button(ctl, text="保存", width=8, command=self._on_save).pack(side=tk.LEFT, padx=4)
 
+        # 変換 RMS 表示
+        ttk.Label(panel, textvariable=self.status_var, anchor=tk.W).pack(side=tk.TOP, anchor=tk.W, pady=(4, 0))
+
     # ---- ユーティリティ ----
 
     def _meter_to_pixel_local(self, center_lat: float, center_lon: float) -> Callable[[float, float], Tuple[float, float]]:
@@ -950,15 +1286,26 @@ class App:
         (lat,lon)→pixel の微小変化を中心点で近似して px 換算を得る。
         """
         cx_px, cy_px = self.map.latlon_to_pixel(center_lat, center_lon)
+        if cx_px is None or cy_px is None:
+            raise RuntimeError("対象 waypoint が地図外にあります。")
 
         def f(de: float, dn: float) -> Tuple[float, float]:
             # (E,N) を lat,lon に戻し、その pixel を得る（mapper API で往復）
             e0, n0 = self.map.latlon_to_local_m(center_lat, center_lon)
             lat1, lon1 = self.map.local_m_to_latlon(e0 + de, n0 + dn)
             px1, py1 = self.map.latlon_to_pixel(lat1, lon1)
+            if px1 is None or py1 is None:
+                return cx_px, cy_px
             return (cx_px + (px1 - cx_px), cy_px + (py1 - cy_px))
 
         return f
+
+    def _update_similarity_status(self) -> None:
+        """相似変換 RMS の表示を更新する。"""
+        if self._similarity_rms is None:
+            self.status_var.set("RMS: N/A")
+        else:
+            self.status_var.set(f"RMS: {self._similarity_rms:.3f} m")
 
     def _update_panel_from_index(self, idx: int) -> None:
         """フォーカス対象の情報をパネルへ反映。"""
@@ -996,6 +1343,7 @@ class App:
                 WaypointStore.FLAG_ISNOT_SKIP: int(self.var_isnot_skip.get()),
             }
             self.store.write_flags(idx, flags)
+            self.viewer.draw_all()
             return True
         except Exception as e:
             messagebox.showerror("入力エラー", f"フラグの値が不正です: {e}")
@@ -1021,22 +1369,37 @@ class App:
         self.mode = "focus"
         self._enter_focus(idx)
 
+    def _on_canvas_motion(self, event) -> None:
+        """ナビモード時のホバーで近傍 waypoint をハイライトする。"""
+        if self.mode != "nav":
+            return
+        if event.xdata is None or event.ydata is None:
+            self.viewer.highlight_index(None)
+            return
+        idx = self.viewer.pick_nearest_index(event.xdata, event.ydata)
+        self.viewer.highlight_index(idx)
+
     def _enter_focus(self, idx: int) -> None:
         """フォーカスモードへ。自動ズーム＋右ペイン更新。"""
+        self.viewer.highlight_index(idx)
         self._update_panel_from_index(idx)
         lat, lon = self.store.read_latlon(idx)
-        cx, cy = self.map.latlon_to_pixel(lat, lon)
-        meter_to_px = self._meter_to_pixel_local(lat, lon)
-        self.viewer.set_view_rect_meters_around((cx, cy), short_half_m=25.0, meter_to_pixel=meter_to_px)
+        pxpy = self.map.latlon_to_pixel(lat, lon)
+        if pxpy[0] is None or pxpy[1] is None:
+            messagebox.showwarning("注意", "選択した waypoint は地図外のためフォーカス表示できません。")
+            self.viewer.show_full_extent()
+            return
+        try:
+            meter_to_px = self._meter_to_pixel_local(lat, lon)
+        except Exception as e:
+            messagebox.showwarning("注意", f"フォーカス用の局所変換が取得できませんでした: {e}")
+            self.viewer.show_full_extent()
+            return
+        self.viewer.set_view_rect_meters_around((pxpy[0], pxpy[1]), short_half_m=25.0, meter_to_pixel=meter_to_px)
 
     def _on_reset_view(self) -> None:
         """全体表示（ナビに適する）。"""
-        # 軽く軸をリセット（背景は mapper 側に依存）
-        self.ax.autoscale(True)
-        self.ax.relim()
-        self.ax.autoscale_view()
-        self.ax.invert_yaxis()
-        self.fig.canvas.draw_idle()
+        self.viewer.show_full_extent()
 
     def _on_toggle_mode(self) -> None:
         """モード切替（ナビ↔フォーカス）。"""
@@ -1045,8 +1408,15 @@ class App:
                 return
         self.mode = "nav" if self.mode == "focus" else "focus"
         if self.mode == "nav":
+            self.viewer.highlight_index(None)
             self._on_reset_view()
         else:
+            if self.store.n == 0:
+                messagebox.showinfo("情報", "編集可能な waypoint が存在しません。")
+                self.mode = "nav"
+                self.viewer.highlight_index(None)
+                self._on_reset_view()
+                return
             # フォーカスに入る場合は、最後の idx か 0 を選ぶ
             idx = self.focus_idx if self.focus_idx is not None else 0
             self._enter_focus(idx)
@@ -1071,6 +1441,14 @@ class App:
 
         ttk.Button(win, text="OK", command=ok).pack(side=tk.TOP, pady=8)
 
+        def refit() -> None:
+            self._fit_similarity_model(max_points=20)
+            self.viewer.compute_all_pixels()
+            self.viewer.draw_all()
+            messagebox.showinfo("再推定完了", "(E,N) と (x,y) の相似変換を再推定しました。")
+
+        ttk.Button(win, text="相似変換を再推定", command=refit).pack(side=tk.TOP, pady=4)
+
     def _on_save(self) -> None:
         """CSV 保存。"""
         try:
@@ -1078,8 +1456,14 @@ class App:
                 # フォーカス中はフラグ編集の書戻しを優先（失敗なら保存中止）
                 if not self._apply_flags_from_panel():
                     return
-            out = self.store.save()
-            messagebox.showinfo("保存完了", f"保存しました: {out.name}")
+            out, labels = self.store.save()
+            if labels:
+                summary = f"\n変更件数: {len(labels)}\n対象: {', '.join(labels)}"
+            else:
+                summary = "\n変更件数: 0\n対象: なし"
+            message = f"保存しました: {out.name}{summary}"
+            messagebox.showinfo("保存完了", message)
+            print(f"[保存] {out} 変更件数={len(labels)} 対象={labels}")
         except Exception as e:
             messagebox.showerror("保存エラー", str(e))
 
@@ -1112,6 +1496,7 @@ class App:
         if self.store.n == 0:
             self.focus_idx = None
             self.viewer.draw_all()
+            self.viewer.highlight_index(None)
             return
         # 次へ遷移
         nx = min(idx, self.store.n - 1)

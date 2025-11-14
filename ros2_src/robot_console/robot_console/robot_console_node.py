@@ -47,32 +47,33 @@ class RobotConsoleNode(Node):
                     f'コンソールログを {resolved_log_dir} に保存します。'
                 )
         self._core = gui_core or GuiCore(log_directory=resolved_log_dir)
-        self._manual_pub = self.create_publisher(Bool, '/manual_start', 10)
-        self._sig_pub = self.create_publisher(Int32, '/sig_recog', 10)
-        self._road_pub = self.create_publisher(Bool, '/road_blocked', 10)
+        # 先頭にスラッシュを付けないことで launch からの remap を可能にする。
+        self._manual_pub = self.create_publisher(Bool, 'manual_start', 10)
+        self._sig_pub = self.create_publisher(Int32, 'sig_recog', 10)
+        self._road_pub = self.create_publisher(Bool, 'road_blocked', 10)
         self._obstacle_hint_pub = self.create_publisher(
-            ObstacleAvoidanceHint, '/obstacle_avoidance_hint', 10
+            ObstacleAvoidanceHint, 'obstacle_avoidance_hint', 10
         )
 
-        self.create_subscription(RouteState, '/route_state', self._core.update_route_state, 10)
-        self.create_subscription(ManagerStatus, '/manager_status', self._core.update_manager_status, 10)
-        self.create_subscription(Route, '/active_route', self._core.update_route, 10)
-        self.create_subscription(FollowerState, '/follower_state', self._core.update_follower_state, 10)
-        self.create_subscription(ObstacleAvoidanceHint, '/obstacle_avoidance_hint', self._core.update_obstacle_hint, 10)
-        self.create_subscription(ImageMsg, '/sensor_viewer', self._core.update_sensor_viewer, 10)
-        self.create_subscription(ImageMsg, '/usb_cam/image_raw', lambda msg: self._core.update_camera_image(msg, 'drive'), 10)
-        self.create_subscription(ImageMsg, '/sig_det_imgs', lambda msg: self._core.update_camera_image(msg, 'signal'), 10)
-        self.create_subscription(PoseStamped, '/active_target', self._core.update_active_target, 10)
+        self.create_subscription(RouteState, 'route_state', self._core.update_route_state, 10)
+        self.create_subscription(ManagerStatus, 'manager_status', self._core.update_manager_status, 10)
+        self.create_subscription(Route, 'active_route', self._core.update_route, 10)
+        self.create_subscription(FollowerState, 'follower_state', self._core.update_follower_state, 10)
+        self.create_subscription(ObstacleAvoidanceHint, 'obstacle_avoidance_hint', self._core.update_obstacle_hint, 10)
+        self.create_subscription(ImageMsg, 'sensor_viewer', self._core.update_sensor_viewer, 10)
+        self.create_subscription(ImageMsg, 'usb_cam/image_raw', lambda msg: self._core.update_camera_image(msg, 'drive'), 10)
+        self.create_subscription(ImageMsg, 'sig_det_imgs', lambda msg: self._core.update_camera_image(msg, 'signal'), 10)
+        self.create_subscription(PoseStamped, 'active_target', self._core.update_active_target, 10)
         self.create_subscription(
             PoseWithCovarianceStamped,
-            '/amcl_pose',
+            'amcl_pose',
             self._core.update_amcl_pose,
             10,
         )
-        self.create_subscription(Twist, '/cmd_vel', self._core.update_cmd_vel, 10)
-        self.create_subscription(Bool, '/manual_start', self._core.update_manual_start, 10)
-        self.create_subscription(Int32, '/sig_recog', self._core.update_sig_recog, 10)
-        self.create_subscription(Bool, '/road_blocked', self._on_road_blocked, 10)
+        self.create_subscription(Twist, 'cmd_vel', self._core.update_cmd_vel, 10)
+        self.create_subscription(Bool, 'manual_start', self._core.update_manual_start, 10)
+        self.create_subscription(Int32, 'sig_recog', self._core.update_sig_recog, 10)
+        self.create_subscription(Bool, 'road_blocked', self._on_road_blocked, 10)
 
         self._command_timer = self.create_timer(0.1, self._process_commands)
         self._obstacle_override_timer = None

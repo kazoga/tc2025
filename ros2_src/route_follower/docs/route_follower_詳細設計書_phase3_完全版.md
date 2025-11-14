@@ -147,9 +147,11 @@ obstacle_monitor、route_manager との連携仕様を含めた完全設計情�
 ```
 IDLE → RUNNING → WAITING_STOP → RUNNING/FINISHED
         │
-        ├─滞留検知→STAGNATION_DETECTED→AVOIDING
-        │       ├─再滞留→report_stuck(avoidance_failed)
-        │       └─空間無/HINT無→report_stuck(unknown_stuck)
+        ├─滞留検知→STAGNATION_DETECTED
+        │       ├─左右開放度ゼロ→RUNNING継続
+        │       └→AVOIDING
+        │           ├─再滞留→report_stuck(avoidance_failed)
+        │           └─空間無/HINT無→report_stuck(unknown_stuck)
         ├─report_stuck応答→WAITING_REROUTE
         │       ├─新route受信→RUNNING
         │       └─timeout30s→ERROR
@@ -167,12 +169,13 @@ IDLE → RUNNING → WAITING_STOP → RUNNING/FINISHED
 
 ### 7.2 回避動作
 1. Hintキャッシュ評価により左右オフセット中央値を取得。
-2. waypoint上限と比較し、小さい方を採用。  
-3. offset_min=0.35m〜offset_max=5.0mに制限。  
-4. L字回避を2段階サブゴール（横→前進）として `_avoid_queue` に登録。  
-5. 各サブゴール到達判定で次段発行。  
-6. いずれかで再滞留検出→avoidance_failed報告。  
-7. 完了後RUNNINGへ復帰。
+2. waypoint上限と比較し、小さい方を採用。
+3. waypointの `right_isopen` / `left_isopen`（フォールバックで `right_open` / `left_open`）がともに0の場合は横方向余裕なしと判断し、Hintの十分性にかかわらず回避・`/report_stuck` を行わずRUNNINGへ復帰する。
+4. offset_min=0.35m〜offset_max=5.0mに制限。
+5. L字回避を2段階サブゴール（横→前進）として `_avoid_queue` に登録。
+6. 各サブゴール到達判定で次段発行。
+7. いずれかで再滞留検出→avoidance_failed報告。
+8. 完了後RUNNINGへ復帰。
 
 ### 7.3 STOP制御
 - line_stop 到達→WAITING_STOP、解除は `/manual_start=True`。  

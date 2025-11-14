@@ -618,6 +618,8 @@ class RouteManagerCore:
         normalized_reason = (reason_label or "").strip().lower()
         is_road_blocked = reason_enum == StuckReason.ROAD_BLOCKED or normalized_reason == "road_blocked"
         skip_local_adjustments = False
+        skip_planner_update = False
+        fixed_segment = self.is_current_segment_fixed()
         if is_road_blocked:
             skip_local_adjustments = True
             if self.route_model is None:
@@ -626,37 +628,28 @@ class RouteManagerCore:
                 self._emit_route_state(message=failure_reason)
                 self._set_status("holding", decision="failed", cause=failure_reason)
                 return SimpleServiceResult(False, failure_reason)
-            if self.is_current_segment_fixed():
+            if fixed_segment:
                 self._log("[Core] _cb_replan: road_blocked on fixed segment -> reissue current route")
-                current = self.route_model
-                new_rm = RouteModel(
-                    waypoints=copy.deepcopy(current.waypoints),
-                    version=VersionMM(
-                        major=current.version.major,
-                        minor=current.version.minor + 1,
-                    ),
-                    frame_id=current.frame_id,
-                    has_image=current.has_image,
-                    current_index=current.current_index,
-                    current_label=current.current_label,
-                )
-                self._accept_route(
-                    new_rm,
+                return self._reissue_current_route(
                     log_prefix="RoadBlock FixedSegment",
-                    source="local",
                     event_message="road_blocked_fixed",
+                    decision_label="road_blocked_fixed",
+                    status_cause="road_blocked",
                 )
-                self._set_status("running", decision="road_blocked_fixed", cause="road_blocked")
-                self._last_replan_offset_hint = 0.0
-                return SimpleServiceResult(True, "road_blocked_fixed")
             self._log("[Core] _cb_replan: road_blocked on variable segment -> planner replan only")
+        elif fixed_segment:
+            skip_planner_update = True
+            self._log("[Core] _cb_replan: fixed segment -> skip planner UpdateRoute trial")
 
         # 1) UpdateRoute（最初の試行）
         self._log("[Core] _cb_replan: step1 try UpdateRoute (replan_first)")
-        if await self._try_update_route(reason="replan_first"):
-            self._log("[Core] _cb_replan: step1 success")
-            self._last_replan_offset_hint = 0.0
-            return SimpleServiceResult(True, "replan_first")
+        if not skip_planner_update:
+            if await self._try_update_route(reason="replan_first"):
+                self._log("[Core] _cb_replan: step1 success")
+                self._last_replan_offset_hint = 0.0
+                return SimpleServiceResult(True, "replan_first")
+        else:
+            self._log("[Core] _cb_replan: step1 skipped (fixed segment)")
 
         if skip_local_adjustments:
             if is_road_blocked:
@@ -702,6 +695,44 @@ class RouteManagerCore:
         self._emit_route_state(message=failure_reason)
         self._set_status("holding", decision="failed", cause=failure_reason)
         return SimpleServiceResult(False, failure_reason)
+
+    def _reissue_current_route(
+        self,
+        *,
+        log_prefix: str,
+        event_message: str,
+        decision_label: str,
+        status_cause: str,
+    ) -> SimpleServiceResult:
+        """固定経路向けに現在のルートを複製し、マイナーバージョンのみを更新して再配信する。"""
+
+        if self.route_model is None:
+            self._log("[Core] _reissue_current_route: no active route -> abort")
+            return SimpleServiceResult(False, status_cause or "fixed_segment")
+
+        current = self.route_model
+        new_rm = RouteModel(
+            waypoints=copy.deepcopy(current.waypoints),
+            version=VersionMM(
+                major=current.version.major,
+                minor=current.version.minor + 1,
+            ),
+            frame_id=current.frame_id,
+            has_image=current.has_image,
+            current_index=current.current_index,
+            current_label=current.current_label,
+            route_image=copy.deepcopy(current.route_image),
+        )
+        event_text = event_message or "fixed_segment_retry"
+        self._accept_route(
+            new_rm,
+            log_prefix=log_prefix,
+            source="local",
+            event_message=event_text,
+        )
+        self._set_status("running", decision=decision_label, cause=status_cause)
+        self._last_replan_offset_hint = 0.0
+        return SimpleServiceResult(True, event_text)
 
     # ------------------------------------------------------------------
     # 具体ロジック（Update/Shift/Skip/Accept/Validate/Status）

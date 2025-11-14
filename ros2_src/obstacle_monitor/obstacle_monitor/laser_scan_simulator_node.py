@@ -30,7 +30,7 @@ class LaserScanSimulatorNode(Node):
         super().__init__('laser_scan_simulator')
 
         # パラメータ
-        self.declare_parameter('map_image_path', '/tmp/map.bmp')
+        self.declare_parameter('map_image_path', 'map/map.bmp')
         self.declare_parameter('map_resolution_m', 0.2)
         self.declare_parameter('publish_rate_hz', 40.0)
         self.declare_parameter('enable_debug_view', True)

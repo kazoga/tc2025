@@ -413,6 +413,19 @@ class FollowerCore:
                     # すべて消化 → 本来WPへ復帰
                     self.avoid_active = False
                     self.status = FollowerStatus.RUNNING
+                    if self.route is not None and self.route.waypoints:
+                        rejoin_index = self._decide_rejoin_index_after_avoidance(
+                            self.current_pose, self.route, self.index
+                        )
+                        self.index = rejoin_index
+                        rejoin_wp = self.route.waypoints[self.index]
+                        self.last_target = rejoin_wp.pose
+                        self.log(
+                            "[FollowerCore] Avoidance completed. Back to main route. "
+                            f"rejoin_index={self.index}"
+                        )
+                        return FollowerOutput(rejoin_wp.pose, self._make_state_dict())
+
                     self.last_target = cur_wp.pose
                     self.log("[FollowerCore] Avoidance completed. Back to main route.")
                     return FollowerOutput(cur_wp.pose, self._make_state_dict())
@@ -740,4 +753,89 @@ class FollowerCore:
         """直近Hintで前方が塞がれているかを返す。"""
         with self._hint_lock:
             return bool(self._hint_front_blocked_majority)
+
+    # ========================= L字回避復帰支援 =========================
+    def _project_point_to_segment(
+        self, p: Pose, a: Pose, b: Pose
+    ) -> Tuple[float, float, float]:
+        """点pを線分abへ射影し、範囲内にクランプした点と距離を返す。"""
+        ax = float(a.x)
+        ay = float(a.y)
+        bx = float(b.x)
+        by = float(b.y)
+        px = float(p.x)
+        py = float(p.y)
+
+        vx = bx - ax
+        vy = by - ay
+        seg_len_sq = vx * vx + vy * vy
+        if seg_len_sq <= 1e-9:
+            dist = math.hypot(px - ax, py - ay)
+            return ax, ay, dist
+
+        t = ((px - ax) * vx + (py - ay) * vy) / seg_len_sq
+        t = max(0.0, min(1.0, t))
+        proj_x = ax + vx * t
+        proj_y = ay + vy * t
+        dist = math.hypot(px - proj_x, py - proj_y)
+        return proj_x, proj_y, dist
+
+    def _decide_rejoin_index_after_avoidance(
+        self, p2: Pose, route: Route, index: int
+    ) -> int:
+        """L字回避完了後に自然復帰するウェイポイントindexを決定する。"""
+        waypoints = route.waypoints
+        if not waypoints:
+            return index
+
+        n = len(waypoints)
+        base_index = max(0, min(index, n - 1))
+        if base_index >= n - 1:
+            return n - 1
+
+        e_x = 0.0
+        e_y = 0.0
+        for seg_index in range(base_index, n - 1):
+            seg_dx = waypoints[seg_index + 1].pose.x - waypoints[seg_index].pose.x
+            seg_dy = waypoints[seg_index + 1].pose.y - waypoints[seg_index].pose.y
+            seg_len = math.hypot(seg_dx, seg_dy)
+            if seg_len > 1e-6:
+                e_x = seg_dx / seg_len
+                e_y = seg_dy / seg_len
+                break
+
+        if abs(e_x) < 1e-9 and abs(e_y) < 1e-9:
+            # ルート方向が求まらない場合は従来通りp2のyawを使用する。
+            e_x = math.cos(p2.yaw)
+            e_y = math.sin(p2.yaw)
+
+        best_segment: Optional[int] = None
+        best_distance = float("inf")
+
+        for i in range(base_index, n - 1):
+            proj_x, proj_y, dist = self._project_point_to_segment(
+                p2, waypoints[i].pose, waypoints[i + 1].pose
+            )
+            vec_x = proj_x - p2.x
+            vec_y = proj_y - p2.y
+            s_i = vec_x * e_x + vec_y * e_y
+            if s_i < -0.1:
+                continue
+            if dist < best_distance:
+                best_distance = dist
+                best_segment = i
+
+        if best_segment is None:
+            j_base = base_index
+        else:
+            j_base = min(best_segment + 1, n - 1)
+
+        rejoin_index = j_base
+        for s in range(base_index, j_base + 1):
+            wp = waypoints[s]
+            if wp.line_stop or wp.signal_stop:
+                rejoin_index = s
+                break
+
+        return rejoin_index
 

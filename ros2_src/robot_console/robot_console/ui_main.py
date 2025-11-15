@@ -5,11 +5,12 @@ from __future__ import annotations
 import base64
 import logging
 import math
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import Any, Dict, Optional, Tuple
 
 try:
@@ -72,6 +73,18 @@ def _format_time(value: Optional[datetime]) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(JST).strftime("%H:%M:%S")
+
+
+def _format_duration_seconds(seconds: float) -> str:
+    """経過秒を HH:MM:SS 形式へ変換する。"""
+
+    if seconds <= 0.0:
+        return "00:00:00"
+    total = int(seconds)
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def compute_route_progress(
@@ -290,6 +303,8 @@ class UiMain:
         self._velocity_vars = {
             'linear': tk.StringVar(value='0.00 m/s'),
             'angular': tk.StringVar(value='0.0 deg/s'),
+            'distance': tk.StringVar(value='0.0 m'),
+            'elapsed': tk.StringVar(value='00:00:00'),
         }
         self._target_vars = {
             'distance': tk.StringVar(value='0.0 m'),
@@ -302,6 +317,8 @@ class UiMain:
         self._param_last_display: Dict[str, str] = {}
         self._file_cache: Dict[str, Tuple[float, str]] = {}
         self._log_texts: Dict[str, tk.Text] = {}
+        self._log_open_buttons: Dict[str, ttk.Button] = {}
+        self._log_file_paths: Dict[str, Optional[str]] = {}
 
         self._build_layout()
         self._on_obstacle_params_changed()
@@ -325,6 +342,12 @@ class UiMain:
         self._obstacle_override_active = False
         self._sig_value_initialized: bool = False
         self._sig_last_command: Optional[int] = None
+        self._segment_distances: Dict[Tuple[int, int, str], float] = {}
+        self._total_distance_m: float = 0.0
+        self._route_manager_previous_status: Optional[NodeLaunchStatus] = None
+        self._follower_run_started_at: Optional[datetime] = None
+        self._follower_last_state: Optional[str] = None
+        self._follower_elapsed_seconds: float = 0.0
 
     def _create_route_state_vars(self) -> RouteCardVars:
         """ルート進捗カードで利用する tk 変数を生成する。"""
@@ -578,18 +601,43 @@ class UiMain:
             style='Card.TLabelframe',
         )
         velocity_frame.grid(row=0, column=0, sticky='nsew', pady=(0, 6))
+        velocity_frame.columnconfigure(0, weight=1)
         velocity_frame.columnconfigure(1, weight=1)
-        ttk.Label(velocity_frame, text='並進速度').grid(row=0, column=0, sticky='w')
-        ttk.Label(velocity_frame, textvariable=self._velocity_vars['linear']).grid(
+
+        speed_frame = ttk.Frame(velocity_frame)
+        speed_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 4))
+        speed_frame.columnconfigure(0, weight=1)
+        speed_frame.columnconfigure(1, weight=1)
+        ttk.Label(speed_frame, text='並進速度').grid(row=0, column=0, sticky='w')
+        ttk.Label(speed_frame, textvariable=self._velocity_vars['linear']).grid(
             row=0,
             column=1,
-            sticky='w',
+            sticky='e',
         )
-        ttk.Label(velocity_frame, text='角速度').grid(row=1, column=0, sticky='w')
-        ttk.Label(velocity_frame, textvariable=self._velocity_vars['angular']).grid(
+        ttk.Label(speed_frame, text='角速度').grid(row=1, column=0, sticky='w', pady=(6, 0))
+        ttk.Label(speed_frame, textvariable=self._velocity_vars['angular']).grid(
             row=1,
             column=1,
-            sticky='w',
+            sticky='e',
+            pady=(6, 0),
+        )
+
+        distance_frame = ttk.Frame(velocity_frame)
+        distance_frame.grid(row=0, column=1, sticky='nsew', padx=(4, 0))
+        distance_frame.columnconfigure(0, weight=1)
+        distance_frame.columnconfigure(1, weight=1)
+        ttk.Label(distance_frame, text='走行距離').grid(row=0, column=0, sticky='w')
+        ttk.Label(distance_frame, textvariable=self._velocity_vars['distance']).grid(
+            row=0,
+            column=1,
+            sticky='e',
+        )
+        ttk.Label(distance_frame, text='走行時間').grid(row=1, column=0, sticky='w', pady=(6, 0))
+        ttk.Label(distance_frame, textvariable=self._velocity_vars['elapsed']).grid(
+            row=1,
+            column=1,
+            sticky='e',
+            pady=(6, 0),
         )
 
         target_frame = ttk.LabelFrame(metrics, text='目標までの距離', style='Card.TLabelframe')
@@ -852,7 +900,7 @@ class UiMain:
         button_row.grid(row=1, column=0, sticky='ew', pady=(0, 8))
         button_row.columnconfigure(0, weight=1)
         button_row.columnconfigure(1, weight=1)
-        ttk.Button(button_row, text='全起動', command=self._core.request_launch_all).grid(
+        ttk.Button(button_row, text='全起動', command=self._on_launch_all).grid(
             row=0,
             column=0,
             sticky='ew',
@@ -890,6 +938,42 @@ class UiMain:
                 ),
             )
 
+            current_row = 2
+            override_widgets: Dict[str, Dict[str, object]] = {}
+            if state.user_arguments:
+                handled_keys = set()
+                if profile_id == 'route_manager' and {
+                    'start_label',
+                    'goal_label',
+                }.issubset(set(state.user_arguments)):
+                    current_row = self._build_route_manager_label_inputs(
+                        card,
+                        profile_id,
+                        state,
+                        override_widgets,
+                        current_row,
+                    )
+                    handled_keys.update({'start_label', 'goal_label'})
+                for arg_key in state.user_arguments:
+                    if arg_key in handled_keys:
+                        continue
+                    label_text = self._format_override_label(arg_key)
+                    ttk.Label(card, text=label_text).grid(row=current_row, column=0, sticky='w')
+                    current_row += 1
+                    var = tk.StringVar(value=state.override_inputs.get(arg_key, ''))
+                    entry = ttk.Entry(card, textvariable=var)
+                    entry.grid(row=current_row, column=0, sticky='ew', pady=1)
+                    callback = self._create_override_callback(profile_id, arg_key, var)
+                    trace_id = var.trace_add('write', callback)
+                    override_widgets[arg_key] = {
+                        'var': var,
+                        'callback': callback,
+                        'trace': trace_id,
+                        'entry': entry,
+                        'last_synced': var.get(),
+                    }
+                    current_row += 1
+
             simulator_var = tk.BooleanVar(value=state.simulator_enabled)
             if state.simulator_launch_file:
                 chk = ttk.Checkbutton(
@@ -901,28 +985,117 @@ class UiMain:
                         var.get(),
                     ),
                 )
-                chk.grid(row=2, column=0, sticky='w')
-                button_row_index = 3
-            else:
-                button_row_index = 2
+                chk.grid(row=current_row, column=0, sticky='w')
+                current_row += 1
 
+            button_frame = ttk.Frame(card)
+            button_frame.grid(row=current_row, column=0, sticky='ew', pady=2)
+            button_frame.columnconfigure(0, weight=1)
+            button_frame.columnconfigure(1, weight=1)
             ttk.Button(
-                card,
+                button_frame,
                 text='起動',
-                command=lambda pid=profile_id: self._core.request_launch(pid),
-            ).grid(row=button_row_index, column=0, sticky='ew', pady=2)
+                command=lambda pid=profile_id: self._on_launch_node(pid),
+            ).grid(row=0, column=0, sticky='ew', padx=(0, 4))
             ttk.Button(
-                card,
+                button_frame,
                 text='停止',
                 command=lambda pid=profile_id: self._core.request_stop(pid),
-            ).grid(row=button_row_index + 1, column=0, sticky='ew', pady=2)
+            ).grid(row=0, column=1, sticky='ew')
+            current_row += 1
 
             self._launch_widgets[profile_id] = {
                 'status': status_var,
                 'param': param_var,
                 'sim': simulator_var,
                 'combo': combo,
+                'overrides': override_widgets,
             }
+
+    def _create_override_callback(self, profile_id: str, key: str, var: tk.StringVar):
+        def _callback(*_args: object) -> None:
+            self._core.update_launch_override(profile_id, key, var.get())
+
+        return _callback
+
+    def _build_route_manager_label_inputs(
+        self,
+        card: ttk.LabelFrame,
+        profile_id: str,
+        state: NodeLaunchState,
+        override_widgets: Dict[str, Dict[str, object]],
+        start_row: int,
+    ) -> int:
+        """route_manager 専用の start/goal 入力欄を横並びで構築する。"""
+
+        container = ttk.Frame(card)
+        container.grid(row=start_row, column=0, sticky='ew', pady=1)
+        container.columnconfigure(0, weight=1)
+        container.columnconfigure(1, weight=1)
+
+        def _create_entry(
+            column: int, key: str, padding: Tuple[int, int]
+        ) -> None:
+            frame = ttk.Frame(container)
+            frame.grid(row=0, column=column, sticky='ew', padx=padding)
+            frame.columnconfigure(0, weight=1)
+            label_text = self._format_override_label(key)
+            ttk.Label(frame, text=label_text).grid(row=0, column=0, sticky='w')
+            var = tk.StringVar(value=state.override_inputs.get(key, ''))
+            entry = ttk.Entry(frame, textvariable=var)
+            entry.grid(row=1, column=0, sticky='ew', pady=(2, 0))
+            callback = self._create_override_callback(profile_id, key, var)
+            trace_id = var.trace_add('write', callback)
+            override_widgets[key] = {
+                'var': var,
+                'callback': callback,
+                'trace': trace_id,
+                'entry': entry,
+                'last_synced': var.get(),
+            }
+
+        _create_entry(0, 'start_label', (0, 2))
+        _create_entry(1, 'goal_label', (2, 0))
+        return start_row + 1
+
+    @staticmethod
+    def _format_override_label(key: str) -> str:
+        label_map = {
+            'start_label': 'Start Label',
+            'goal_label': 'Goal Label',
+            'checkpoint_labels': 'Checkpoint Labels (comma separated)',
+        }
+        return label_map.get(key, key)
+
+    def _on_launch_node(self, profile_id: str) -> None:
+        """個別起動要求時に既存状態を確認してメッセージを表示する。"""
+
+        snapshot = self._get_latest_snapshot()
+        state = None
+        if snapshot is not None:
+            state = snapshot.launch_states.get(profile_id)
+        if state and state.status == NodeLaunchStatus.RUNNING:
+            name = state.display_name or profile_id
+            messagebox.showinfo(
+                'ノード再起動',
+                f"{name} は既に起動中です。再起動を実行します。",
+            )
+        self._core.request_launch(profile_id)
+
+    def _on_launch_all(self) -> None:
+        """全起動ボタン押下時の処理を実装する。"""
+
+        snapshot = self._get_latest_snapshot()
+        running_nodes = []
+        if snapshot is not None:
+            for state in snapshot.launch_states.values():
+                if state.status == NodeLaunchStatus.RUNNING:
+                    running_nodes.append(state.display_name or state.profile_id)
+        if running_nodes:
+            lines = '\n'.join(f'・{name}' for name in running_nodes)
+            message = '以下のノードは既に起動中です。再起動を実行します。\n' + lines
+            messagebox.showinfo('ノード再起動', message)
+        self._core.request_launch_all()
 
     def _build_logs(self, parent: ttk.Frame) -> None:
         columns = 2
@@ -943,6 +1116,8 @@ class UiMain:
             parent.rowconfigure(row, weight=1)
 
         self._log_texts.clear()
+        self._log_open_buttons.clear()
+        self._log_file_paths.clear()
         index = 0
         for profile_id in ordered:
             state = snapshot.launch_states.get(profile_id)
@@ -951,18 +1126,46 @@ class UiMain:
             row = index // columns
             col = index % columns
             index += 1
-            frame = ttk.LabelFrame(parent, text=state.display_name, padding=6)
+            frame = ttk.LabelFrame(parent, padding=6)
             frame.grid(row=row, column=col, sticky='nsew', padx=6, pady=6)
             frame.columnconfigure(0, weight=1)
+            frame.columnconfigure(1, weight=0)
             frame.rowconfigure(0, weight=1)
+            frame.rowconfigure(1, weight=0)
+
+            header = ttk.Frame(frame)
+            header.columnconfigure(0, weight=1)
+            header.columnconfigure(1, weight=0, minsize=50)
+            header.columnconfigure(2, weight=0)
+            ttk.Label(header, text=state.display_name).grid(
+                row=0, column=0, sticky='w'
+            )
+            button = ttk.Button(
+                header,
+                text='ログファイルを開く',
+                command=lambda pid=profile_id: self._open_log_file(pid),
+            )
+            button.grid(row=0, column=2, sticky='e', padx=(0, 30))
+            frame.configure(labelwidget=header)
+
+            def _sync_header_width(event: tk.Event, hdr: ttk.Frame = header) -> None:
+                """フレーム幅に合わせてヘッダー幅を更新する。"""
+
+                hdr.configure(width=max(event.width, 0))
+
+            frame.bind('<Configure>', _sync_header_width, add='+')
+
             text = tk.Text(frame, wrap='none', state='disabled')
-            text.grid(row=0, column=0, sticky='nsew')
+            text.grid(row=0, column=0, sticky='nsew', pady=(6, 0))
             v_scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
-            v_scrollbar.grid(row=0, column=1, sticky='ns')
+            v_scrollbar.grid(row=0, column=1, sticky='ns', pady=(6, 0))
             h_scrollbar = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
             h_scrollbar.grid(row=1, column=0, sticky='ew')
             text.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
             self._log_texts[profile_id] = text
+            button.state(['disabled'])
+            self._log_open_buttons[profile_id] = button
+            self._log_file_paths[profile_id] = None
 
     def _build_params(self, parent: ttk.Frame) -> None:
         columns = 2
@@ -1148,6 +1351,9 @@ class UiMain:
 
         self._velocity_vars['linear'].set(f"{snapshot.cmd_vel.linear_mps:.2f} m/s")
         self._velocity_vars['angular'].set(f"{snapshot.cmd_vel.angular_dps:.1f} deg/s")
+        self._update_route_manager_status(snapshot)
+        self._update_distance_tracker(snapshot)
+        self._update_follower_run_time(snapshot.follower_state)
 
         target = snapshot.target_distance
         baseline = max(target.baseline_distance_m, 0.0)
@@ -1223,8 +1429,76 @@ class UiMain:
         self._update_launch_states(snapshot)
         self._update_param_views(snapshot)
         self._update_logs(snapshot)
+        self._update_log_buttons(snapshot)
         if self._shutdown_pending and not self._has_active_nodes(snapshot):
             self._finalize_shutdown()
+
+    def _update_route_manager_status(self, snapshot: GuiSnapshot) -> None:
+        """route_manager の起動状態に応じて距離とタイマーを初期化する。"""
+
+        state = snapshot.launch_states.get('route_manager')
+        current = state.status if state else None
+        if current == NodeLaunchStatus.RUNNING and (
+            self._route_manager_previous_status != NodeLaunchStatus.RUNNING
+        ):
+            self._reset_distance_and_timer()
+        self._route_manager_previous_status = current
+
+    def _reset_distance_and_timer(self) -> None:
+        """距離・時間メトリクスを初期化し表示を更新する。"""
+
+        self._segment_distances.clear()
+        self._total_distance_m = 0.0
+        self._velocity_vars['distance'].set('0.0 m')
+        self._follower_run_started_at = None
+        self._follower_elapsed_seconds = 0.0
+        self._velocity_vars['elapsed'].set('00:00:00')
+        self._follower_last_state = None
+
+    def _update_distance_tracker(self, snapshot: GuiSnapshot) -> None:
+        """進捗分母に利用した距離の合計を更新する。"""
+
+        follower = snapshot.follower_state
+        segment_length = max(follower.segment_length_m, 0.0)
+        baseline = max(snapshot.target_distance.baseline_distance_m, 0.0)
+        distance_value = segment_length if segment_length > 0.0 else baseline
+        token = (
+            snapshot.route_state.route_version,
+            follower.active_waypoint_index,
+            follower.active_waypoint_label or '',
+        )
+        if follower.active_waypoint_index >= 0 and distance_value > 0.0:
+            previous = self._segment_distances.get(token)
+            if previous is None:
+                self._segment_distances[token] = distance_value
+                self._total_distance_m += distance_value
+            elif not math.isclose(previous, distance_value, rel_tol=1e-6, abs_tol=1e-6):
+                self._total_distance_m += distance_value - previous
+                self._segment_distances[token] = distance_value
+        self._velocity_vars['distance'].set(f"{self._total_distance_m:.1f} m")
+
+    def _update_follower_run_time(self, follower: FollowerStateView) -> None:
+        """フォロワが走行を開始してからの経過時間を算出する。"""
+
+        current_state = (follower.state or '').upper()
+        now_utc = datetime.now(timezone.utc)
+        if self._follower_last_state == 'IDLE' and current_state == 'RUNNING':
+            self._follower_run_started_at = now_utc
+            self._follower_elapsed_seconds = 0.0
+        if current_state == 'RUNNING':
+            if self._follower_run_started_at is None:
+                self._follower_run_started_at = now_utc
+                self._follower_elapsed_seconds = 0.0
+            else:
+                delta = now_utc - self._follower_run_started_at
+                self._follower_elapsed_seconds = max(delta.total_seconds(), 0.0)
+        elif current_state == 'IDLE':
+            self._follower_run_started_at = None
+            self._follower_elapsed_seconds = 0.0
+        self._follower_last_state = current_state
+        self._velocity_vars['elapsed'].set(
+            _format_duration_seconds(self._follower_elapsed_seconds)
+        )
 
     def _update_line_stop_tracker(self, active: bool) -> None:
         """停止線待ちの立ち上がり時刻を記録する。"""
@@ -1443,6 +1717,28 @@ class UiMain:
                 desired_values = tuple(state.available_params)
                 if current_values != desired_values:
                     combo_widget['values'] = state.available_params
+            override_entries = widgets.get('overrides')  # type: ignore[index]
+            if isinstance(override_entries, dict):
+                for key, holder in override_entries.items():
+                    var = None
+                    last_synced: Optional[str] = None
+                    if isinstance(holder, dict):
+                        candidate = holder.get('var')
+                        if isinstance(candidate, tk.StringVar):
+                            var = candidate
+                        synced_candidate = holder.get('last_synced')
+                        if isinstance(synced_candidate, str):
+                            last_synced = synced_candidate
+                    elif isinstance(holder, tk.StringVar):
+                        var = holder
+                    if isinstance(var, tk.StringVar):
+                        desired = state.override_inputs.get(key, '')
+                        if last_synced is not None and desired == last_synced:
+                            continue
+                        if var.get() != desired:
+                            var.set(desired)
+                        if isinstance(holder, dict):
+                            holder['last_synced'] = desired
 
     def _update_logs(self, snapshot: GuiSnapshot) -> None:
         for profile_id, text_widget in self._log_texts.items():
@@ -1467,6 +1763,22 @@ class UiMain:
                 text_widget.yview_moveto(max(min(y_first, 1.0), 0.0))
             text_widget.xview_moveto(max(min(x_first, 1.0), 0.0))
             text_widget.configure(state='disabled')
+
+    def _update_log_buttons(self, snapshot: GuiSnapshot) -> None:
+        for profile_id, button in self._log_open_buttons.items():
+            path = snapshot.console_log_paths.get(profile_id)
+            if path:
+                self._log_file_paths[profile_id] = path
+                try:
+                    button.state(['!disabled'])
+                except tk.TclError:
+                    continue
+            else:
+                self._log_file_paths[profile_id] = None
+                try:
+                    button.state(['disabled'])
+                except tk.TclError:
+                    continue
 
     def _update_param_views(self, snapshot: GuiSnapshot) -> None:
         for profile_id, text_widget in self._param_texts.items():
@@ -1496,6 +1808,22 @@ class UiMain:
             text_widget.xview_moveto(max(min(x_first, 1.0), 0.0))
             text_widget.configure(state='disabled')
             self._param_last_display[profile_id] = display_text
+
+    def _open_log_file(self, profile_id: str) -> None:
+        path = self._log_file_paths.get(profile_id)
+        if not path:
+            messagebox.showinfo('ログファイル未保存', 'このノードのログファイルはまだ作成されていません。')
+            return
+        file_path = Path(path)
+        if not file_path.exists():
+            messagebox.showinfo(
+                'ログファイル未存在', f'ログファイルが見つかりません: {file_path}'
+            )
+            return
+        try:
+            subprocess.Popen(['gedit', str(file_path)])
+        except OSError as exc:
+            messagebox.showerror('ログファイル起動エラー', f'gedit の起動に失敗しました: {exc}')
 
     def _generate_param_display(self, profile_id: str, state: NodeLaunchState) -> str:
         target_path, error_message = self._resolve_param_target(profile_id, state)

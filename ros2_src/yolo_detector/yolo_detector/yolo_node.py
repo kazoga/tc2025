@@ -19,11 +19,15 @@ class YoloDetectorNode(Node):
         self.declare_parameter('model_path', '')
         self.declare_parameter('image_topic', '/usb_cam/image_raw')
         self.declare_parameter('detection_interval', 1.0)  # 1秒に1回
+        self.declare_parameter('image_size', 320)  # 推論時の画像サイズ（小さいほど高速）
+        self.declare_parameter('confidence_threshold', 0.5)  # 信頼度の閾値
 
         # パラメータ取得
         model_path = self.get_parameter('model_path').get_parameter_value().string_value
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.detection_interval = self.get_parameter('detection_interval').get_parameter_value().double_value
+        self.image_size = self.get_parameter('image_size').get_parameter_value().integer_value
+        self.confidence_threshold = self.get_parameter('confidence_threshold').get_parameter_value().double_value
 
         # モデルパスの設定
         if model_path == '':
@@ -69,6 +73,8 @@ class YoloDetectorNode(Node):
 
         self.get_logger().info(f'YoloDetectorNode started. Subscribing to {image_topic}')
         self.get_logger().info(f'Detection interval: {self.detection_interval} seconds')
+        self.get_logger().info(f'Image size for inference: {self.image_size}')
+        self.get_logger().info(f'Confidence threshold: {self.confidence_threshold}')
 
     def image_callback(self, msg):
         """画像トピックのコールバック - 最新画像を保持"""
@@ -93,21 +99,33 @@ class YoloDetectorNode(Node):
         self.image_lock = True
 
         try:
-            # CPUで推論実行
-            results = self.model(self.latest_image, device='cpu', verbose=False)
+            # 処理時間を計測
+            start_time = time.time()
+
+            # CPUで推論実行（画像サイズと信頼度閾値を指定）
+            results = self.model(
+                self.latest_image,
+                device='cpu',
+                verbose=False,
+                imgsz=self.image_size,  # 画像サイズを指定（小さいほど高速）
+                conf=self.confidence_threshold  # 信頼度閾値
+            )
+
+            # 処理時間を計算
+            inference_time = time.time() - start_time
 
             # 結果を表示
-            self.print_detection_results(results)
+            self.print_detection_results(results, inference_time)
 
         except Exception as e:
             self.get_logger().error(f'Detection error: {e}')
         finally:
             self.image_lock = False
 
-    def print_detection_results(self, results):
+    def print_detection_results(self, results, inference_time):
         """検出結果をターミナルに表示"""
         self.get_logger().info('=' * 60)
-        self.get_logger().info('Detection Results:')
+        self.get_logger().info(f'Detection Results (Inference time: {inference_time:.3f}s = {1/inference_time:.1f}fps):')
 
         for result in results:
             boxes = result.boxes

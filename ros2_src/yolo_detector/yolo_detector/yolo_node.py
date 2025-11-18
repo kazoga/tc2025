@@ -127,7 +127,7 @@ class YoloDetectorNode(Node):
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
 
                     self.get_logger().info(
-                        f'  [{i+1}] {class_name}: {confidence:.2f} '
+                        f'  [{i+1}] {class_name} (ID:{cls_id}): {confidence:.2f} '
                         f'(x1:{int(x1)}, y1:{int(y1)}, x2:{int(x2)}, y2:{int(y2)})'
                     )
 

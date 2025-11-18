@@ -4,9 +4,9 @@
 Google Python Style / 型ヒント完備 / 日本語コメント。cv_bridgeはbgr8で出力。
 
 本ノードは単一2D LiDARの `/scan` を購読し、以下を行う:
-  * 前方くさび領域の閉塞判定 (front_blocked)  … legacy: ±front_half_deg 内で x < stop_dist_m の点が存在
+  * 前方くさび領域の閉塞判定 (front_blocked)  … legacy: ±front_cone_half_deg 内で x < stop_dist_m の点が存在
   * 左右の回避オフセット（可用幅）を legacy 方式で算出（ギャップ検出 + 外縁 + 下限0.75m）
-  * 上記ヒントを `route_msgs/ObstacleAvoidanceHint` として publish（front_range / left_is_open / right_is_open を [m] で出力）
+  * 上記ヒントを `route_msgs/ObstacleAvoidanceHint` として publish（front_clearance_m / left_offset_m / right_offset_m を [m] で出力）
   * デバッグ用に LiDAR 点群を画像化し `sensor_msgs/Image` (bgr8) で publish（laserScanViewer 相当の描画仕様）
 
 参考に踏襲した実装: waypoint_manager.py の laserScanCallback / laserScanViewer。
@@ -35,7 +35,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from builtin_interfaces.msg import Time as TimeMsg
 
 # ユーザー指定: route_msgs が正しい
-from route_msgs.msg import ObstacleAvoidanceHint  # stamp, front_blocked: bool, front_range: float32, left_is_open: float32, right_is_open: float32
+from route_msgs.msg import ObstacleAvoidanceHint  # stamp, front_blocked: bool, front_clearance_m: float32, left_offset_m: float32, right_offset_m: float32
 
 from cv_bridge import CvBridge
 
@@ -48,9 +48,16 @@ class ObstacleMonitorNode(Node):
 
         # ---- Parameters (legacy 準拠) ----
         # 前方閉塞判定くさび角（半角）
-        self.declare_parameter('front_half_deg', 10.0)
+        self.declare_parameter('front_cone_half_deg', 10.0)
         # 停止しきい値 [m]（くさび内で x < stop_dist_m なら閉塞）
         self.declare_parameter('stop_dist_m', 1.0)
+        # front_blocked 判定のために無視する近距離データの閾値 [m]
+        self.declare_parameter('front_block_ignore_dist_m', 0.15)
+
+        # 前方閉塞判定で利用する分位点[%]（帯内の下位何%を評価するか）
+        self.declare_parameter('front_clearance_percentile', 5.0)
+        # 前方閉塞判定を有効にするために必要な最小点数
+        self.declare_parameter('front_clearance_min_points', 5)
 
         # 回避対象障害物の最大距離 [m]（legacy: 1.5m 固定）
         self.declare_parameter('max_obstacle_distance_m', 1.5)
@@ -62,7 +69,7 @@ class ObstacleMonitorNode(Node):
         # ロボット幅 [m]（legacy: 0.8）
         self.declare_parameter('robot_width_m', 0.8)
         # 下限値 [m]（legacy: 0.75）
-        self.declare_parameter('min_offset_lower_bound_m', 0.75)
+        self.declare_parameter('avoid_offset_min_m', 0.75)
 
         # viewer 仕様（legacy 相当: 8m x-range, ±4m y-range, 100 pix/m）
         self.declare_parameter('viewer_map_range_m', 8.0)
@@ -83,47 +90,66 @@ class ObstacleMonitorNode(Node):
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=10,
         )
+        # rqt_image_view などの可視化ツールは Reliable を要求するため、画像配信は信頼型QoSを用いる。
+        qos_rel_volatile_shallow = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=1,
+        )
 
         # ---- Pub/Sub ----
+        scan_topic = 'scan'
+        hint_topic = 'obstacle_avoidance_hint'
+        viewer_topic = 'sensor_viewer'
+        amcl_pose_topic = 'amcl_pose'
+        active_target_topic = 'active_target'
+
         self.sub_scan = self.create_subscription(
             LaserScan,
-            '/scan',
+            scan_topic,
             self.laser_scan_callback,
             qos_profile_sensor_data,  # SensorDataQoS
         )
 
         self.pub_hint = self.create_publisher(
             ObstacleAvoidanceHint,
-            '/obstacle_avoidance_hint',
+            hint_topic,
             qos_be_volatile,
         )
 
         self.pub_img = self.create_publisher(
             Image,
-            '/sensor_viewer',
-            qos_be_volatile,
+            viewer_topic,
+            qos_rel_volatile_shallow,
         )
 
         self.sub_amcl = self.create_subscription(
             PoseWithCovarianceStamped,
-            '/amcl_pose',
+            amcl_pose_topic,
             self._on_amcl_pose,
             qos_rel_volatile,
         )
 
         self.sub_active_target = self.create_subscription(
             PoseStamped,
-            '/active_target',
+            active_target_topic,
             self._on_active_target,
             qos_rel_volatile,
         )
+
+        # 解決済みの名前をログ用に保持
+        self.scan_topic: str = self._resolve_topic_name(scan_topic)
+        self.hint_topic: str = self._resolve_topic_name(hint_topic)
+        self.viewer_topic: str = self._resolve_topic_name(viewer_topic)
+        self.amcl_pose_topic: str = self._resolve_topic_name(amcl_pose_topic)
+        self.active_target_topic: str = self._resolve_topic_name(active_target_topic)
 
         # ---- Misc ----
         self.bridge = CvBridge()
 
         # cache: 最新の点群（viewer 用）
         self._last_points_xy: Optional[np.ndarray] = None
-        self._latest_front_range: float = float('inf')
+        self._latest_front_clearance: float = float('inf')
         self._hint_range_m: float = max_obstacle_distance
         self._hint_range_last_warned: Optional[float] = None
         self._amcl_pose_xyyaw: Optional[Tuple[float, float, float]] = None
@@ -134,6 +160,14 @@ class ObstacleMonitorNode(Node):
 
         self.get_logger().info('obstacle_monitor (legacy-following) started.')
 
+    def _resolve_topic_name(self, name: str) -> str:
+        """リマップ適用後のトピック名を取得するユーティリティ."""
+        try:
+            return self.resolve_topic_name(name)
+        except AttributeError:
+            # テスト環境などで rclpy の内部APIが無い場合は素の名前を返す。
+            return name
+
     # ===============================
     # Legacy: laserScanCallback
     # ===============================
@@ -143,9 +177,9 @@ class ObstacleMonitorNode(Node):
         1) ±90° の前方のみ残す
         2) x <= max_obstacle_distance_m で抽出
         3) 左右に分割し、|y| 昇順で並べ替え
-        4) ギャップ検出で offset を決定、外縁採用もあり。最終的に min_offset_lower_bound_m を下限に丸め
-        5) front_blocked 判定: ±front_half_deg くさび内に x<stop_dist_m の点があれば True
-        6) ヒント publish（left_is_open/right_is_open に offset[m] を格納）
+        4) ギャップ検出で offset を決定、外縁採用もあり。最終的に avoid_offset_min_m を下限に丸め
+        5) front_blocked 判定: ±front_cone_half_deg くさび内に x<stop_dist_m の点があれば True
+        6) ヒント publish（left_offset_m/right_offset_m に offset[m] を格納）
         7) viewer 画像 publish（laserScanViewer 相当の描画）
         """
         # ---- 角度列の生成 ----
@@ -163,10 +197,16 @@ class ObstacleMonitorNode(Node):
 
         self._last_points_xy = xy.copy() if xy.size > 0 else None
 
-        # ---- x <= max_obstacle_distance_m で抽出 ----
+        # ---- x <= max_obstacle_distance_m で抽出 & 近距離点を除外 ----
         max_dist = float(self.get_parameter('max_obstacle_distance_m').value)
         hint_range = self._ensure_hint_range(max_dist)
-        xy_extract = xy[xy[:, 0] <= max_dist] if xy.size > 0 else np.empty((0, 2), dtype=np.float32)
+        ignore_dist = float(self.get_parameter('front_block_ignore_dist_m').value)
+        # 前方距離(x)が閾値未満の点を除外してから、最大距離でフィルタリング
+        xy_extract = (
+            xy[(xy[:, 0] >= ignore_dist) & (xy[:, 0] <= max_dist)]
+            if xy.size > 0
+            else np.empty((0, 2), dtype=np.float32)
+        )
 
         # ---- 左右に分割（y 符号）し、|y| 昇順で並べ替え ----
         left = xy_extract[xy_extract[:, 1] >= 0.0] if xy_extract.size > 0 else np.empty((0, 2), dtype=np.float32)
@@ -178,7 +218,7 @@ class ObstacleMonitorNode(Node):
         # ---- オフセット算出（legacy: calcAvoidanceOffset） ----
         robot_width = float(self.get_parameter('robot_width_m').value)
         half_width = robot_width / 2.0
-        min_lower = float(self.get_parameter('min_offset_lower_bound_m').value)
+        min_lower = float(self.get_parameter('avoid_offset_min_m').value)
 
         offset_l = self._calc_avoidance_offset(left, robot_width, half_width)
         offset_r = self._calc_avoidance_offset(right, robot_width, half_width)
@@ -187,34 +227,58 @@ class ObstacleMonitorNode(Node):
         offset_l = max(offset_l, min_lower) if offset_l > 0.0 else 0.0
         offset_r = max(offset_r, min_lower) if offset_r > 0.0 else 0.0
 
-        # ---- 前方閉塞判定（±front_half_deg くさび & x < stop_dist_m） ----
+        # ---- 前方閉塞判定（±front_cone_half_deg くさび & x < stop_dist_m） ----
         stop_dist_m = float(self.get_parameter('stop_dist_m').value)
-        front_blocked, front_range_raw = self._is_front_blocked(xy_extract, robot_width, stop_dist_m, 5.0, 5)
-        if math.isfinite(front_range_raw) and front_range_raw <= hint_range:
-            front_range_hint = float(front_range_raw)
+        front_clearance_percentile = float(
+            self.get_parameter('front_clearance_percentile').value
+        )
+        front_clearance_min_points = int(
+            self.get_parameter('front_clearance_min_points').value
+        )
+        front_blocked, front_clearance_raw = self._is_front_blocked(
+            xy_extract,
+            robot_width,
+            stop_dist_m,
+            front_clearance_percentile,
+            front_clearance_min_points,
+        )
+        if math.isfinite(front_clearance_raw) and front_clearance_raw <= hint_range:
+            front_clearance_hint = float(front_clearance_raw)
         else:
-            front_range_hint = float('inf')
+            front_clearance_hint = float('inf')
 
-        self._latest_front_range = front_range_hint
+        self._latest_front_clearance = front_clearance_hint
 
         # ---- ヒント publish ----
         def _fmt(val: float) -> str:
             return f"{val:.2f}" if math.isfinite(val) else "inf"
 
         self.get_logger().info(
-            "Publish hint: stop_dist=%.2f, front_blocked=%s, front_range=%s, left_is_open=%.2f, right_is_open=%.2f"
+            "Publish hint: stop_dist=%.2f, front_blocked=%s, front_clearance=%s, left_offset=%.2f, right_offset=%.2f"
             % (
                 stop_dist_m,
                 front_blocked,
-                _fmt(front_range_hint if math.isfinite(front_range_hint) else front_range_raw),
+                _fmt(
+                    front_clearance_hint
+                    if math.isfinite(front_clearance_hint)
+                    else front_clearance_raw
+                ),
                 offset_l,
                 offset_r,
             )
         )
-        self._publish_hint(front_blocked, front_range_hint, offset_l, offset_r)
+        self._publish_hint(front_blocked, front_clearance_hint, offset_l, offset_r)
 
         # ---- 画像 publish（laserScanViewer 相当） ----
-        self._publish_scan_image(xy, offset_l, offset_r, robot_width, half_width, front_range_hint, hint_range)
+        self._publish_scan_image(
+            xy,
+            offset_l,
+            offset_r,
+            robot_width,
+            half_width,
+            front_clearance_hint,
+            hint_range,
+        )
 
     # -------------------------------
     # XY 変換（±90° フィルタ含む）
@@ -261,8 +325,8 @@ class ObstacleMonitorNode(Node):
             y = abs(float(xy[i][1]))
             # 隣の点との間が (幅 + 半幅) よりも開いている場合 … ギャップとして採用
             if y - y_prev > thresh:
-                # 車幅半分のマージンを設けてオフセット算出
-                offset = y_prev + (thresh) / 2.0
+                # 車幅分のマージンを設けてオフセット算出
+                offset = y_prev + robot_width
                 # 直進経路上（y_prev==0）に障害物が無ければ回避不要（offset=0 のまま）
                 if y_prev == 0.0:
                     break
@@ -285,7 +349,7 @@ class ObstacleMonitorNode(Node):
         pts: np.ndarray,
         robot_width_m: float,
         stop_dist_m: float,
-        perc: float = 5.0,
+        percentile: float = 5.0,
         min_points: int = 5,
     ) -> Tuple[bool, float]:
         """前方閉塞判定（帯＋分位点）と距離算出。
@@ -294,7 +358,7 @@ class ObstacleMonitorNode(Node):
             pts: _scan_to_xy() が出力した XY点群 [ [x0, y0], [x1, y1], ... ]。
             robot_width_m: ロボット全幅[m]（安全マージン込み）。
             stop_dist_m: 停止距離[m]。
-            perc: 分位点[%]（例: 5.0 → 帯内x距離の下位5%を評価）。
+            percentile: 分位点[%]（例: 5.0 → 帯内x距離の下位5%を評価）。
             min_points: 判定に必要な最小点数。
 
         Returns:
@@ -313,7 +377,7 @@ class ObstacleMonitorNode(Node):
             return False, float('inf')
 
         x_band = xs[mask]
-        x_q = float(np.percentile(x_band, perc))
+        x_q = float(np.percentile(x_band, percentile))
         return x_q <= stop_dist_m, x_q
 
 
@@ -323,18 +387,18 @@ class ObstacleMonitorNode(Node):
     def _publish_hint(
         self,
         front_blocked: bool,
-        front_range_m: float,
-        left_open_m: float,
-        right_open_m: float,
+        front_clearance_m: float,
+        left_offset_m: float,
+        right_offset_m: float,
     ) -> None:
         """ObstacleAvoidanceHint を publish."""
         msg = ObstacleAvoidanceHint()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "base_link"
         msg.front_blocked = bool(front_blocked)
-        msg.front_range = float(front_range_m)
-        msg.left_is_open = float(left_open_m)
-        msg.right_is_open = float(right_open_m)
+        msg.front_clearance_m = float(front_clearance_m)
+        msg.left_offset_m = float(left_offset_m)
+        msg.right_offset_m = float(right_offset_m)
 
         self.pub_hint.publish(msg)
 
@@ -392,7 +456,7 @@ class ObstacleMonitorNode(Node):
         offset_r: float,
         robot_width: float,
         half_width: float,
-        front_range_m: float,
+        front_clearance_m: float,
         hint_range_m: float,
     ) -> None:
         """legacy の laserScanViewer と同等の可視化を bgr8 で publish する."""
@@ -431,9 +495,9 @@ class ObstacleMonitorNode(Node):
         if 0 <= hint_py < height:
             cv2.line(grid, (0, hint_py), (width, hint_py), (0, 165, 255), thickness=1, lineType=cv2.LINE_AA)
 
-        # front_range ライン（マゼンタ）
-        if math.isfinite(front_range_m):
-            front_py = height - int(round(front_range_m * pixel_pitch_f))
+        # front_clearance ライン（マゼンタ）
+        if math.isfinite(front_clearance_m):
+            front_py = height - int(round(front_clearance_m * pixel_pitch_f))
             if 0 <= front_py < height:
                 cv2.line(grid, (0, front_py), (width, front_py), (255, 0, 255), thickness=2, lineType=cv2.LINE_AA)
 
@@ -485,8 +549,8 @@ class ObstacleMonitorNode(Node):
         # 表示用リサイズ（ウィンドウ表示は行わず、画像トピックとして配信）
         grid_show = cv2.resize(grid, (resize_px, resize_px), interpolation=cv2.INTER_AREA)
         # デバッグ表示
-        cv2.imshow("Sensor Viewer", grid_show)
-        cv2.waitKey(1)
+        #cv2.imshow("Sensor Viewer", grid_show)
+        #cv2.waitKey(1)
 
         # bgr8 で publish
         img_msg = self.bridge.cv2_to_imgmsg(grid_show, encoding='bgr8')

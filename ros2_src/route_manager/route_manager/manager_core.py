@@ -23,6 +23,7 @@ import asyncio
 import math
 import threading
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set, Tuple
 
 from manager_fsm import RouteManagerFSM, SimpleServiceResult, ServiceResult
@@ -30,6 +31,27 @@ from manager_fsm import RouteManagerFSM, SimpleServiceResult, ServiceResult
 # =============================================================================
 # 非ROS依存データモデル
 # =============================================================================
+
+class StuckReason(IntEnum):
+    """ReportStuckで通知される滞留理由コードの内部表現."""
+
+    UNKNOWN = 0
+    FRONT_BLOCKED = 1
+    ROAD_BLOCKED = 2
+    NO_HINT = 3
+    NO_SPACE = 4
+    AVOIDANCE_FAILED = 5
+
+
+_STUCK_REASON_LABELS: Dict[StuckReason, str] = {
+    StuckReason.UNKNOWN: 'unknown',
+    StuckReason.FRONT_BLOCKED: 'front_blocked',
+    StuckReason.ROAD_BLOCKED: 'road_blocked',
+    StuckReason.NO_HINT: 'no_hint',
+    StuckReason.NO_SPACE: 'no_space',
+    StuckReason.AVOIDANCE_FAILED: 'avoidance_failed',
+}
+
 
 @dataclass
 class VersionMM:
@@ -62,6 +84,23 @@ class Pose2D:
 
 
 @dataclass
+class RouteImageData:
+    """Route に埋め込む画像データをROS非依存で保持する。"""
+
+    height: int = 0
+    width: int = 0
+    encoding: str = ""
+    step: int = 0
+    is_bigendian: int = 0
+    data: bytes = field(default_factory=bytes)
+
+    def is_valid(self) -> bool:
+        """画像データが有効かどうかを判定する。"""
+
+        return self.height > 0 and self.width > 0 and bool(self.data)
+
+
+@dataclass
 class StuckReport:
     """/report_stuck で受け取る情報をCore内部で扱いやすい形にしたもの。"""
 
@@ -69,10 +108,21 @@ class StuckReport:
     current_index: int
     current_label: str
     current_pose: Pose2D
-    reason: str
+    reason_code: int
+    reason_detail: str
     avoid_trial_count: int
     last_hint_blocked: bool
     last_applied_offset_m: float
+
+    def reason_label(self) -> str:
+        """理由コードと詳細文字列から内部で使用するラベルを返す。"""
+        if self.reason_detail:
+            return str(self.reason_detail)
+        try:
+            reason = StuckReason(int(self.reason_code))
+        except ValueError:
+            return 'unknown'
+        return _STUCK_REASON_LABELS.get(reason, 'unknown')
 
 
 @dataclass
@@ -85,6 +135,24 @@ class WaypointLite:
     not_skip: bool = False
     right_open: float = 0.0
     left_open: float = 0.0
+    segment_is_fixed: bool = False
+
+
+@dataclass
+class FollowerStateUpdate:
+    """RouteFollower からの進捗通知を非ROS構造体として保持する。"""
+
+    route_version: int = 0
+    state: str = ""
+    active_waypoint_index: int = -1
+    active_waypoint_label: str = ""
+
+
+@dataclass
+class FollowerEvent:
+    """FSMへ渡すフォロワ状態更新イベント."""
+
+    finished: bool = False
 
 
 
@@ -100,6 +168,15 @@ class RouteModel:
     has_image: bool = True
     current_index: int = 0
     current_label: str = ""
+    route_image: Optional[RouteImageData] = None
+
+    def __post_init__(self) -> None:
+        """画像有無フラグを保持している画像と同期する。"""
+
+        if self.route_image is not None and not self.route_image.is_valid():
+            # 無効な画像は破棄し、フラグを整合させる。
+            self.route_image = None
+        self.has_image = self.route_image is not None
 
     @classmethod
     def from_route(cls, route_like) -> "RouteModel":
@@ -111,9 +188,10 @@ class RouteModel:
                 waypoints=list(getattr(rm, "waypoints", [])),
                 version=VersionMM(major=int(getattr(rm.version, "major", 0)), minor=int(getattr(rm.version, "minor", 0))),
                 frame_id=str(getattr(rm, "frame_id", "map")),
-                has_image=bool(getattr(rm, "has_image", True)),
+                has_image=bool(getattr(rm, "route_image", None) is not None or getattr(rm, "has_image", False)),
                 current_index=int(getattr(rm, "current_index", 0)),
                 current_label=str(getattr(rm, "current_label", "")),
+                route_image=copy.deepcopy(getattr(rm, "route_image", None)),
             )
         # route_likeがRouteLite相当（version:int, waypoints:List）ならそこから生成
         wps = list(getattr(route_like, "waypoints", []))
@@ -125,7 +203,53 @@ class RouteModel:
         ver = VersionMM.from_int(ver_int)
         cur_idx = 0
         cur_lbl = wps[0].label if wps else ""
-        return cls(waypoints=wps, version=ver, frame_id=str(getattr(getattr(route_like, "header", None), "frame_id", getattr(route_like, "frame_id", "map"))), has_image=bool(getattr(route_like, "has_image", True)), current_index=cur_idx, current_label=cur_lbl)
+        route_image = cls._extract_route_image(getattr(route_like, "route_image", None))
+        return cls(
+            waypoints=wps,
+            version=ver,
+            frame_id=str(
+                getattr(
+                    getattr(route_like, "header", None), "frame_id", getattr(route_like, "frame_id", "map")
+                )
+            ),
+            has_image=route_image is not None,
+            current_index=cur_idx,
+            current_label=cur_lbl,
+            route_image=route_image,
+        )
+
+    @staticmethod
+    def _extract_route_image(image_obj: Any) -> Optional["RouteImageData"]:
+        """Route互換オブジェクトに含まれる画像をRouteImageDataへ変換する。"""
+
+        if image_obj is None:
+            return None
+        try:
+            height = int(getattr(image_obj, "height", 0))
+            width = int(getattr(image_obj, "width", 0))
+        except Exception:
+            return None
+        raw_data = getattr(image_obj, "data", b"")
+        try:
+            if hasattr(raw_data, "tobytes"):
+                data_bytes = raw_data.tobytes()  # type: ignore[call-arg]
+            else:
+                data_bytes = bytes(raw_data)
+        except Exception:
+            data_bytes = b""
+        if height <= 0 or width <= 0 or not data_bytes:
+            return None
+        encoding = str(getattr(image_obj, "encoding", ""))
+        step = int(getattr(image_obj, "step", 0) or 0)
+        is_bigendian = int(getattr(image_obj, "is_bigendian", 0) or 0)
+        return RouteImageData(
+            height=height,
+            width=width,
+            encoding=encoding,
+            step=step,
+            is_bigendian=is_bigendian,
+            data=data_bytes,
+        )
 
     def total(self) -> int:
         return len(self.waypoints)
@@ -166,6 +290,7 @@ class RouteModel:
             has_image=self.has_image,
             current_index=0 if new_wps else -1,
             current_label=(new_wps[0].label if new_wps else ""),
+            route_image=copy.deepcopy(self.route_image),
         )
 
     def is_completed(self) -> bool:
@@ -208,13 +333,20 @@ class PlannerGetCb(Protocol):
 
 
 class PlannerUpdateCb(Protocol):
-    async def __call__(self, major_version: int, prev_index: int, prev_label: str,
-                       next_index: Optional[int], next_label: str) -> ServiceResult: ...
+    async def __call__(
+        self,
+        major_version: int,
+        prev_index: int,
+        prev_label: str,
+        current_index: int,
+        current_label: str,
+    ) -> ServiceResult:
+        ...
 
 
 PublishActiveRoute = Callable[[RouteModel], None]
 PublishStatus = Callable[[str, str, str, int], None]
-PublishRouteState = Callable[[int, str, int, int, str], None]  # idx, label, ver, total, status
+PublishRouteState = Callable[[int, str, int, int, str, str], None]  # idx, label, ver, total, status_name, message
 
 
 # =============================================================================
@@ -235,28 +367,33 @@ class RouteManagerCore:
         publish_active_route: PublishActiveRoute,
         publish_status: PublishStatus,
         publish_route_state: PublishRouteState,
-        offset_step_m_max: float = 1.5,
+        offset_step_max_m: float = 1.5,
     ) -> None:
         # 依存注入
-        self._log = logger
+        self._logger_func = logger
         self._publish_active_route = publish_active_route
         self._publish_status = publish_status
         self._publish_route_state = publish_route_state
 
         # パラメータ
-        self.offset_step_m_max = float(offset_step_m_max)
+        self.offset_step_max_m = float(offset_step_max_m)
 
         # 内部状態
         self.route_model: Optional[RouteModel] = None
         self.current_index: int = -1
         self.current_label: str = ""
         self.current_status: str = "IDLE"
+        self.current_segment_is_fixed: bool = False
         self._skip_history: Dict[str, int] = {}
         self._skipped_indices: Set[int] = set()
+        # 1回のローカル再計画シーケンスで許可するSKIP回数は1回のみ。
+        # planner由来の新ルートを受理した時点でリセットする。
+        self._skip_allowed: bool = True
         self._shift_preference: Dict[str, bool] = {}
         self._last_stuck_report: Optional[StuckReport] = None
         self._last_known_pose: Optional[Pose2D] = None
         self._last_replan_offset_hint: float = 0.0
+        self._last_route_message: str = ""
 
         # FSM 構築（timeoutはNode層から調整可能）
         self.fsm = RouteManagerFSM(
@@ -289,6 +426,14 @@ class RouteManagerCore:
     # ------------------------------------------------------------------
     # Node層からの依存注入
     # ------------------------------------------------------------------
+    def _log(self, message: object, *parts: object) -> None:
+        """注入されたロガーを用いて複数引数のログ出力を一つにまとめる。"""
+
+        text = str(message)
+        if parts:
+            text += "".join(str(part) for part in parts)
+        self._logger_func(text)
+
     def set_planner_callbacks(self, get_cb: PlannerGetCb, update_cb: PlannerUpdateCb) -> None:
         """プランナサービス呼び出し用のコールバックを設定する。"""
         self._planner_get = get_cb
@@ -320,23 +465,38 @@ class RouteManagerCore:
                     f"report={int(report.route_version)}"
                 )
             self.route_model.advance_to(index=self.current_index, label=self.current_label)
+        self._update_current_segment_flag()
 
         self._log(
             f"[Core] _sync_from_stuck_report: idx={self.current_index}, label='{self.current_label}', "
             f"pose=({self._last_known_pose.x:.3f},{self._last_known_pose.y:.3f})"
         )
 
-        self._publish_route_state(
-            int(self.route_model.current_index if self.route_model else self.current_index),
-            str(self.route_model.current_label if self.route_model else self.current_label),
-            int(self.route_model.version.to_int() if self.route_model else report.route_version),
-            int(self.route_model.total() if self.route_model else 0),
-            str(self.current_status),
+        self._emit_route_state(
+            index=int(self.route_model.current_index if self.route_model else self.current_index),
+            label=str(self.route_model.current_label if self.route_model else self.current_label),
+            version=int(self.route_model.version.to_int() if self.route_model else report.route_version),
+            total=int(self.route_model.total() if self.route_model else 0),
+            status=str(self.current_status),
         )
+
+    def _update_current_segment_flag(self) -> None:
+        """現在ターゲットのWaypointが固定区間かどうかのフラグを更新する。"""
+        fixed = False
+        if self.route_model is not None:
+            idx = int(getattr(self.route_model, "current_index", -1))
+            if 0 <= idx < len(self.route_model.waypoints):
+                cur_wp = self.route_model.waypoints[idx]
+                fixed = bool(getattr(cur_wp, "segment_is_fixed", False))
+        self.current_segment_is_fixed = fixed
 
     def get_last_offset_hint(self) -> float:
         """直近の再計画で決定した横シフト量（ヒント）を返す。"""
         return float(self._last_replan_offset_hint)
+
+    def is_current_segment_fixed(self) -> bool:
+        """現在ターゲットの区間が固定ルートかどうかを返す。"""
+        return bool(self.current_segment_is_fixed)
 
     async def request_initial_route(self, start_label: str, goal_label: str, checkpoint_labels: List[str]) -> ServiceResult:
         """初期ルートをFSM経由で要求する。"""
@@ -352,6 +512,43 @@ class RouteManagerCore:
         self._log("[Core] on_report_stuck: received")
         self._sync_from_stuck_report(report)
         return await self.fsm.handle_event(RouteManagerFSM.E_REPORT_STUCK, report)
+
+    async def on_follower_state_update(self, update: FollowerStateUpdate) -> ServiceResult:
+        """RouteFollower からの進捗更新を反映し、完了時はFSMへ通知する。"""
+
+        self._log(
+            "[Core] on_follower_state_update: state=%s, index=%d, label='%s', ver=%d"
+            % (
+                str(update.state),
+                int(update.active_waypoint_index),
+                str(update.active_waypoint_label),
+                int(update.route_version),
+            )
+        )
+
+        route_version = int(update.route_version)
+        self.current_index = int(update.active_waypoint_index)
+        self.current_label = str(update.active_waypoint_label or "")
+
+        if self.route_model is not None:
+            local_version = int(self.route_model.version.to_int())
+            if route_version > 0 and local_version != route_version:
+                self._log(
+                    f"[Core] on_follower_state_update: version mismatch local={local_version} follower={route_version}"
+                )
+            self.route_model.advance_to(index=self.current_index, label=self.current_label or "")
+
+        emit_version: Optional[int] = route_version if route_version > 0 else None
+        self._emit_route_state(index=self.current_index, label=self.current_label, version=emit_version)
+
+        normalized_state = (update.state or "").strip().upper()
+        if normalized_state == "FINISHED":
+            self._log("[Core] follower reported FINISHED -> notify FSM")
+            self._set_status("completed", decision="none", cause="", route_version=emit_version)
+            event = FollowerEvent(finished=True)
+            return await self.fsm.handle_event(RouteManagerFSM.E_FOLLOWER_UPDATE, event)
+
+        return SimpleServiceResult(True, "Follower update consumed")
 
     # ------------------------------------------------------------------
     # FSM用コールバック（Get/Update/Replan）
@@ -375,9 +572,14 @@ class RouteManagerCore:
             rm = RouteModel.from_route(route)
             rm.version = VersionMM(major=int(getattr(rm.version, "major", 0)), minor=0)  # no-op: rm.version already set in Node
             print("version:", int(rm.version.to_int()))
-            self._accept_route(rm, log_prefix="GetRoute OK", source="planner")
-            self._set_status("running", decision="none", cause="route_ready")
-            return SimpleServiceResult(True, "get_route ok")
+            self._accept_route(
+                rm,
+                log_prefix="GetRoute OK",
+                source="planner",
+                event_message="route_ready",
+            )
+            self._set_status("running", decision="none", cause="")
+            return SimpleServiceResult(True, "route_ready")
         return SimpleServiceResult(False, getattr(res, "message", "get_route failed"))
 
     async def _cb_update_route(self, _unused: Optional[Any]) -> ServiceResult:
@@ -388,41 +590,98 @@ class RouteManagerCore:
             return SimpleServiceResult(False, "planner_update not set or no route")
         ok = await self._try_update_route(reason="explicit_update")
         self._log(f"[Core] _cb_update_route: result ok={ok}")
-        return SimpleServiceResult(ok, "update_route " + ("ok" if ok else "failed"))
+        message = "update_route" if ok else "update_route_failed"
+        return SimpleServiceResult(ok, message)
 
     async def _cb_replan(self, data: Optional[Any]) -> ServiceResult:
         """ReportStuck時の再計画（Update→SHIFT→SKIP→failed）。成功でTrue。"""
         self._log("[Core] _cb_replan: begin replan sequence")
         self._last_replan_offset_hint = 0.0
         report: Optional[StuckReport] = data if isinstance(data, StuckReport) else self._last_stuck_report
+        reason_enum: Optional[StuckReason] = None
+        failure_reason = "avoidance_failed"
         if report is not None:
+            reason_label = report.reason_label()
+            if reason_label:
+                failure_reason = reason_label
+            reason_desc = f"{reason_label}(code={report.reason_code})"
             self._log(
                 f"[Core] _cb_replan: report idx={report.current_index}, label='{report.current_label}', "
-                f"reason='{report.reason}', avoid_trials={report.avoid_trial_count}, "
+                f"reason='{reason_desc}', avoid_trials={report.avoid_trial_count}, "
                 f"last_offset={report.last_applied_offset_m:.2f}, hint_blocked={report.last_hint_blocked}"
             )
+            try:
+                reason_enum = StuckReason(int(report.reason_code))
+            except ValueError:
+                reason_enum = None
+
+        normalized_reason = (reason_label or "").strip().lower()
+        is_road_blocked = reason_enum == StuckReason.ROAD_BLOCKED or normalized_reason == "road_blocked"
+        skip_local_adjustments = False
+        skip_planner_update = False
+        fixed_segment = self.is_current_segment_fixed()
+        if is_road_blocked:
+            skip_local_adjustments = True
+            if self.route_model is None:
+                self._log("[Core] _cb_replan: road_blocked reported but no active route -> fail")
+                failure_reason = "road_blocked"
+                self._emit_route_state(message=failure_reason)
+                self._set_status("holding", decision="failed", cause=failure_reason)
+                return SimpleServiceResult(False, failure_reason)
+            if fixed_segment:
+                self._log("[Core] _cb_replan: road_blocked on fixed segment -> reissue current route")
+                return self._reissue_current_route(
+                    log_prefix="RoadBlock FixedSegment",
+                    event_message="road_blocked_fixed",
+                    decision_label="road_blocked_fixed",
+                    status_cause="road_blocked",
+                )
+            self._log("[Core] _cb_replan: road_blocked on variable segment -> planner replan only")
+        elif fixed_segment:
+            skip_planner_update = True
+            self._log("[Core] _cb_replan: fixed segment -> skip planner UpdateRoute trial")
 
         # 1) UpdateRoute（最初の試行）
         self._log("[Core] _cb_replan: step1 try UpdateRoute (replan_first)")
-        if await self._try_update_route(reason="replan_first"):
-            self._log("[Core] _cb_replan: step1 success")
-            self._last_replan_offset_hint = 0.0
-            return SimpleServiceResult(True, "replan_first")
+        if not skip_planner_update:
+            if await self._try_update_route(reason="replan_first"):
+                self._log("[Core] _cb_replan: step1 success")
+                self._last_replan_offset_hint = 0.0
+                return SimpleServiceResult(True, "replan_first")
+        else:
+            self._log("[Core] _cb_replan: step1 skipped (fixed segment)")
+
+        if skip_local_adjustments:
+            if is_road_blocked:
+                failure_reason = "road_blocked"
+            else:
+                failure_reason = failure_reason or "road_blocked"
+            self._log("[Core] _cb_replan: road_blocked -> skip SHIFT/SKIP and report failure")
+            self._emit_route_state(message=failure_reason)
+            self._set_status("holding", decision="failed", cause=failure_reason)
+            return SimpleServiceResult(False, failure_reason)
 
         # 2) SHIFT（左右オフセット）
-        if self.route_model is not None:
-            cur = self.route_model.current_index
-            prv = self._find_prev_active_index(cur)
-            self._log(f"[Core] _cb_replan: step2 try SHIFT cur={cur} prv_active={prv}")
-            if prv is not None and cur < self.route_model.total():
-                cur_wp = self.route_model.waypoints[cur]
-                prev_wp = self.route_model.waypoints[prv]
-                if self._try_shift(prev_wp, cur_wp, cur, report):
-                    self._log("[Core] _cb_replan: step2 success (SHIFT)")
-                    return SimpleServiceResult(True, "shift")
+        if self.route_model is not None and not skip_local_adjustments:
+            if reason_enum not in (None, StuckReason.FRONT_BLOCKED, StuckReason.AVOIDANCE_FAILED):
+                reason_text = report.reason_label() if report is not None else 'unknown'
+                reason_code = getattr(report, 'reason_code', 'N/A') if report is not None else 'N/A'
+                self._log(
+                    f"[Core] _cb_replan: skip SHIFT (reason={reason_text} code={reason_code})"
+                )
+            else:
+                cur = self.route_model.current_index
+                prv = self._find_prev_active_index(cur)
+                self._log(f"[Core] _cb_replan: step2 try SHIFT cur={cur} prv_active={prv}")
+                if prv is not None and cur < self.route_model.total():
+                    cur_wp = self.route_model.waypoints[cur]
+                    prev_wp = self.route_model.waypoints[prv]
+                    if self._try_shift(prev_wp, cur_wp, cur, report):
+                        self._log("[Core] _cb_replan: step2 success (SHIFT)")
+                        return SimpleServiceResult(True, "shift")
 
         # 3) SKIP（次WPスキップ）
-        if self.route_model is not None:
+        if self.route_model is not None and not skip_local_adjustments:
             cur = self.route_model.current_index
             self._log(f"[Core] _cb_replan: step3 try SKIP cur={cur}")
             if cur is not None and self._try_skip(cur):
@@ -432,8 +691,48 @@ class RouteManagerCore:
 
         # 4) 失敗
         self._log("[Core] _cb_replan: step4 failed -> holding")
-        self._set_status("holding", decision="failed", cause="avoidance_failed")
-        return SimpleServiceResult(False, "avoidance_failed")
+        failure_reason = failure_reason or "avoidance_failed"
+        self._emit_route_state(message=failure_reason)
+        self._set_status("holding", decision="failed", cause=failure_reason)
+        return SimpleServiceResult(False, failure_reason)
+
+    def _reissue_current_route(
+        self,
+        *,
+        log_prefix: str,
+        event_message: str,
+        decision_label: str,
+        status_cause: str,
+    ) -> SimpleServiceResult:
+        """固定経路向けに現在のルートを複製し、マイナーバージョンのみを更新して再配信する。"""
+
+        if self.route_model is None:
+            self._log("[Core] _reissue_current_route: no active route -> abort")
+            return SimpleServiceResult(False, status_cause or "fixed_segment")
+
+        current = self.route_model
+        new_rm = RouteModel(
+            waypoints=copy.deepcopy(current.waypoints),
+            version=VersionMM(
+                major=current.version.major,
+                minor=current.version.minor + 1,
+            ),
+            frame_id=current.frame_id,
+            has_image=current.has_image,
+            current_index=current.current_index,
+            current_label=current.current_label,
+            route_image=copy.deepcopy(current.route_image),
+        )
+        event_text = event_message or "fixed_segment_retry"
+        self._accept_route(
+            new_rm,
+            log_prefix=log_prefix,
+            source="local",
+            event_message=event_text,
+        )
+        self._set_status("running", decision=decision_label, cause=status_cause)
+        self._last_replan_offset_hint = 0.0
+        return SimpleServiceResult(True, event_text)
 
     # ------------------------------------------------------------------
     # 具体ロジック（Update/Shift/Skip/Accept/Validate/Status）
@@ -444,20 +743,28 @@ class RouteManagerCore:
             self._log("[Core] _try_update_route: guard failed (no planner_update or no route or invalid version)")
             return False
 
-        prev_idx = int(self.route_model.current_index)
+        current_idx = int(self.route_model.current_index)
+        current_lbl = str(self.route_model.label_at(current_idx) or "")
+        prev_idx_opt = self.route_model.prev_index()
+        if prev_idx_opt is None:
+            self._log(
+                "[Core] _try_update_route: prev_index not available (current is first waypoint)"
+            )
+            return False
+        prev_idx = int(prev_idx_opt)
         prev_lbl = str(self.route_model.label_at(prev_idx) or "")
-        nxt_idx = self.route_model.next_index()
-        nxt_lbl = str(self.route_model.label_at(nxt_idx) or "") if nxt_idx is not None else ""
-        self._log(f"[Core] _try_update_route: call planner_update reason={reason} "
-                  f"major={self.route_model.version.major} prev=({prev_idx},{prev_lbl}) "
-                  f"next=({nxt_idx},{nxt_lbl})")
+        self._log(
+            f"[Core] _try_update_route: call planner_update reason={reason} "
+            f"major={self.route_model.version.major} prev=({prev_idx},{prev_lbl}) "
+            f"current=({current_idx},{current_lbl})"
+        )
 
         resp = await self._planner_update(
             int(self.route_model.version.major),
             prev_idx,
             prev_lbl,
-            int(nxt_idx) if nxt_idx is not None else None,
-            nxt_lbl,
+            current_idx,
+            current_lbl,
         )
 
         ok = bool(getattr(resp, "success", False))
@@ -470,7 +777,22 @@ class RouteManagerCore:
         # planner 由来： version は major のみ（minorをリセット）
         rm = RouteModel.from_route(route)
         rm.version = VersionMM(major=int(getattr(rm.version, "major", 0)), minor=0)  # no-op: rm.version already set in Node
-        self._accept_route(rm, log_prefix=f"UpdateRoute OK ({reason})", source="planner")
+        if reason == "replan_first":
+            event_message = "replan_first"
+            decision_label = "replan_first"
+        elif reason == "explicit_update":
+            event_message = "update_route"
+            decision_label = "update"
+        else:
+            event_message = str(reason)
+            decision_label = str(reason)
+        self._accept_route(
+            rm,
+            log_prefix=f"UpdateRoute OK ({reason})",
+            source="planner",
+            event_message=event_message,
+        )
+        self._set_status("running", decision=decision_label, cause="")
         self._last_replan_offset_hint = 0.0
         return True
 
@@ -521,7 +843,7 @@ class RouteManagerCore:
             )
 
         open_len = right_open if right_side else left_open
-        shift_d = clamp(open_len, 0.0, float(self.offset_step_m_max))
+        shift_d = clamp(open_len, 0.0, float(self.offset_step_max_m))
         self._log(f"[Core] _try_shift: right_side={right_side}, open_len={open_len}, shift_d={shift_d}")
         if shift_d <= 0.0:
             self._log("[Core] _try_shift: shift_d <= 0 -> abort")
@@ -561,8 +883,16 @@ class RouteManagerCore:
             has_image=self.route_model.has_image,
             current_index=self.route_model.current_index,
             current_label=self.route_model.current_label,
+            route_image=copy.deepcopy(self.route_model.route_image),
         )
-        self._accept_route(rm, log_prefix="Local SHIFT", source="local")
+        event_message = f"shift_{'right' if right_side else 'left'}({shift_d:.1f}m)"
+        self._accept_route(
+            rm,
+            log_prefix="Local SHIFT",
+            source="local",
+            event_message=event_message,
+        )
+        self._set_status("running", decision="shift", cause="")
         self._last_replan_offset_hint = shift_d if right_side else -shift_d
         return True
 
@@ -581,6 +911,9 @@ class RouteManagerCore:
         """skip：次WPをスキップしてローカル再配信する。"""
         if self.route_model is None:
             self._log("[Core] _try_skip: no route_model")
+            return False
+        if not self._skip_allowed:
+            self._log("[Core] _try_skip: skip quota exhausted -> abort")
             return False
         total = self.route_model.total()
         if cur_idx < 0 or cur_idx >= total:
@@ -625,21 +958,41 @@ class RouteManagerCore:
             has_image=self.route_model.has_image,
             current_index=nxt_idx,
             current_label=new_cur_label,
+            route_image=copy.deepcopy(self.route_model.route_image),
         )
-        self._accept_route(rm, log_prefix="Local SKIP", source="local")
+        if new_cur_label:
+            event_message = f"skip->{new_cur_label}"
+        else:
+            event_message = f"skip_index:{nxt_idx}"
+        self._accept_route(
+            rm,
+            log_prefix="Local SKIP",
+            source="local",
+            event_message=event_message,
+        )
+        self._set_status("running", decision="skip", cause="")
         self._skip_history[history_key] = skipped_count + 1
         self._skipped_indices.add(cur_idx)
         self._shift_preference.pop(history_key, None)
         self._last_replan_offset_hint = 0.0
+        self._skip_allowed = False
         return True
 
-    def _accept_route(self, rm: RouteModel, *, log_prefix: str, source: str) -> None:
+    def _accept_route(
+        self,
+        rm: RouteModel,
+        *,
+        log_prefix: str,
+        source: str,
+        event_message: str = "",
+    ) -> None:
         """Route を受理し、内部モデル・公開情報・バージョンを統一して更新する。"""
         self._log(f"[Core] _accept_route: source={source}, {log_prefix}")
         if source != "local":
             self._skip_history.clear()
             self._skipped_indices.clear()
             self._shift_preference.clear()
+            self._skip_allowed = True
 
         self.route_model = rm
         self.current_index = int(rm.current_index)
@@ -647,15 +1000,10 @@ class RouteManagerCore:
         # 現在インデックス同期
         if self.current_index >= 0:
             self.route_model.advance_to(index=self.current_index, label=self.current_label or "")
+        self._update_current_segment_flag()
         # publish（Node層へ委譲）。非ROSだが、Node側のpublish関数は変換を担保する。
         self._publish_active_route(self.route_model)
-        self._publish_route_state(
-            int(self.route_model.current_index if self.route_model else -1),
-            str(self.route_model.current_label if self.route_model else ""),
-            int(self.route_model.version.to_int() if self.route_model else 0),
-            int(self.route_model.total() if self.route_model else 0),
-            str(self.current_status),
-        )
+        self._emit_route_state(message=event_message or None)
         self._log(f"{log_prefix}: version={int(self.route_model.version.to_int())} "
                   f"(major={self.route_model.version.major}, minor={self.route_model.version.minor}), "
                   f"waypoints={len(self.route_model.waypoints)} source={source}")
@@ -673,27 +1021,58 @@ class RouteManagerCore:
         if n_wp <= 0:
             self._log("Route has no waypoints.")
             return False
-        if not getattr(rm, "has_image", False):
+        if getattr(rm, "route_image", None) is None or not rm.route_image.is_valid():
             self._log("Route has no route_image.")
             return False
         return True
 
-    def _set_status(self, state: str, decision: str = "none", cause: str = "", route_version: Optional[int] = None) -> None:
+    def _set_status(
+        self,
+        state: str,
+        decision: str = "none",
+        cause: str = "",
+        route_version: Optional[int] = None,
+    ) -> None:
         """Statusを生成してpublish（非ROS）。"""
         ver = int(route_version if route_version is not None else (
             self.route_model.version.to_int() if self.route_model else 0
         ))
+        normalized_cause = cause if state == "holding" else ""
         self.current_status = state
-        self._log(f"[Core] _set_status: state={state}, decision={decision}, cause={cause}, ver={ver}")
-        self._publish_status(state, decision, cause, ver)
-        # RouteStateも更新
-        self._publish_route_state(
-            int(self.route_model.current_index if self.route_model else -1),
-            str(self.route_model.current_label if self.route_model else ""),
-            ver,
-            int(self.route_model.total() if self.route_model else 0),
-            str(self.current_status),
+        self._log(
+            f"[Core] _set_status: state={state}, decision={decision}, cause={normalized_cause}, ver={ver}"
         )
+        self._publish_status(state, decision, normalized_cause, ver)
+        self._emit_route_state(status=state)
+
+    def _emit_route_state(
+        self,
+        *,
+        status: Optional[str] = None,
+        message: Optional[str] = None,
+        index: Optional[int] = None,
+        label: Optional[str] = None,
+        version: Optional[int] = None,
+        total: Optional[int] = None,
+    ) -> None:
+        """最新のRouteState情報をpublishコールバックへ引き渡す。"""
+        if status is not None:
+            self.current_status = status
+        idx = index if index is not None else int(
+            self.route_model.current_index if self.route_model else self.current_index
+        )
+        lbl = label if label is not None else str(
+            self.route_model.current_label if self.route_model else self.current_label
+        )
+        ver = version if version is not None else int(
+            self.route_model.version.to_int() if self.route_model else 0
+        )
+        tot = total if total is not None else int(
+            self.route_model.total() if self.route_model else 0
+        )
+        if message is not None:
+            self._last_route_message = message
+        self._publish_route_state(idx, lbl, ver, tot, str(self.current_status), self._last_route_message)
 
     # ------------------------------------------------------------------
     # FSM Transition Hook

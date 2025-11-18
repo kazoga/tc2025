@@ -63,16 +63,16 @@ class Route:
     version: int
     waypoints: List[Waypoint]
     start_index: int = 0
-    start_label: str = ""
+    start_waypoint_label: str = ""
 
 
 @dataclass
 class HintSample:
     t: float
     front_blocked: bool
-    left_open: float
-    right_open: float
-    front_range: float = math.inf
+    left_offset: float
+    right_offset: float
+    front_clearance: float = math.inf
 
 
 @dataclass
@@ -109,7 +109,7 @@ class FollowerCore:
         # 追従
         self.arrival_threshold = 0.6
         self.control_rate_hz = 20.0
-        self.republish_target_hz = 1.0
+        self.republish_target_hz = 1e-9
 
         # 滞留検知
         self.window_sec = 2.0
@@ -124,6 +124,7 @@ class FollowerCore:
         self.avoid_max_offset_m = 5.0
         self.avoid_forward_clearance_m = 2.0
         self.max_avoidance_attempts_per_wp = 2
+        self.avoid_back_offset_m = 0.5
 
         # 再経路待機
         self.reroute_timeout_sec = 30.0
@@ -154,13 +155,17 @@ class FollowerCore:
         self.reroute_wait_start: Optional[float] = None
         self.reroute_wait_deadline: Optional[float] = None
 
+        # 起動時自動開始フラグ
+        self.start_immediately: bool = True
+
         # 直近の滞留理由
         self.last_stagnation_reason = ""
         
-        # ---- Control（manual_start / sig_recog）----
+        # ---- Control（manual_start / sig_recog / road_blocked）----
         self._ctrl_lock = threading.Lock()
         self._manual_start_mb: Optional[bool] = None
         self._sig_recog_mb: Optional[int] = None  # 1=GO, 2=NOGO, その他=未定義
+        self._road_blocked_mb: Optional[bool] = None
 
         # ---- 受け渡し箱（mailboxes）とロック ----
         # 非タイマー(update_*) → [inbox_lock] → mailbox へ書き込み
@@ -180,10 +185,10 @@ class FollowerCore:
 
         # 統計結果（update_hintで逐次更新）
         self._hint_front_blocked_majority = False
-        self._hint_left_open_median = 0.0
-        self._hint_right_open_median = 0.0
+        self._hint_left_offset_median = 0.0
+        self._hint_right_offset_median = 0.0
         self._hint_enough = False
-        self._hint_front_range_latest = float('inf')
+        self._hint_front_clearance_latest = float('inf')
 
     # ========================= 受け渡しAPI（非タイマー） =========================
     def update_route(self, route: Route) -> None:
@@ -203,8 +208,8 @@ class FollowerCore:
         """Hint統計の最新値をセット（Node側で統計済み）。"""
         with self._hint_lock:
             self._hint_front_blocked_majority = bool(fb_major)
-            self._hint_left_open_median = float(med_l)
-            self._hint_right_open_median = float(med_r)
+            self._hint_left_offset_median = float(med_l)
+            self._hint_right_offset_median = float(med_r)
             self._hint_enough = bool(enough)
 
     # tick 内で使用するスナップショット取得（ロックは極小）
@@ -212,8 +217,8 @@ class FollowerCore:
         with self._hint_lock:
             return (
                 self._hint_front_blocked_majority,
-                self._hint_left_open_median,
-                self._hint_right_open_median,
+                self._hint_left_offset_median,
+                self._hint_right_offset_median,
                 self._hint_enough,
             )
 
@@ -223,7 +228,7 @@ class FollowerCore:
         with self._hint_lock:
             # 追加
             self._hint_cache.append(hint)
-            self._hint_front_range_latest = float(hint.front_range)
+            self._hint_front_clearance_latest = float(hint.front_clearance)
             # 窓外を削除
             wnd = float(self.hint_cache_window_sec)
             while self._hint_cache and (now - float(self._hint_cache[0].t)) > wnd:
@@ -231,32 +236,51 @@ class FollowerCore:
             n = len(self._hint_cache)
             if n < int(self.hint_min_samples):
                 self._hint_front_blocked_majority = False
-                self._hint_left_open_median = 0.0
-                self._hint_right_open_median = 0.0
+                self._hint_left_offset_median = 0.0
+                self._hint_right_offset_median = 0.0
                 self._hint_enough = False
                 return
             fb_vals = [1 if s.front_blocked else 0 for s in self._hint_cache]
             self._hint_front_blocked_majority = (sum(fb_vals) / n) >= float(self.hint_majority_true_ratio)
             fb_samples = [s for s in self._hint_cache if s.front_blocked]
             if fb_samples:
-                self._hint_left_open_median = float(median(s.left_open for s in fb_samples))
-                self._hint_right_open_median = float(median(s.right_open for s in fb_samples))
+                self._hint_left_offset_median = float(median(s.left_offset for s in fb_samples))
+                self._hint_right_offset_median = float(median(s.right_offset for s in fb_samples))
             else:
-                self._hint_left_open_median = 0.0
-                self._hint_right_open_median = 0.0
+                self._hint_left_offset_median = 0.0
+                self._hint_right_offset_median = 0.0
             self._hint_enough = True
 
-    def update_control_inputs(self, manual_start: Optional[bool] = None, sig_recog: Optional[int] = None) -> None:
-        """/manual_start(Bool), /sig_recog(Int32) の最新値をホールドする。"""
+    def update_control_inputs(
+        self,
+        manual_start: Optional[bool] = None,
+        sig_recog: Optional[int] = None,
+        road_blocked: Optional[bool] = None,
+    ) -> None:
+        """/manual_start(Bool)、/sig_recog(Int32)、/road_blocked(Bool) の最新値をホールドする。"""
         with self._ctrl_lock:
             if manual_start is not None:
                 self._manual_start_mb = bool(manual_start)
             if sig_recog is not None:
                 self._sig_recog_mb = int(sig_recog)
+            if road_blocked is not None:
+                self._road_blocked_mb = bool(road_blocked)
 
-    def _get_control_snapshot(self) -> Tuple[Optional[bool], Optional[int]]:
+    def _get_control_snapshot(self) -> Tuple[Optional[bool], Optional[int], Optional[bool]]:
         with self._ctrl_lock:
-            return self._manual_start_mb, self._sig_recog_mb
+            return self._manual_start_mb, self._sig_recog_mb, self._road_blocked_mb
+
+    def _consume_control_inputs(self) -> None:
+        """manual_start・sig_recog のラッチ値を消費済みとしてクリアする。"""
+        with self._ctrl_lock:
+            self._manual_start_mb = None
+            self._sig_recog_mb = None
+
+    def _clear_road_blocked_mailbox(self) -> None:
+        """road_blocked の保持値を外部イベントなしにクリアする。"""
+
+        with self._ctrl_lock:
+            self._road_blocked_mb = None
 
     # ========================= 周期処理（唯一の状態更新点） =========================
     def tick(self) -> FollowerOutput:
@@ -285,10 +309,18 @@ class FollowerCore:
         fb_major, med_l, med_r, enough = self._get_hint_snapshot()
 
         # --- 3) Control スナップショット ---
-        manual_start, sig_recog = self._get_control_snapshot()
+        manual_start, sig_recog, road_blocked = self._get_control_snapshot()
 
         # --- 4) 本処理 ---
-        return self._tick_main(fb_major, med_l, med_r, enough, manual_start, sig_recog)
+        return self._tick_main(
+            fb_major,
+            med_l,
+            med_r,
+            enough,
+            manual_start,
+            sig_recog,
+            road_blocked,
+        )
 
     # ========================= 内部適用処理 =========================
     def _apply_route(self, route: Route) -> None:
@@ -296,6 +328,8 @@ class FollowerCore:
         self.route = route
         self.route_active = True
         self.route_version = route.version
+        # リルート判定に使用した road_blocked のラッチ値を、新ルート適用のタイミングで破棄する。
+        self._clear_road_blocked_mailbox()
         if route.waypoints:
             self.index = max(0, min(route.start_index, len(route.waypoints) - 1))
         else:
@@ -326,7 +360,16 @@ class FollowerCore:
             self.pose_hist.popleft()
 
     # ========================= 本処理（状態遷移・判定） =========================
-    def _tick_main(self, fb_major: bool, med_l: float, med_r: float, enough: bool, manual_start: Optional[bool], sig_recog: Optional[int]) -> FollowerOutput:
+    def _tick_main(
+        self,
+        fb_major: bool,
+        med_l: float,
+        med_r: float,
+        enough: bool,
+        manual_start: Optional[bool],
+        sig_recog: Optional[int],
+        road_blocked: Optional[bool],
+    ) -> FollowerOutput:
         # ERROR/FINISHED は状態監視のみ
         if self.status in (FollowerStatus.ERROR, FollowerStatus.FINISHED):
             return FollowerOutput(None, self._make_state_dict())
@@ -334,10 +377,13 @@ class FollowerCore:
         # IDLEでルートが設定されたらRUNNINGに遷移
         if self.status == FollowerStatus.IDLE:
             if self.route_active:
-                self.log(f"[FollowerCore] IDLE -> RUNNING index={self.index}")
-                next_wp = self.route.waypoints[self.index]
-                self.status = FollowerStatus.RUNNING
-                return FollowerOutput(next_wp.pose, self._make_state_dict())
+                if self.start_immediately or bool(manual_start):
+                    if not self.start_immediately:
+                        self._consume_control_inputs()
+                    self.log(f"[FollowerCore] IDLE -> RUNNING index={self.index}")
+                    next_wp = self.route.waypoints[self.index]
+                    self.status = FollowerStatus.RUNNING
+                    return FollowerOutput(next_wp.pose, self._make_state_dict())
             return FollowerOutput(None, self._make_state_dict())
 
         # RUNNING/AVOIDING/WAITING_STOP/WAITING_REROUTE
@@ -367,6 +413,19 @@ class FollowerCore:
                     # すべて消化 → 本来WPへ復帰
                     self.avoid_active = False
                     self.status = FollowerStatus.RUNNING
+                    if self.route is not None and self.route.waypoints:
+                        rejoin_index = self._decide_rejoin_index_after_avoidance(
+                            self.current_pose, self.route, self.index
+                        )
+                        self.index = rejoin_index
+                        rejoin_wp = self.route.waypoints[self.index]
+                        self.last_target = rejoin_wp.pose
+                        self.log(
+                            "[FollowerCore] Avoidance completed. Back to main route. "
+                            f"rejoin_index={self.index}"
+                        )
+                        return FollowerOutput(rejoin_wp.pose, self._make_state_dict())
+
                     self.last_target = cur_wp.pose
                     self.log("[FollowerCore] Avoidance completed. Back to main route.")
                     return FollowerOutput(cur_wp.pose, self._make_state_dict())
@@ -390,6 +449,7 @@ class FollowerCore:
                 return FollowerOutput(self.last_target, self._make_state_dict())
 
             # 解除：次WP or FINISHED
+            self._consume_control_inputs()
             if self.index < len(self.route.waypoints) - 1:
                 self.index += 1
                 next_wp = self.route.waypoints[self.index]
@@ -433,6 +493,7 @@ class FollowerCore:
                 # STOP系
                 if cur_wp.line_stop or cur_wp.signal_stop:
                     self.status = FollowerStatus.WAITING_STOP
+                    self._consume_control_inputs()
                     self.log(f"[FollowerCore] Reached STOP waypoint -> WAITING_STOP (line_stop={cur_wp.line_stop}, signal_stop={cur_wp.signal_stop})")
                     return FollowerOutput(self.last_target, self._make_state_dict())
                 # 次WPへ
@@ -452,28 +513,62 @@ class FollowerCore:
                 return FollowerOutput(None, self._make_state_dict())
 
             # --- 未到達：滞留判定（グレース期間内はスキップ） ---
+            exclude_stop = False
+            if cur_wp.line_stop or cur_wp.signal_stop:
+                # 停止系WPでも停止線に到達する前は滞留判定を有効にする
+                exclude_stop = dist < self.arrival_threshold
+
             if time.time() >= self.stagnation_grace_until:
-                if self._check_stagnation_tick(exclude_stop=(cur_wp.line_stop or cur_wp.signal_stop)):
+                if self._check_stagnation_tick(exclude_stop=exclude_stop):
                     self.status = FollowerStatus.STAGNATION_DETECTED
-                    # Hint統計（Node側集約）に基づく判断
+                    # 滞留検知をトリガとして road_blocked を最優先で確認する。
+                    if bool(road_blocked):
+                        self.last_stagnation_reason = "road_blocked"
+                        self._consume_control_inputs()
+                        self._enter_waiting_reroute()
+                        return FollowerOutput(self.last_target, self._make_state_dict())
+
+                    # Hint統計（Node側集約）に基づく判断。
+                    # waypointの開放度を先に確認し、横方向余裕なしの場合は即座にRUNNINGへ復帰する。
+                    right_open = max(
+                        float(getattr(cur_wp, "right_open", 0.0)),
+                        float(getattr(cur_wp, "right_isopen", 0.0)),
+                    )
+                    left_open = max(
+                        float(getattr(cur_wp, "left_open", 0.0)),
+                        float(getattr(cur_wp, "left_isopen", 0.0)),
+                    )
+
+                    if right_open <= 0.0 and left_open <= 0.0:
+                        # waypointに横方向余裕がない場合は回避やreport_stuckを行わず継続する。
+                        self.status = FollowerStatus.RUNNING
+                        self.last_stagnation_reason = ""
+                        self.log(
+                            "[FollowerCore] No lateral opening at waypoint -> continue RUNNING"
+                        )
+                        return FollowerOutput(self.last_target, self._make_state_dict())
+
                     if not enough:
                         self.last_stagnation_reason = "no_hint"
                         self._enter_waiting_reroute()
                         return FollowerOutput(self.last_target, self._make_state_dict())
+
                     if not fb_major:
-                        self.last_stagnation_reason = "no_hint"
-                        self._enter_waiting_reroute()
+                        # 前方遮蔽が継続していないため監視継続のみ行う。
+                        self.status = FollowerStatus.RUNNING
+                        self.last_stagnation_reason = ""
+                        self.log("[FollowerCore] Stagnation cleared by hint -> continue RUNNING")
                         return FollowerOutput(self.last_target, self._make_state_dict())
 
-                    # 前方ブロック True → L字回避トライ
+                    self.last_stagnation_reason = "front_blocked"
                     success = self._start_avoidance_sequence(cur_wp, cur_pose, med_l, med_r)
                     if success:
                         self.status = FollowerStatus.AVOIDING
                         return FollowerOutput(self.last_target, self._make_state_dict())
-                    else:
-                        self.last_stagnation_reason = "no_space"
-                        self._enter_waiting_reroute()
-                        return FollowerOutput(self.last_target, self._make_state_dict())
+
+                    self.last_stagnation_reason = "no_space"
+                    self._enter_waiting_reroute()
+                    return FollowerOutput(self.last_target, self._make_state_dict())
 
             # 到達していないが滞留でもない → 目標の再提示（保険）
             return FollowerOutput(self.last_target, self._make_state_dict())
@@ -489,6 +584,20 @@ class FollowerCore:
         now = time.time()
         self.reroute_wait_start = now
         self.reroute_wait_deadline = now + self.reroute_timeout_sec
+
+    def notify_reroute_failed(self, note: str = "") -> None:
+        """/report_stuck が失敗した際にノード層から呼び出す。"""
+        self.route_active = False
+        self.avoid_active = False
+        self.avoid_subgoals.clear()
+        self.reroute_wait_start = None
+        self.reroute_wait_deadline = None
+        if note:
+            self.last_stagnation_reason = note
+        # リルート失敗時も road_blocked のラッチ値はここで明示的にリセットする。
+        self._clear_road_blocked_mailbox()
+        self.status = FollowerStatus.ERROR
+        self.log(f"[FollowerCore] WAITING_REROUTE failed -> ERROR note='{note}'")
 
     def _check_stagnation_tick(self, exclude_stop: bool) -> bool:
         """滞留判定。
@@ -566,14 +675,20 @@ class FollowerCore:
         side, offset = options[0]
 
         yaw = cur_pose.yaw
-        forward = self.avoid_forward_clearance_m
+        back_offset = max(self.avoid_back_offset_m, 0.0)
+        forward = back_offset + self.avoid_forward_clearance_m
+
+        # 起点を現在姿勢から進行方向後方へシフトして余裕を確保する。
+        pivot_x = cur_pose.x - math.cos(yaw) * back_offset
+        pivot_y = cur_pose.y - math.sin(yaw) * back_offset
 
         # (1) 横シフト点 p1
         offset_y = +offset if side == "L" else -offset
         dx1 = -math.sin(yaw) * offset_y
-        dy1 =  math.cos(yaw) * offset_y
-        p1 = Pose(cur_pose.x + dx1, cur_pose.y + dy1,
-                  self._yaw_between(cur_pose.x, cur_pose.y, cur_pose.x + dx1, cur_pose.y + dy1))
+        dy1 = math.cos(yaw) * offset_y
+        p1_x = pivot_x + dx1
+        p1_y = pivot_y + dy1
+        p1 = Pose(p1_x, p1_y, self._yaw_between(pivot_x, pivot_y, p1_x, p1_y))
 
         # (2) 前進点 p2
         dx2 = math.cos(yaw) * forward
@@ -602,20 +717,26 @@ class FollowerCore:
     def _make_state_dict(self) -> dict:
         """/follower_state 相当の簡易状態（Node側でROS msgへ変換）。"""
         cur_label = ""
-        next_label = ""
+        segment_length = 0.0
         if self.route and 0 <= self.index < len(self.route.waypoints):
-            cur_label = self.route.waypoints[self.index].label
-            if self.index + 1 < len(self.route.waypoints):
-                next_label = self.route.waypoints[self.index + 1].label
+            cur_wp = self.route.waypoints[self.index]
+            cur_label = cur_wp.label
+            if self.index > 0:
+                prev_wp = self.route.waypoints[self.index - 1]
+                segment_length = self._euclid_xy(prev_wp.pose, cur_wp.pose)
 
         return {
             "status": self.status.name,
-            "index": int(self.index),
+            "active_waypoint_index": int(self.index),
             "route_version": int(self.route_version),
-            "current_waypoint_label": cur_label,
-            "next_waypoint_label": next_label,
+            "active_waypoint_label": cur_label,
+            "segment_length_m": float(segment_length),
             "avoid_count": int(self.avoid_attempt_count),
             "reason": str(self.last_stagnation_reason),
+            "front_blocked": bool(self._hint_front_blocked_majority),
+            "left_offset_m": float(self._hint_left_offset_median),
+            "right_offset_m": float(self._hint_right_offset_median),
+            "front_clearance_m": float(self._hint_front_clearance_latest),
         }
 
     def get_current_waypoint_label(self) -> str:
@@ -632,4 +753,89 @@ class FollowerCore:
         """直近Hintで前方が塞がれているかを返す。"""
         with self._hint_lock:
             return bool(self._hint_front_blocked_majority)
+
+    # ========================= L字回避復帰支援 =========================
+    def _project_point_to_segment(
+        self, p: Pose, a: Pose, b: Pose
+    ) -> Tuple[float, float, float]:
+        """点pを線分abへ射影し、範囲内にクランプした点と距離を返す。"""
+        ax = float(a.x)
+        ay = float(a.y)
+        bx = float(b.x)
+        by = float(b.y)
+        px = float(p.x)
+        py = float(p.y)
+
+        vx = bx - ax
+        vy = by - ay
+        seg_len_sq = vx * vx + vy * vy
+        if seg_len_sq <= 1e-9:
+            dist = math.hypot(px - ax, py - ay)
+            return ax, ay, dist
+
+        t = ((px - ax) * vx + (py - ay) * vy) / seg_len_sq
+        t = max(0.0, min(1.0, t))
+        proj_x = ax + vx * t
+        proj_y = ay + vy * t
+        dist = math.hypot(px - proj_x, py - proj_y)
+        return proj_x, proj_y, dist
+
+    def _decide_rejoin_index_after_avoidance(
+        self, p2: Pose, route: Route, index: int
+    ) -> int:
+        """L字回避完了後に自然復帰するウェイポイントindexを決定する。"""
+        waypoints = route.waypoints
+        if not waypoints:
+            return index
+
+        n = len(waypoints)
+        base_index = max(0, min(index, n - 1))
+        if base_index >= n - 1:
+            return n - 1
+
+        e_x = 0.0
+        e_y = 0.0
+        for seg_index in range(base_index, n - 1):
+            seg_dx = waypoints[seg_index + 1].pose.x - waypoints[seg_index].pose.x
+            seg_dy = waypoints[seg_index + 1].pose.y - waypoints[seg_index].pose.y
+            seg_len = math.hypot(seg_dx, seg_dy)
+            if seg_len > 1e-6:
+                e_x = seg_dx / seg_len
+                e_y = seg_dy / seg_len
+                break
+
+        if abs(e_x) < 1e-9 and abs(e_y) < 1e-9:
+            # ルート方向が求まらない場合は従来通りp2のyawを使用する。
+            e_x = math.cos(p2.yaw)
+            e_y = math.sin(p2.yaw)
+
+        best_segment: Optional[int] = None
+        best_distance = float("inf")
+
+        for i in range(base_index, n - 1):
+            proj_x, proj_y, dist = self._project_point_to_segment(
+                p2, waypoints[i].pose, waypoints[i + 1].pose
+            )
+            vec_x = proj_x - p2.x
+            vec_y = proj_y - p2.y
+            s_i = vec_x * e_x + vec_y * e_y
+            if s_i < -0.1:
+                continue
+            if dist < best_distance:
+                best_distance = dist
+                best_segment = i
+
+        if best_segment is None:
+            j_base = base_index
+        else:
+            j_base = min(best_segment + 1, n - 1)
+
+        rejoin_index = j_base
+        for s in range(base_index, j_base + 1):
+            wp = waypoints[s]
+            if wp.line_stop or wp.signal_stop:
+                rejoin_index = s
+                break
+
+        return rejoin_index
 

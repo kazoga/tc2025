@@ -1,11 +1,14 @@
 obstacle_monitor:
   ros__parameters:
-    front_half_deg: 10.0
-    stop_dist_m: 1.0
+    front_cone_half_deg: 10.0
+    hint_range_m: 5.0
+    stop_dist_m: 0.75
+    front_clearance_percentile: 5.0
+    front_clearance_min_points: 5
     max_obstacle_distance_m: 1.5
-    hint_range_m: 1.5
-    robot_width_m: 0.8
-    min_offset_lower_bound_m: 0.75
+    front_block_ignore_dist_m: 0.15
+    robot_width_m: 0.6
+    avoid_offset_min_m: 0.75
     viewer_map_range_m: 8.0
     viewer_pixel_pitch: 100
     viewer_window: "laserscan"

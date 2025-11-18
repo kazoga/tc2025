@@ -32,8 +32,8 @@ class TimeOptimalController:
         self.prev_yaw_error = 0.0
  
         # 障害物検知のパラメータ
-        self.robot_width = 0.6  # ロボットの幅 [m]
-        self.safety_distance = 0.8  # 障害物との安全距離 [m]
+        self.robot_width = 0.2  # ロボットの幅 [m]
+        self.safety_distance = 0.5  # 障害物との安全距離 [m]
         self.min_obstacle_distance = 0.5  # 最小許容距離(安全距離バッファ) [m]
         self.obstacle_distance = None  # 前方障害物までの距離
 
@@ -52,7 +52,7 @@ class TimeOptimalController:
         rospy.Subscriber('/ypspur_ros/odom', Odometry, self.odom_callback)
         rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, self.pose_callback)
         rospy.Subscriber('/active_target', PoseStamped, self.goal_callback)  # ROS2 route_followerからの目標
-        rospy.Subscriber('/scan_livox_front_low_move', LaserScan, self.laser_scan_callback)
+        rospy.Subscriber('/scan', LaserScan, self.laser_scan_callback)
 
         # パブリッシャの設定
         self.cmd_vel_pub = rospy.Publisher('ypspur_ros/cmd_vel', Twist, queue_size=10)
@@ -83,6 +83,7 @@ class TimeOptimalController:
         """
         with self.lock:
             self.current_pose = msg.pose.pose
+        print(msg.pose.pose)
 
     def goal_callback(self, msg):
         """

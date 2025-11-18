@@ -3,13 +3,26 @@
 int32 route_version
 int32 current_index
 string current_wp_label
-geometry_msgs/Pose current_pose_map
-string reason
+geometry_msgs/PoseStamped current_pose
+uint8 REASON_UNKNOWN=0
+uint8 REASON_FRONT_BLOCKED=1
+uint8 REASON_ROAD_BLOCKED=2
+uint8 REASON_NO_HINT=3
+uint8 REASON_NO_SPACE=4
+uint8 REASON_AVOIDANCE_FAILED=5
+uint8 reason_code
+string reason_detail
 uint32 avoid_trial_count
 bool last_hint_blocked
 float32 last_applied_offset_m
 ---
-uint8 decision  # 1=REPLAN, 2=SKIP, 3=FAILED
+uint8 DECISION_NONE=0
+uint8 DECISION_REPLAN=1
+uint8 DECISION_SKIP=2
+uint8 DECISION_FAILED=3
+
+uint8 decision_code
 builtin_interfaces/Duration waiting_deadline
 float32 offset_hint
 string note
+

@@ -1,167 +1,93 @@
-# route_follower パッケージ README (phase1正式版)
+# route_follower パッケージ README (phase2正式版)
 
 ## 概要
-`route_follower` は、`route_manager` から受信した `/active_route` に含まれるウェイポイント列を順次追従し、下位ノードに `/active_target` (PoseStamped) を配信する **経路追従ノード** です。状態は `/follower_state` で通知します（状態機械：IDLE / RUNNING / WAITING_STOP / REROUTING(未使用) / FINISHED / ERROR）。  
-本READMEは **phase1正式版** に対応し、詳細設計書および実装・launchの内容に準拠しています。
+`route_follower` は `route_manager` から配信される `/active_route` を追従し、
+現在のターゲット Pose を `/active_target` に Publish する経路追従ノードです。Phase2 では ROS2
+ラッパ層 (`route_follower_node.py`) とロジック中核 (`follower_core.py`) を分離し、滞留検知と
+`/report_stuck` サービス呼び出しを統合しています。
 
----
-
-## 主な機能（phase1対応範囲）
-- `line_stop` 到達で **WAITING_STOP** に遷移、`/manual_start=True` で再開  
-- `/active_target` の **1Hz 再送**（保険的再送を含む）  
-- `/follower_state` の **100msデバウンス**による周期通知  
-- `/active_route` の **frame_id 厳格チェック**（空文字は `target_frame` を補完）  
-- すべての状態遷移は **タイマーコールバック内で一元処理**
-
----
+## 主な機能
+- `/active_route` 受信時に `FollowerCore` へ適用し、`start_immediately` 設定に応じて自動開始。
+- `/amcl_pose`・`/obstacle_avoidance_hint`・`/sig_recog`・`/manual_start` を購読し、追従状態や滞留判定に利用。
+- `FollowerCore.tick()` の結果を `/active_target` と `/follower_state` へ出力し、滞留統計も Publish。
+- 滞留検知時に `/report_stuck` を呼び出し、`decision_code` や `offset_hint` を反映して走行継続・スキップ・失敗を判定。
+- 1/`resend_interval_sec` [Hz] でターゲット Pose を再送し、制御系へ冪等な指示を提供。
 
 ## 起動方法
-
-### 1. 単独起動
-```bash
-ros2 launch route_follower route_follower.launch.py
-```
-
-主要な引数を指定する例：
 ```bash
 ros2 launch route_follower route_follower.launch.py \
-  arrival_threshold:=0.6 control_rate_hz:=20.0 start_immediately:=true \
-  target_frame:=map \
-  active_route_topic:=/active_route \
-  current_pose_topic:=/amcl_pose \
-  active_target_topic:=/active_target
+  arrival_threshold:=0.6 \
+  control_rate_hz:=20.0 \
+  resend_interval_sec:=1.0 \
+  start_immediately:=true \
+  target_frame:=map
 ```
 
-> **補足:** `resend_interval_sec` という引数が launch に存在しますが、現行ノードは `republish_target_hz` パラメータで再送周期を管理しており、launch 側の `resend_interval_sec` は **未使用** です（将来リネーム予定）。既定では **1.0 Hz** で再送されます。
+- launch 引数はノードパラメータへそのまま反映される。
+- `param_file` で YAML (`params/default.yaml`) を差し替えることも可能。
 
-### 2. 起動後のトピック
-```
-/active_route     (subscribe)
-/amcl_pose        (subscribe)
-/manual_start     (subscribe)
-/active_target    (publish)
-/follower_state   (publish)
-```
-
----
-
-## 外部インタフェース一覧
-
-### トピック購読
+## 外部インタフェース
+### 購読トピック
 | 名称 | 型 | 説明 | QoS |
 |------|----|------|-----|
-| `/active_route` | `route_msgs/Route` | 経路入力。`header.frame_id` が `target_frame` と異なる場合は ERROR。空文字は `target_frame` を補完。 | RELIABLE / TRANSIENT_LOCAL |
-| `/amcl_pose` | `geometry_msgs/PoseStamped` | 現在姿勢。到達判定に使用。 | RELIABLE / VOLATILE |
-| `/manual_start` | `std_msgs/Bool` | True 受信で WAITING_STOP を解除し RUNNING に復帰。 | RELIABLE / VOLATILE |
+| `/active_route` | `route_msgs/Route` | 追従対象ルート。`Route.version` と `start_index` を `FollowerCore` に転送。 | RELIABLE / TRANSIENT_LOCAL |
+| `/amcl_pose` | `geometry_msgs/PoseWithCovarianceStamped` | 現在姿勢。2D yaw を算出して `FollowerCore` へ投入。 | RELIABLE / VOLATILE |
+| `/obstacle_avoidance_hint` | `route_msgs/ObstacleAvoidanceHint` | 障害物回避ヒント。最新値を統計化し滞留判定に利用。 | BEST_EFFORT / VOLATILE |
+| `/manual_start` | `std_msgs/Bool` | TRUE 受信で手動再開。 | RELIABLE / VOLATILE |
+| `/sig_recog` | `std_msgs/Int32` | 信号認識結果（1=GO, 2=NOGO 等）。 | RELIABLE / VOLATILE |
 
-### トピック配信
-| 名称 | 型 | 説明 | 発行条件 | QoS |
-|------|----|------|-----------|-----|
-| `/active_target` | `geometry_msgs/PoseStamped` | 現在の追従ターゲット。| RUNNING 中は未到達なら再送、`current_pose` 未受信時も保険的再送。既定 **1.0 Hz** | RELIABLE / TRANSIENT_LOCAL |
-| `/follower_state` | `route_msgs/FollowerState` | 状態・距離・ラベル等を100msデバウンスで通知。 | 常時 | RELIABLE / VOLATILE |
+### 配信トピック
+| 名称 | 型 | 説明 | QoS |
+|------|----|------|-----|
+| `/active_target` | `geometry_msgs/PoseStamped` | 現在向かうべきターゲット Pose。`target_frame` を frame_id に設定。 | RELIABLE / VOLATILE |
+| `/follower_state` | `route_msgs/FollowerState` | 状態・route_version・滞留統計を Publish。 | RELIABLE / VOLATILE |
 
----
+### サービスクライアント
+| 名称 | 型 | 説明 |
+|------|----|------|
+| `/report_stuck` | `route_msgs/srv/ReportStuck` | 滞留判定時に呼び出し。現在 index やオフセット履歴を送信し、再計画方針を受け取る。 |
 
 ## パラメータ
 | 名称 | 型 | 既定値 | 概要 |
 |------|----|--------|------|
-| `arrival_threshold` | double | 0.6 | Waypoint 到達判定閾値[m] |
-| `control_rate_hz` | double | 20.0 | 制御周期[Hz] |
-| `republish_target_hz` | double | 1.0 | `/active_target` の再送周期[Hz] |
-| `target_frame` | string | "map" | 座標系 frame |
-| `start_immediately` | bool | True | 経路受信後に即走行を開始するか |
-| `state_debounce_ms` | int | 100 | `/follower_state` のデバウンス間隔[ms] |
+| `arrival_threshold` | double | `0.6` | Waypoint 到達判定距離[m]。 |
+| `control_rate_hz` | double | `20.0` | `FollowerCore.tick()` を呼ぶ周期[Hz]。0 以下の場合は 20Hz に補正。 |
+| `resend_interval_sec` | double | `1.0` | `/active_target` 再送周期[s]。内部で `republish_target_hz = 1.0 / resend_interval_sec` を設定。 |
+| `start_immediately` | bool | `true` | ルート受信直後に自動で RUNNING へ遷移するか。 |
+| `target_frame` | string | `"map"` | Publish する Pose の frame_id。 |
 
-> **注意:** launch 引数 `resend_interval_sec` は現行ノードでは使用されません。再送周期を変更したい場合は **ノード側パラメータ `republish_target_hz`** を変更してください。
+## 状態管理・処理フロー
+### Follower 状態遷移
+`FollowerCore` は以下の状態を持ち、`/follower_state.state` に文字列として出力します。
 
----
+| 状態 | 説明 |
+|------|------|
+| `IDLE` | ルート未適用。`start_immediately=false` で manual_start 待ち。 |
+| `RUNNING` | 通常追従中。 |
+| `WAITING_STOP` | line_stop に到達し手動再開待ち。`/manual_start` で RUNNING へ復帰。 |
+| `STAGNATION_DETECTED` | 滞留を検知し、局所回避や待機準備を実施。 |
+| `AVOIDING` | 回避サブゴール（横オフセットなど）を実行中。 |
+| `WAITING_REROUTE` | `/report_stuck` 応答待ち。サービス結果に応じて再開または失敗判定。 |
+| `FINISHED` | 最終 Waypoint へ到達。 |
+| `ERROR` | frame_id 不一致など致命的エラー。 |
 
-## QoS設定
-| トピック | reliability | durability | depth |
-|-----------|--------------|-------------|--------|
-| `/active_route` | RELIABLE | TRANSIENT_LOCAL | 1 |
-| `/amcl_pose` | RELIABLE | VOLATILE | 10 |
-| `/manual_start` | RELIABLE | VOLATILE | 10 |
-| `/active_target` | RELIABLE | TRANSIENT_LOCAL | 1 |
-| `/follower_state` | RELIABLE | VOLATILE | 10 |
+### `/report_stuck` 呼び出しフロー
+1. `FollowerCore` が滞留を検知すると `WAITING_REROUTE` に遷移し、ノード側で `/report_stuck` を非同期呼び出しする。
+2. リクエストには `route_version`・`current_index`・`current_wp_label`・現在 Pose・ヒント統計などを含める。
+3. 応答が `DECISION_REPLAN` や `DECISION_SKIP` の場合は `offset_hint` や skip 指示を `FollowerCore` に反映する。
+4. `DECISION_FAILED` の場合は `notify_reroute_failed()` を呼び出し `ERROR` へ遷移してオペレータ介入を要求する。
 
----
+## 動作確認手順
+1. `route_manager` を起動し、`/active_route` と `/report_stuck` が利用可能な状態にする。
+2. 本ノードを起動後、`ros2 topic echo /follower_state` で状態遷移を監視する。
+3. `/manual_start` に `std_msgs/Bool data:true` を Publish し、`WAITING_STOP` から再開できることを確認する。
+4. `/report_stuck` を `ros2 service call` 等で模擬し、`decision_code` に応じたログと状態変化を確認する。
 
-## 状態遷移（要約）
-- **IDLE** → `start_immediately=True` で新経路受信時に **RUNNING**  
-- **RUNNING** → `line_stop` 到達で **WAITING_STOP** / 最終WP到達で **FINISHED**  
-- **WAITING_STOP** → `/manual_start=True` で **RUNNING**  
-- 任意状態 → `/active_route.header.frame_id` 不一致で **ERROR**
+## デバッグのヒント
+- `/active_route` の `header.frame_id` が `target_frame` と異なる場合は `ERROR` へ遷移する。空文字は自動補完される。
+- `/obstacle_avoidance_hint` が届かない場合は滞留判定統計が十分に貯まらず、`front_blocked_majority` が False のままになる。
+- `/report_stuck` が利用できない状態で滞留するとリトライ待ちとなり、ログに "not ready" が出力される。サービス起動順を確認する。
 
----
-
-## remap / launch 引数
-
-### remap（launch 内既定）
-- `/active_route` ← `active_route_topic`  
-- `/amcl_pose` ← `current_pose_topic`  
-- `/active_target` ← `active_target_topic`
-
-### launch 引数
-| 引数名 | 既定値 | 説明 |
-|--------|--------|------|
-| `arrival_threshold` | 0.6 | 到達判定閾値[m] |
-| `control_rate_hz` | 20.0 | 制御周期[Hz] |
-| `resend_interval_sec` | 1.0 | **未使用（将来、republish_target_hzに統合予定）** |
-| `start_immediately` | true | 経路受信直後に開始 |
-| `target_frame` | map | 全Poseの frame_id |
-| `node_name` | route_follower | ノード名 |
-| `active_route_topic` | /active_route | 経路入力トピック |
-| `current_pose_topic` | /amcl_pose | 現在姿勢トピック |
-| `active_target_topic` | /active_target | 目標Pose出力トピック |
-
----
-
-## 動作確認方法
-
-1) **ノード起動**
-```bash
-ros2 launch route_follower route_follower.launch.py
-```
-
-2) **経路配信（route_manager 側）**  
-`/active_route` を Publish し、follower が `RUNNING` へ遷移することを確認。
-
-3) **停止／再開の確認**
-```bash
-# line_stop付きのWPへ到達 → WAITING_STOPへ遷移
-# 再開:
-ros2 topic pub /manual_start std_msgs/Bool "{data: true}" -1
-```
-
-4) **状態確認**
-```bash
-ros2 topic echo /follower_state
-```
-
-5) **frame_id 検証**  
-`/active_route.header.frame_id` が `target_frame` と異なると **ERROR** に遷移。空文字は `target_frame` が補完される。
-
----
-
-## 既知の注意点 / 差分
-- **launchとノードの周期設定の名称が不一致**  
-  - launch: `resend_interval_sec`（秒）  
-  - ノード: `republish_target_hz`（Hz）  
-  → 現行は **ノード側パラメータのみ有効**。将来のリファクタで統一予定。
-- **frame_id の扱い**  
-  - `header.frame_id` が空なら `target_frame` を自動補完。異なる場合は ERROR。
-
----
-
-## 将来拡張（phase2以降）
-- REROUTING 遷移の実装（新ルート受信時の最近傍WP再マップ・再開）
-- `signal_stop` 対応
-- 障害物検知との連携によるサブゴール設定
-
----
-
-## 参考
-- 詳細設計書（phase1正式版）  
-- ほかノードREADMEの構成方針を踏襲しています。
-
+## 将来拡張メモ
+- `FollowerCore` には信号判定・横オフセット試行回数などの内部パラメータが多数定義されており、必要に応じて ROS パラメータ化を検討している。
+- `WAITING_REROUTE` 中のタイムアウト（`reroute_timeout_sec`）は Core 内部で管理しており、ノード側で警告を出す機能追加を予定。

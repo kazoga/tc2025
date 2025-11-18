@@ -1,0 +1,6 @@
+route_planner:
+  ros__parameters:
+    config_yaml_path: "routes/inagi/route_config.yaml"
+    csv_base_dir: "routes/inagi"
+    map_image_path: "routes/inagi/map/gsi20251028132330203.png"
+    map_worldfile_path: "routes/inagi/map/gsi20251028132330203_corr.pgw"

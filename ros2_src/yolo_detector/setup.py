@@ -4,6 +4,12 @@ from glob import glob
 
 package_name = 'yolo_detector'
 
+# modelsディレクトリ内のファイルのみを取得（ディレクトリは除外）
+model_files = [f for f in glob('models/*') if os.path.isfile(f)]
+
+# scriptsディレクトリのファイルも含める
+script_files = glob('scripts/*.py')
+
 setup(
     name=package_name,
     version='0.0.1',
@@ -12,7 +18,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'models'), glob('models/*')),
+        (os.path.join('share', package_name, 'models'), model_files),
+        (os.path.join('share', package_name, 'scripts'), script_files),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -24,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'yolo_node = yolo_detector.yolo_node:main',
+            'yolo_ncnn_node = yolo_detector.yolo_ncnn_node:main',
         ],
     },
 )

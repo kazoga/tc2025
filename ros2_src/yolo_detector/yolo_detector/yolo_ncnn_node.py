@@ -191,8 +191,8 @@ class YoloNCNNDetectorNode(Node):
         detection.header = header
 
         hypothesis = ObjectHypothesisWithPose()
-        hypothesis.hypothesis.class_id = class_name
-        hypothesis.hypothesis.score = confidence
+        hypothesis.id = class_name
+        hypothesis.score = confidence
         detection.results.append(hypothesis)
 
         bbox = BoundingBox2D()

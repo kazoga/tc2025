@@ -7,8 +7,10 @@ ROS2でUSBカメラの画像をYOLOモデルで物体検出するパッケージ
 - `/usb_cam/image_raw` トピックから画像をサブスクライブ
 - YOLOモデル（PyTorch / NCNN）を使用してCPUで物体検出
 - **NCNN版は通常のPyTorch版より高速（推奨）**
-- 1秒に1回の間隔で検出処理を実行
+- detection_interval間隔で推論を実行（タイマー周期に直接使用）
 - 検出結果をターミナルに表示
+- 検出結果付き画像を`yolo_detector/image_det`でPublish
+- Detection2DArray形式の検出結果を`yolo_detector/detections`でPublish
 
 ## 必要な依存関係
 
@@ -93,7 +95,7 @@ ros2 run yolo_detector yolo_node --ros-args \
   - サブスクライブする画像トピック名
 
 - `detection_interval` (double, default: 1.0)
-  - 検出処理の実行間隔（秒）
+  - 推論タイマーの周期（秒）。この間隔で直接推論を実行する。
 
 - `confidence_threshold` (double, default: 0.5)
   - 検出の信頼度閾値
@@ -126,6 +128,16 @@ ros2 run yolo_detector yolo_node --ros-args \
 ```
 
 **NCNN版は通常のPyTorch版と比較して3〜5倍高速です！**
+
+## Publishトピック
+
+- `yolo_detector/image_det` (`sensor_msgs/Image`)
+  - 入力画像に検出結果のバウンディングボックス・クラス名・スコアを重畳した画像。
+  - ヘッダは入力画像のヘッダを引き継ぎます。
+
+- `yolo_detector/detections` (`vision_msgs/Detection2DArray`)
+  - 検出結果（クラスIDはクラス名文字列、scoreに信頼度）。
+  - ヘッダは入力画像のヘッダを引き継ぎます。
 
 ## ディレクトリ構造
 

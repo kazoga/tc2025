@@ -32,6 +32,7 @@ setup(
         'console_scripts': [
             'yolo_node = yolo_detector.yolo_node:main',
             'yolo_ncnn_node = yolo_detector.yolo_ncnn_node:main',
+            'camera_simulator_node = yolo_detector.camera_simulator_node:main',
         ],
     },
 )

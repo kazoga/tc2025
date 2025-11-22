@@ -116,6 +116,30 @@ ros2 run yolo_detector yolo_node --ros-args \
 - `class_names` (string array, default: ["item"])
   - クラス名のリスト
 
+### 方法3: camera_simulatorノードで静止画を配信
+
+検出用の入力が無い環境向けに、任意の静止画を`/usb_cam/image_raw`として配信する
+`camera_simulator_node`を追加しました。
+
+```bash
+ros2 run yolo_detector camera_simulator_node --ros-args \
+  -p frame_image_path:=/path/to/image.jpg \
+  -p frame_width:=640 \
+  -p frame_height:=480 \
+  -p frame_ratio:=10.0
+```
+
+#### camera_simulatorノードのパラメータ
+
+- `frame_image_path` (string, default: "")
+  - 配信する静止画のパス。`cv2.imread()`で読み込める画像を指定。
+- `frame_width` (int, default: -1)
+  - リサイズ後の横幅。負値の場合はリサイズ無し。片方のみ指定時はアスペクト比維持で拡縮。
+- `frame_height` (int, default: -1)
+  - リサイズ後の高さ。負値の場合はリサイズ無し。
+- `frame_ratio` (double, default: 10.0)
+  - 画像をpublishするレート(Hz)。
+
 ## 出力例
 
 ```

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 
+import os
+import time
+from typing import Tuple
+
+import cv2
+import numpy as np
 import rclpy
+from cv_bridge import CvBridge
+from geometry_msgs.msg import PoseWithCovariance
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
-import cv2
-import time
-import os
-import numpy as np
-from ament_index_python.packages import get_package_share_directory
+from vision_msgs.msg import BoundingBox2D, Detection2D, Detection2DArray
+from vision_msgs.msg import ObjectHypothesisWithPose
 
 
 class YoloNCNNDetectorNode(Node):
@@ -49,8 +53,9 @@ class YoloNCNNDetectorNode(Node):
         # CvBridgeの初期化
         self.bridge = CvBridge()
 
-        # 最新の画像を保持
+        # 最新の画像とヘッダーを保持
         self.latest_image = None
+        self.latest_header = None
         self.image_lock = False
 
         # 画像サブスクライバー
@@ -59,6 +64,13 @@ class YoloNCNNDetectorNode(Node):
             image_topic,
             self.image_callback,
             10
+        )
+
+        # 検出結果のパブリッシャー
+        self.detections_pub = self.create_publisher(
+            Detection2DArray,
+            '/yolo/detections',
+            10,
         )
 
         # 最後に処理した時刻
@@ -72,84 +84,189 @@ class YoloNCNNDetectorNode(Node):
         self.get_logger().info(f'Confidence threshold: {self.confidence_threshold}')
         self.get_logger().info(f'Class names: {self.class_names}')
 
-    def image_callback(self, msg):
-        """画像トピックのコールバック - 最新画像を保持"""
+    def image_callback(self, msg: Image) -> None:
+        """画像トピックのコールバックで最新画像とヘッダーを保持する."""
+
         if not self.image_lock:
             try:
-                self.latest_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            except Exception as e:
-                self.get_logger().error(f'Failed to convert image: {e}')
+                self.latest_image = self.bridge.imgmsg_to_cv2(
+                    msg, desired_encoding='bgr8'
+                )
+                self.latest_header = msg.header
+            except Exception as exc:  # pylint: disable=broad-except
+                self.get_logger().error(f'Failed to convert image: {exc}')
 
-    def timer_callback(self):
-        """タイマーコールバック - 一定間隔で検出処理を実行"""
+    def timer_callback(self) -> None:
+        """タイマーコールバックで一定間隔に検出処理を行う."""
+
         current_time = time.time()
 
-        # 指定間隔が経過したかチェック
         if current_time - self.last_detection_time >= self.detection_interval:
-            if self.latest_image is not None:
+            if self.latest_image is not None and self.latest_header is not None:
                 self.run_detection()
                 self.last_detection_time = current_time
 
-    def run_detection(self):
-        """NCNN検出処理を実行"""
+    def run_detection(self) -> None:
+        """NCNN推論を実行し、検出結果を生成する."""
+
         self.image_lock = True
 
         try:
-            # 処理時間を計測
             start_time = time.time()
 
-            # NCNN推論実行
             results = self.model(
                 self.latest_image,
                 verbose=False,
-                conf=self.confidence_threshold
+                conf=self.confidence_threshold,
             )
 
-            # 処理時間を計算
             inference_time = time.time() - start_time
-
-            # 結果を表示
+            annotated_image, detection_array = self._create_outputs(
+                results, self.latest_header
+            )
+            self._publish_outputs(annotated_image, detection_array)
             self.print_detection_results(results, inference_time)
 
-        except Exception as e:
-            self.get_logger().error(f'Detection error: {e}')
+        except Exception as exc:  # pylint: disable=broad-except
+            self.get_logger().error(f'Detection error: {exc}')
         finally:
             self.image_lock = False
 
-    def print_detection_results(self, results, inference_time):
-        """検出結果をターミナルに表示"""
+    def _create_outputs(
+        self,
+        results,
+        header,
+    ) -> Tuple[np.ndarray, Detection2DArray]:
+        """検出結果から描画画像とDetection2DArrayを生成する."""
+
+        annotated_image = self.latest_image.copy()
+        detection_array = Detection2DArray()
+        detection_array.header = header
+
+        for result in results:
+            for box in result.boxes:
+                cls_id = int(box.cls[0])
+                class_name = self._resolve_class_name(result, cls_id)
+                confidence = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+
+                detection = self._build_detection(
+                    header, cls_id, class_name, confidence, x1, y1, x2, y2
+                )
+                detection_array.detections.append(detection)
+                self._draw_detection(
+                    annotated_image, class_name, confidence, int(x1), int(y1), int(x2), int(y2)
+                )
+
+        return annotated_image, detection_array
+
+    def _build_detection(
+        self,
+        header,
+        class_id: int,
+        class_name: str,
+        confidence: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> Detection2D:
+        """Detection2Dメッセージを組み立てる."""
+
+        detection = Detection2D()
+        detection.header = header
+
+        bbox = BoundingBox2D()
+        bbox.center.position.x = float((x1 + x2) / 2)
+        bbox.center.position.y = float((y1 + y2) / 2)
+        bbox.size_x = float(x2 - x1)
+        bbox.size_y = float(y2 - y1)
+        detection.bbox = bbox
+
+        hypothesis = ObjectHypothesisWithPose()
+        hypothesis.id = str(class_id)
+        hypothesis.score = float(confidence)
+        hypothesis.pose = PoseWithCovariance()
+        detection.results.append(hypothesis)
+
+        return detection
+
+    def _draw_detection(
+        self,
+        annotated_image: np.ndarray,
+        class_name: str,
+        confidence: float,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> None:
+        """画像上にバウンディングボックスとラベルを描画する."""
+
+        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        label = f'{class_name}: {confidence:.2f}'
+        cv2.putText(
+            annotated_image,
+            label,
+            (x1, max(y1 - 10, 0)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+    def _resolve_class_name(self, result, cls_id: int) -> str:
+        """Ultralyticsの結果からクラス名を決定する."""
+
+        if hasattr(result, 'names') and result.names:
+            return result.names[cls_id]
+        if cls_id < len(self.class_names):
+            return self.class_names[cls_id]
+        return f'class_{cls_id}'
+
+    def _publish_outputs(
+        self, annotated_image: np.ndarray, detection_array: Detection2DArray
+    ) -> None:
+        """検出結果と描画済み画像をパブリッシュする."""
+
+        image_msg = self.bridge.cv2_to_imgmsg(annotated_image, encoding='bgr8')
+        image_msg.header = self.latest_header
+
+        self.detections_pub.publish(detection_array)
+
+        if not hasattr(self, 'image_pub'):
+            self.image_pub = self.create_publisher(Image, '/yolo/annotated', 10)
+        self.image_pub.publish(image_msg)
+
+    def print_detection_results(self, results, inference_time: float) -> None:
+        """検出結果をターミナルに表示する."""
+
         self.get_logger().info('=' * 60)
-        self.get_logger().info(f'Detection Results (Inference time: {inference_time:.3f}s = {1/inference_time:.1f}fps):')
+        self.get_logger().info(
+            'Detection Results '
+            f'(Inference time: {inference_time:.3f}s = {1 / inference_time:.1f}fps):'
+        )
 
         for result in results:
             boxes = result.boxes
 
             if len(boxes) == 0:
                 self.get_logger().info('No objects detected')
-            else:
-                self.get_logger().info(f'Detected {len(boxes)} object(s):')
+                continue
 
-                for i, box in enumerate(boxes):
-                    # クラスID、クラス名、信頼度を取得
-                    cls_id = int(box.cls[0])
+            self.get_logger().info(f'Detected {len(boxes)} object(s):')
 
-                    # クラス名を取得（result.namesが利用可能な場合はそれを使用）
-                    if hasattr(result, 'names') and result.names:
-                        class_name = result.names[cls_id]
-                    elif cls_id < len(self.class_names):
-                        class_name = self.class_names[cls_id]
-                    else:
-                        class_name = f"class_{cls_id}"
+            for index, box in enumerate(boxes):
+                cls_id = int(box.cls[0])
+                class_name = self._resolve_class_name(result, cls_id)
+                confidence = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
 
-                    confidence = float(box.conf[0])
-
-                    # バウンディングボックスの座標
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-
-                    self.get_logger().info(
-                        f'  [{i+1}] {class_name} (ID:{cls_id}): {confidence:.2f} '
-                        f'(x1:{int(x1)}, y1:{int(y1)}, x2:{int(x2)}, y2:{int(y2)})'
-                    )
+                self.get_logger().info(
+                    f'  [{index + 1}] {class_name} (ID:{cls_id}): {confidence:.2f} '
+                    f'(x1:{int(x1)}, y1:{int(y1)}, x2:{int(x2)}, y2:{int(y2)})'
+                )
 
         self.get_logger().info('=' * 60)
 

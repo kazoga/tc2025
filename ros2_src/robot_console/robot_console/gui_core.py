@@ -53,7 +53,11 @@ class NodeLaunchProfile:
     display_name: str
     package: str
     launch_file: str
+    alternate_launch_file: Optional[str] = None
+    launch_toggle_label: Optional[str] = None
+    use_alternate_launch: bool = False
     default_param: Optional[str] = None
+    param_package: Optional[str] = None
     param_argument: Optional[str] = 'param_file'
     simulator_launch_file: Optional[str] = None
     user_arguments: Optional[List[str]] = None
@@ -91,6 +95,7 @@ class NodeLaunchManager:
         param_path: Optional[str],
         simulator_enabled: bool,
         overrides: Optional[Dict[str, str]] = None,
+        launch_file_override: Optional[str] = None,
     ) -> None:
         """指定ノードを起動する。"""
 
@@ -105,11 +110,12 @@ class NodeLaunchManager:
                 raise RuntimeError(f"{profile.profile_id} の停止完了を待っています")
             self._status_callback(profile.profile_id, NodeLaunchStatus.STARTING, None, None)
 
+            launch_file = launch_file_override or profile.launch_file
             args = [
                 "ros2",
                 "launch",
                 profile.package,
-                profile.launch_file,
+                launch_file,
             ]
             if param_path and profile.param_argument:
                 args.append(f"{profile.param_argument}:={param_path}")
@@ -402,6 +408,9 @@ class GuiCore:
                 display_name=profile.display_name,
                 package=profile.package,
                 launch_file=profile.launch_file,
+                alternate_launch_file=profile.alternate_launch_file,
+                launch_toggle_label=profile.launch_toggle_label,
+                use_alternate_launch=profile.use_alternate_launch,
                 param_argument=profile.param_argument,
                 simulator_launch_file=profile.simulator_launch_file,
                 selected_param=profile.default_param,
@@ -457,17 +466,31 @@ class GuiCore:
     def _discover_params(self, profile: NodeLaunchProfile) -> List[str]:
         params: List[str] = []
         search_dirs: List[Path] = []
+        package_name = profile.param_package or profile.package
         try:
-            share_dir = Path(get_package_share_directory(profile.package))
+            share_dir = Path(get_package_share_directory(package_name))
             for sub in ('params', 'config'):
                 candidate = share_dir / sub
                 if candidate.exists():
                     search_dirs.append(candidate)
         except Exception:
             pass
-        extra_root = Path(__file__).resolve().parent.parent / 'config' / 'node_params' / profile.package
-        if extra_root.exists():
-            search_dirs.append(extra_root)
+        extra_roots = {
+            Path(__file__).resolve().parent.parent
+            / 'config'
+            / 'node_params'
+            / profile.package
+        }
+        if profile.param_package and profile.param_package != profile.package:
+            extra_roots.add(
+                Path(__file__).resolve().parent.parent
+                / 'config'
+                / 'node_params'
+                / profile.param_package
+            )
+        for extra_root in extra_roots:
+            if extra_root.exists():
+                search_dirs.append(extra_root)
         for directory in search_dirs:
             for path in directory.glob('**/*.yaml'):
                 params.append(str(path))
@@ -528,6 +551,12 @@ class GuiCore:
             if labels:
                 overrides['checkpoint_labels'] = ','.join(labels)
         return overrides
+
+    @staticmethod
+    def _resolve_launch_file(profile: NodeLaunchProfile, state: NodeLaunchState) -> str:
+        if state.use_alternate_launch and state.alternate_launch_file:
+            return state.alternate_launch_file
+        return profile.launch_file
 
     @staticmethod
     def _parse_label_list(raw_value: str) -> List[str]:
@@ -746,6 +775,11 @@ class GuiCore:
     def request_road_blocked(self, value: bool) -> None:
         self._command_queue.put(GuiCommand(GuiCommandType.ROAD_BLOCKED, {'value': value}))
 
+    def request_frame_image_path(self, path: str) -> None:
+        self._command_queue.put(
+            GuiCommand(GuiCommandType.FRAME_IMAGE_PATH, {'value': path})
+        )
+
     def start_obstacle_override(self, front_blocked: bool, clearance: float, left: float, right: float) -> None:
         payload = {
             'front_blocked': front_blocked,
@@ -793,6 +827,14 @@ class GuiCore:
             GuiCommand(
                 GuiCommandType.TOGGLE_SIMULATOR,
                 {'profile_id': profile_id, 'enabled': enabled},
+            )
+        )
+
+    def update_launch_file_selection(self, profile_id: str, use_alternate: bool) -> None:
+        self._command_queue.put(
+            GuiCommand(
+                GuiCommandType.SWITCH_LAUNCH_FILE,
+                {'profile_id': profile_id, 'use_alternate': use_alternate},
             )
         )
 
@@ -887,6 +929,9 @@ class GuiCore:
         if command.command_type == GuiCommandType.TOGGLE_SIMULATOR:
             self._apply_simulator_toggle(command.payload)
             return
+        if command.command_type == GuiCommandType.SWITCH_LAUNCH_FILE:
+            self._apply_launch_file_toggle(command.payload)
+            return
         if command.command_type == GuiCommandType.LAUNCH_NODE:
             self._handle_launch_request(command.payload['profile_id'])
         elif command.command_type == GuiCommandType.STOP_NODE:
@@ -909,6 +954,7 @@ class GuiCore:
             param_path = state.selected_param
             simulator_enabled = state.simulator_enabled
             overrides = self._build_launch_overrides(profile, state)
+            launch_file = self._resolve_launch_file(profile, state)
         if self._launch_manager.is_running(profile_id):
             try:
                 self._launch_manager.stop(profile_id)
@@ -921,6 +967,7 @@ class GuiCore:
                 param_path,
                 simulator_enabled,
                 overrides if overrides else None,
+                launch_file_override=launch_file,
             )
         except Exception as exc:  # pylint: disable=broad-except
             self._on_launch_status(profile_id, NodeLaunchStatus.ERROR, None, str(exc))
@@ -970,10 +1017,22 @@ class GuiCore:
         enabled = payload.get('enabled')
         if not isinstance(profile_id, str) or not isinstance(enabled, bool):
             return
-        state = self._launch_states.get(profile_id)
-        if not state:
+        with self._lock:
+            state = self._launch_states.get(profile_id)
+            if not state:
+                return
+            state.simulator_enabled = enabled
+
+    def _apply_launch_file_toggle(self, payload: Dict[str, object]) -> None:
+        profile_id = payload.get('profile_id')
+        use_alternate = payload.get('use_alternate')
+        if not isinstance(profile_id, str) or not isinstance(use_alternate, bool):
             return
-        state.simulator_enabled = enabled
+        with self._lock:
+            state = self._launch_states.get(profile_id)
+            if not state or not state.alternate_launch_file:
+                return
+            state.use_alternate_launch = use_alternate
 
     @staticmethod
     def _compute_distance(
@@ -1049,5 +1108,17 @@ def default_launch_profiles() -> List[NodeLaunchProfile]:
             launch_file='obstacle_monitor.launch.py',
             param_argument=None,
             simulator_launch_file='laser_scan_simulator.launch.py',
+        ),
+        NodeLaunchProfile(
+            profile_id='yolo_detector',
+            display_name='Yolo Detector',
+            package='yolo_detector',
+            launch_file='yolo_ncnn_with_route_blockage.launch.py',
+            alternate_launch_file='yolo_with_route_blockage.launch.py',
+            launch_toggle_label='yolo_node モード',
+            use_alternate_launch=False,
+            param_package='route_blockage_detector',
+            param_argument='route_param_file',
+            simulator_launch_file='camera_simulator_node.launch.py',
         ),
     ]

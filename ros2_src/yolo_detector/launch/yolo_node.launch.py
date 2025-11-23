@@ -1,15 +1,20 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
+    pkg_share = FindPackageShare('yolo_detector')
+
     image_topic_arg = DeclareLaunchArgument(
         'image_topic', default_value='/usb_cam/image_raw', description='購読する画像トピック'
     )
     model_path_arg = DeclareLaunchArgument(
-        'model_path', default_value='', description='使用するPyTorchモデルのパス'
+        'model_path',
+        default_value=PathJoinSubstitution([pkg_share, 'models', 'best.pt']),
+        description='使用するPyTorchモデルのパス',
     )
     detection_interval_arg = DeclareLaunchArgument(
         'detection_interval',

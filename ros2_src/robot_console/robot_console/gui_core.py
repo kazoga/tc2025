@@ -57,6 +57,7 @@ class NodeLaunchProfile:
     launch_toggle_label: Optional[str] = None
     use_alternate_launch: bool = False
     default_param: Optional[str] = None
+    param_package: Optional[str] = None
     param_argument: Optional[str] = 'param_file'
     simulator_launch_file: Optional[str] = None
     user_arguments: Optional[List[str]] = None
@@ -465,17 +466,31 @@ class GuiCore:
     def _discover_params(self, profile: NodeLaunchProfile) -> List[str]:
         params: List[str] = []
         search_dirs: List[Path] = []
+        package_name = profile.param_package or profile.package
         try:
-            share_dir = Path(get_package_share_directory(profile.package))
+            share_dir = Path(get_package_share_directory(package_name))
             for sub in ('params', 'config'):
                 candidate = share_dir / sub
                 if candidate.exists():
                     search_dirs.append(candidate)
         except Exception:
             pass
-        extra_root = Path(__file__).resolve().parent.parent / 'config' / 'node_params' / profile.package
-        if extra_root.exists():
-            search_dirs.append(extra_root)
+        extra_roots = {
+            Path(__file__).resolve().parent.parent
+            / 'config'
+            / 'node_params'
+            / profile.package
+        }
+        if profile.param_package and profile.param_package != profile.package:
+            extra_roots.add(
+                Path(__file__).resolve().parent.parent
+                / 'config'
+                / 'node_params'
+                / profile.param_package
+            )
+        for extra_root in extra_roots:
+            if extra_root.exists():
+                search_dirs.append(extra_root)
         for directory in search_dirs:
             for path in directory.glob('**/*.yaml'):
                 params.append(str(path))
@@ -1100,8 +1115,9 @@ def default_launch_profiles() -> List[NodeLaunchProfile]:
             package='yolo_detector',
             launch_file='yolo_ncnn_with_route_blockage.launch.py',
             alternate_launch_file='yolo_with_route_blockage.launch.py',
-            launch_toggle_label='PyTorch版 (yolo_node) を使用',
+            launch_toggle_label='yolo_node モード',
             use_alternate_launch=False,
+            param_package='route_blockage_detector',
             param_argument='route_param_file',
             simulator_launch_file='camera_simulator_node.launch.py',
         ),

@@ -31,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'yolo_node = yolo_detector.yolo_node:main',
+            'route_blockage_detector = yolo_detector.route_blockage_detector_node:main',
             'yolo_ncnn_node = yolo_detector.yolo_ncnn_node:main',
             'camera_simulator_node = yolo_detector.camera_simulator_node:main',
         ],

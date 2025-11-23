@@ -159,7 +159,7 @@ class RouteBlockageDetector(Node):
 
         width = detection.bbox.size_x
         height = detection.bbox.size_y
-        bottom_from_top = detection.bbox.center.position.y + (detection.bbox.size_y / 2.0)
+        bottom_from_top = detection.bbox.center.y + (detection.bbox.size_y / 2.0)
         bottom_distance = self._compute_bottom_distance(detection, bottom_from_top)
 
         if self.bbox_width_min >= 0 and width < self.bbox_width_min:

@@ -5,9 +5,12 @@ ROS2でUSBカメラの画像をYOLOモデルで物体検出するパッケージ
 ## 機能
 
 - `/usb_cam/image_raw` トピックから画像をサブスクライブ
-- YOLOモデルを使用してCPUで物体検出
-- 1秒に1回の間隔で検出処理を実行
+- YOLOモデル（PyTorch / NCNN）を使用してCPUで物体検出
+- **NCNN版は通常のPyTorch版より高速（推奨）**
+- detection_interval間隔で推論を実行（タイマー周期に直接使用）
 - 検出結果をターミナルに表示
+- 検出結果付き画像を`yolo_detector/image_det`でPublish
+- Detection2DArray形式の検出結果を`yolo_detector/detections`でPublish
 
 ## 必要な依存関係
 
@@ -45,52 +48,120 @@ source install/setup.bash
 
 ## 使用方法
 
-### カスタムモデルで起動（推奨）
+### 方法1: NCNN版を使用（高速・推奨）
 
-モデルファイルのパスを指定して起動:
+#### 1. モデルをNCNN形式に変換
+
+```bash
+cd /home/nkb/ros2_ws/src/yolo_detector
+python3 scripts/convert_to_ncnn.py models/best.pt
+```
+
+これにより `models/best_ncnn_model/` ディレクトリが作成されます。
+
+#### 2. NCNN版ノードを起動
+
+```bash
+ros2 run yolo_detector yolo_ncnn_node --ros-args \
+  -p model_path:=/home/nkb/ros2_ws/src/yolo_detector/models/best_ncnn_model
+```
+
+### 方法2: PyTorch版を使用（従来版）
+
+#### カスタムモデルで起動
+
 ```bash
 ros2 run yolo_detector yolo_node --ros-args \
-  -p model_path:=/home/nkb/ros2_ws/src/yolo_detector/models/best.pt
+  -p model_path:=/home/nkb/ros2_ws/src/yolo_detector/models/best.pt \
+  -p image_size:=320
 ```
 
-### デフォルトモデルで起動
-
-`models/yolo11n.pt`が存在する場合はパラメータなしで起動可能:
-```bash
-ros2 run yolo_detector yolo_node
-```
-
-### パラメータ付きで起動
+#### パラメータ付きで起動
 
 ```bash
 ros2 run yolo_detector yolo_node --ros-args \
   -p image_topic:=/usb_cam/image_raw \
   -p detection_interval:=1.0 \
-  -p model_path:=/home/nkb/ros2_ws/src/yolo_detector/models/best.pt
+  -p model_path:=/home/nkb/ros2_ws/src/yolo_detector/models/best.pt \
+  -p image_size:=256 \
+  -p confidence_threshold:=0.5
 ```
 
 ### パラメータ
+
+#### 共通パラメータ（両方のノードで使用可能）
 
 - `image_topic` (string, default: "/usb_cam/image_raw")
   - サブスクライブする画像トピック名
 
 - `detection_interval` (double, default: 1.0)
-  - 検出処理の実行間隔（秒）
+  - 推論タイマーの周期（秒）。この間隔で直接推論を実行する。
+
+- `confidence_threshold` (double, default: 0.5)
+  - 検出の信頼度閾値
 
 - `model_path` (string, default: "")
-  - YOLOモデルファイルのパス（空の場合はデフォルトモデルを使用）
+  - モデルファイル/ディレクトリのパス
+  - NCNN版: モデルディレクトリ（例: `/path/to/best_ncnn_model`）
+  - PyTorch版: .ptファイルのパス（例: `/path/to/best.pt`）
+
+#### PyTorch版のみのパラメータ
+
+- `image_size` (int, default: 320)
+  - 推論時の画像サイズ（小さいほど高速、大きいほど精度向上）
+  - 推奨値: 256（高速）、320（バランス）、416（高精度）
+
+#### NCNN版のみのパラメータ
+
+- `class_names` (string array, default: ["item"])
+  - クラス名のリスト
+
+### 方法3: camera_simulatorノードで静止画を配信
+
+検出用の入力が無い環境向けに、任意の静止画を`/usb_cam/image_raw`として配信する
+`camera_simulator_node`を追加しました。
+
+```bash
+ros2 run yolo_detector camera_simulator_node --ros-args \
+  -p frame_image_path:=/path/to/image.jpg \
+  -p frame_width:=640 \
+  -p frame_height:=480 \
+  -p frame_ratio:=10.0
+```
+
+#### camera_simulatorノードのパラメータ
+
+- `frame_image_path` (string, default: "")
+  - 配信する静止画のパス。`cv2.imread()`で読み込める画像を指定。
+- `frame_width` (int, default: -1)
+  - リサイズ後の横幅。負値の場合はリサイズ無し。片方のみ指定時はアスペクト比維持で拡縮。
+- `frame_height` (int, default: -1)
+  - リサイズ後の高さ。負値の場合はリサイズ無し。
+- `frame_ratio` (double, default: 10.0)
+  - 画像をpublishするレート(Hz)。
 
 ## 出力例
 
 ```
-[INFO] [yolo_detector_node]: ============================================================
-[INFO] [yolo_detector_node]: Detection Results:
-[INFO] [yolo_detector_node]: Detected 3 object(s):
-[INFO] [yolo_detector_node]:   [1] person: 0.89 (x1:120, y1:80, x2:340, y2:480)
-[INFO] [yolo_detector_node]:   [2] chair: 0.76 (x1:450, y1:200, x2:600, y2:450)
-[INFO] [yolo_detector_node]:   [3] bottle: 0.65 (x1:200, y1:150, x2:250, y2:280)
-[INFO] [yolo_detector_node]: ============================================================
+[INFO] [yolo_ncnn_detector_node]: ============================================================
+[INFO] [yolo_ncnn_detector_node]: Detection Results (Inference time: 0.085s = 11.8fps):
+[INFO] [yolo_ncnn_detector_node]: Detected 2 object(s):
+[INFO] [yolo_ncnn_detector_node]:   [1] item (ID:0): 0.81 (x1:535, y1:222, x2:579, y2:316)
+[INFO] [yolo_ncnn_detector_node]:   [2] item (ID:0): 0.77 (x1:71, y1:220, x2:116, y2:316)
+[INFO] [yolo_ncnn_detector_node]: ============================================================
 ```
+
+**NCNN版は通常のPyTorch版と比較して3〜5倍高速です！**
+
+## Publishトピック
+
+- `yolo_detector/image_det` (`sensor_msgs/Image`)
+  - 入力画像に検出結果のバウンディングボックス・クラス名・スコアを重畳した画像。
+  - ヘッダは入力画像のヘッダを引き継ぎます。
+
+- `yolo_detector/detections` (`vision_msgs/Detection2DArray`)
+  - 検出結果（クラスIDはクラス名文字列、scoreに信頼度）。
+  - ヘッダは入力画像のヘッダを引き継ぎます。
 
 ## ディレクトリ構造
 

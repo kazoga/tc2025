@@ -187,7 +187,9 @@ class YoloDetectorNode(Node):
 
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().tolist()
                 detection_array.detections.append(
-                    self._build_detection(header, class_name, confidence, x1, y1, x2, y2)
+                    self._build_detection(
+                        header, cls_id, class_name, confidence, x1, y1, x2, y2
+                    )
                 )
 
                 annotated_image = self._draw_detection(
@@ -199,6 +201,7 @@ class YoloDetectorNode(Node):
     def _build_detection(
         self,
         header: Header,
+        cls_id: int,
         class_name: str,
         confidence: float,
         x1: float,
@@ -211,7 +214,7 @@ class YoloDetectorNode(Node):
         detection.header = header
 
         hypothesis = ObjectHypothesisWithPose()
-        hypothesis.id = class_name
+        hypothesis.id = str(cls_id)
         hypothesis.score = confidence
         detection.results.append(hypothesis)
 

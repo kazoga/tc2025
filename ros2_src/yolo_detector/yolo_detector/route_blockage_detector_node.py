@@ -56,13 +56,13 @@ class RouteBlockageDetector(Node):
         """ノードが使用するパラメータを宣言する."""
 
         self.declare_parameter('target_class_id', 0)
-        self.declare_parameter('score_threshold', 0.7)
+        self.declare_parameter('score_threshold', 0.5)
         self.declare_parameter('bbox_width_min', -1.0)
         self.declare_parameter('bbox_width_max', -1.0)
         self.declare_parameter('bbox_height_min', -1.0)
         self.declare_parameter('bbox_height_max', -1.0)
         self.declare_parameter('bbox_bottom_max', -1.0)
-        self.declare_parameter('decision_duration', 2.0)
+        self.declare_parameter('decision_duration', 3.0)
         self.declare_parameter('decision_frame_ratio', 50.0)
         self.declare_parameter('confirmation_duration', 10.0)
         self.declare_parameter('multi_detection_suppression_range', 10.0)
@@ -279,9 +279,9 @@ class RouteBlockageDetector(Node):
             return pose
         except TransformException:
             if self.latest_amcl_pose is not None:
-                self.get_logger().warn(
-                    '指定時刻で TF を取得できなかったため最新の /amcl_pose を使用します。'
-                )
+                #self.get_logger().warn(
+                #    '指定時刻で TF を取得できなかったため最新の /amcl_pose を使用します。'
+                #)
                 return self._copy_pose(self.latest_amcl_pose)
 
             try:

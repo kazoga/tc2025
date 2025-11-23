@@ -18,7 +18,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     detection_interval_arg = DeclareLaunchArgument(
         'detection_interval',
-        default_value='1.0',
+        default_value='0.5',
         description='推論を行うインターバル（秒）',
     )
     confidence_threshold_arg = DeclareLaunchArgument(

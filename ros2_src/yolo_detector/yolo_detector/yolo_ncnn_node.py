@@ -36,7 +36,7 @@ class YoloNCNNDetectorNode(Node):
 
         self.declare_parameter('model_path', '')
         self.declare_parameter('image_topic', '/usb_cam/image_raw')
-        self.declare_parameter('detection_interval', 1.0)
+        self.declare_parameter('detection_interval', 0.5)
         self.declare_parameter('confidence_threshold', 0.5)
         self.declare_parameter('class_names', ['item'])
 

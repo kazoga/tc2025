@@ -999,18 +999,48 @@ class UiMain:
                     }
                     current_row += 1
 
-            launch_mode_var = tk.BooleanVar(value=state.use_alternate_launch)
+            launch_mode_var: Optional[tk.Variable] = tk.BooleanVar(
+                value=state.use_alternate_launch
+            )
             if state.alternate_launch_file:
-                toggle_label = state.launch_toggle_label or '別モードを使用'
-                callback = self._create_launch_toggle_callback(profile_id, launch_mode_var)
-                chk_launch = ttk.Checkbutton(
-                    card,
-                    text=toggle_label,
-                    variable=launch_mode_var,
-                    command=callback,
-                )
-                chk_launch.grid(row=current_row, column=0, sticky='w')
-                current_row += 1
+                if profile_id == 'yolo_detector':
+                    launch_mode_var = tk.StringVar(
+                        value='yolo' if state.use_alternate_launch else 'yolo_ncnn'
+                    )
+                    mode_frame = ttk.Frame(card)
+                    mode_frame.grid(row=current_row, column=0, sticky='w', pady=(2, 0))
+
+                    def _on_change_mode(*_args: object) -> None:
+                        self._core.update_launch_file_selection(
+                            profile_id, launch_mode_var.get() == 'yolo'
+                        )
+
+                    for column, (label, value) in enumerate(
+                        (('yolo_ncnn', 'yolo_ncnn'), ('yolo', 'yolo')),
+                        start=0,
+                    ):
+                        ttk.Radiobutton(
+                            mode_frame,
+                            text=label,
+                            value=value,
+                            variable=launch_mode_var,
+                            command=_on_change_mode,
+                        ).grid(row=0, column=column, sticky='w', padx=(0, 8))
+                    current_row += 1
+                else:
+                    toggle_label = state.launch_toggle_label or '別モードを使用'
+                    launch_mode_var = tk.BooleanVar(value=state.use_alternate_launch)
+                    callback = self._create_launch_toggle_callback(
+                        profile_id, launch_mode_var
+                    )
+                    chk_launch = ttk.Checkbutton(
+                        card,
+                        text=toggle_label,
+                        variable=launch_mode_var,
+                        command=callback,
+                    )
+                    chk_launch.grid(row=current_row, column=0, sticky='w')
+                    current_row += 1
             else:
                 launch_mode_var = None
 
@@ -1769,6 +1799,9 @@ class UiMain:
             launch_toggle_var = widgets.get('launch_toggle')  # type: ignore[index]
             if isinstance(launch_toggle_var, tk.BooleanVar):
                 launch_toggle_var.set(state.use_alternate_launch)
+            elif isinstance(launch_toggle_var, tk.StringVar):
+                desired_value = 'yolo' if state.use_alternate_launch else 'yolo_ncnn'
+                launch_toggle_var.set(desired_value)
             combo_widget = widgets.get('combo')  # type: ignore[index]
             if isinstance(combo_widget, ttk.Combobox):
                 current_values = tuple(combo_widget['values'])

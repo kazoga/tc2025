@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import queue
 import signal
@@ -13,7 +14,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
-from ament_index_python.packages import get_package_share_directory
+try:
+    from ament_index_python.packages import (
+        PackageNotFoundError,
+        get_package_prefixes,
+        get_package_share_directory,
+    )
+except ImportError:  # pragma: no cover - 互換性維持のためにフォールバックを用意
+    from ament_index_python.packages import (  # type: ignore[misc]
+        PackageNotFoundError,
+        get_package_share_directory,
+    )
+
+    get_package_prefixes = None  # type: ignore[assignment]
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from sensor_msgs.msg import Image as ImageMsg
 try:
@@ -466,15 +479,31 @@ class GuiCore:
     def _discover_params(self, profile: NodeLaunchProfile) -> List[str]:
         params: List[str] = []
         search_dirs: List[Path] = []
-        package_name = profile.param_package or profile.package
-        try:
-            share_dir = Path(get_package_share_directory(package_name))
-            for sub in ('params', 'config'):
-                candidate = share_dir / sub
-                if candidate.exists():
-                    search_dirs.append(candidate)
-        except Exception:
-            pass
+        package_candidates = []
+        if profile.param_package:
+            package_candidates.append(profile.param_package)
+        if profile.package not in package_candidates:
+            package_candidates.append(profile.package)
+
+        for package_name in package_candidates:
+            share_dirs: List[Path] = []
+            if get_package_prefixes:
+                try:
+                    for prefix in get_package_prefixes(package_name):
+                        share_dirs.append(Path(prefix).expanduser() / 'share' / package_name)
+                except PackageNotFoundError:
+                    pass
+            if not share_dirs:
+                try:
+                    share_dirs.append(Path(get_package_share_directory(package_name)))
+                except PackageNotFoundError:
+                    continue
+
+            for share_dir in {path.resolve() for path in share_dirs}:
+                for sub in ('params', 'config'):
+                    candidate = share_dir / sub
+                    if candidate.exists():
+                        search_dirs.append(candidate)
         extra_roots = {
             Path(__file__).resolve().parent.parent
             / 'config'
@@ -1117,7 +1146,7 @@ def default_launch_profiles() -> List[NodeLaunchProfile]:
             alternate_launch_file='yolo_with_route_blockage.launch.py',
             launch_toggle_label='yolo_node モード',
             use_alternate_launch=False,
-            param_package='route_blockage_detector',
+            param_package='yolo_detector',
             param_argument='route_param_file',
             simulator_launch_file='camera_simulator_node.launch.py',
         ),

@@ -38,6 +38,9 @@ if script_files:
 if os.path.isdir('params'):
     data_files.extend(list_data_files('params'))
 
+if os.path.isdir('launch'):
+    data_files.extend(list_data_files('launch'))
+
 setup(
     name=package_name,
     version='0.0.1',

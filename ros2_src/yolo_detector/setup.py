@@ -18,9 +18,6 @@ def list_data_files(target_dir: str) -> List[Tuple[str, List[str]]]:
     return entries
 
 
-# modelsディレクトリ内のファイルのみを取得（ディレクトリは除外）
-model_files = [f for f in glob('models/*') if os.path.isfile(f)]
-
 # scriptsディレクトリのファイルも含める
 script_files = glob('scripts/*.py')
 
@@ -29,14 +26,17 @@ data_files = [
     ('share/' + package_name, ['package.xml']),
 ]
 
-if model_files:
-    data_files.append((os.path.join('share', package_name, 'models'), model_files))
+if os.path.isdir('models'):
+    data_files.extend(list_data_files('models'))
 
 if script_files:
     data_files.append((os.path.join('share', package_name, 'scripts'), script_files))
 
 if os.path.isdir('params'):
     data_files.extend(list_data_files('params'))
+
+if os.path.isdir('launch'):
+    data_files.extend(list_data_files('launch'))
 
 setup(
     name=package_name,

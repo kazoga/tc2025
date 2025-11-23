@@ -112,7 +112,6 @@ class RouteBlockageDetector(Node):
 
         if self._is_within_blocked_positions(pose):
             self._record_count(detection_time, 0)
-            self._evaluate_decision(detection_time, pose)
             return
 
         valid_count = self._count_valid_detections(msg.detections)

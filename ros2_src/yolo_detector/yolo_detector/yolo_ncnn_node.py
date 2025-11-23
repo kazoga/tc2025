@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import copy
+import os
 import threading
 import time
 from typing import List, Optional, Sequence, Tuple
 
+from ament_index_python.packages import get_package_share_directory
 import cv2
 import numpy as np
 from cv_bridge import CvBridge
@@ -51,8 +53,16 @@ class YoloNCNNDetectorNode(Node):
         )
 
         if model_path == '':
-            self.get_logger().error('model_path parameter is required for NCNN model!')
-            raise ValueError('model_path not specified')
+            default_model_path = os.path.join(
+                get_package_share_directory('yolo_detector'),
+                'models',
+                'best_ncnn_model',
+            )
+            self.get_logger().warn(
+                'model_pathが指定されていないため、パッケージ内のNCNNモデルを利用します: '
+                f'{default_model_path}'
+            )
+            model_path = default_model_path
 
         self.model = self._load_model(model_path)
         self.bridge = CvBridge()

@@ -13,7 +13,9 @@ def generate_launch_description() -> LaunchDescription:
         'image_topic', default_value='/usb_cam/image_raw', description='購読する画像トピック'
     )
     model_path_arg = DeclareLaunchArgument(
-        'model_path', default_value='', description='NCNNモデルディレクトリのパス'
+        'model_path',
+        default_value=PathJoinSubstitution([pkg_share, 'models', 'best_ncnn_model']),
+        description='NCNNモデルディレクトリのパス',
     )
     detection_interval_arg = DeclareLaunchArgument(
         'detection_interval',

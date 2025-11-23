@@ -54,7 +54,7 @@ route_blockage_detector ノードは YOLO 推論結果と自己位置を入力�
 | `bbox_bottom_max` | float | -1 | バウンディングボックス下端の最大位置 [pixel]。画像下端からの距離で定義し、負値なら判定スキップ。 |
 | `decision_duration` | float | 2.0 | 判定期間長 [秒]。この期間のカウント履歴を保持。 |
 | `decision_frame_ratio` | float | 50.0 | 判定期間内で「カウント>=1」の秒バケット割合 [%] がこの値以上で仮判定成立。 |
-| `confirmation_duration` | float | 10.0 | road_blocked=true 継続時間が本値を超えたら封鎖確定。 |
+| `confirmation_duration` | float | 10.0 | road_blocked=true 継続時間が本値を超えたら封鎖確定（ノード内固定。YAMLでは変更不可）。 |
 | `multi_detection_suppression_range` | float | 10.0 | 過去封鎖位置中心から本距離[m]以内に現在位置が入った場合はカウント0としてスキップ。 |
 
 ## 7. 内部データ構造

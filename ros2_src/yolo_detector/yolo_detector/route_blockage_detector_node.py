@@ -109,6 +109,7 @@ class RouteBlockageDetector(Node):
             self._record_count(detection_time, 0)
             return
 
+        self._maybe_clear_blocked_state(pose)
         if self._suppress_near_blocked_position(pose, detection_time):
             return
 
@@ -211,7 +212,7 @@ class RouteBlockageDetector(Node):
             self.temporary_decision_count += 1
             if previous == 0:
                 self.blocked_state_started_at = self.get_clock().now().nanoseconds / 1e9
-                self._publish_road_blocked(True)
+                self._publish_road_blocked(True, force=True)
                 self.get_logger().info('封鎖を仮判定しました。走行を停止します。')
         else:
             if self.temporary_decision_count > 0:
@@ -333,10 +334,27 @@ class RouteBlockageDetector(Node):
 
         self.count_history.clear()
 
-    def _publish_road_blocked(self, is_blocked: bool) -> None:
-        """状態が変化した場合に road_blocked を Publish する."""
+    def _maybe_clear_blocked_state(self, pose: Pose) -> None:
+        """抑制範囲外に移動した場合に封鎖状態を解除する."""
 
-        if self.road_blocked_state == is_blocked:
+        if not self.road_blocked_state:
+            return
+        if self.temporary_decision_count > 0 or self.blocked_state_started_at is not None:
+            return
+        if self._is_within_blocked_positions(pose):
+            return
+
+        self._publish_road_blocked(False)
+        self.get_logger().info('多重検知抑止範囲を離脱したため road_blocked を解除します。')
+
+    def _publish_road_blocked(self, is_blocked: bool, force: bool = False) -> None:
+        """road_blocked を Publish する.
+
+        同じブール値であっても内部状態の変化（新しい封鎖イベントの開始）に応じて
+        force=True で再通知を行う。force=False の場合は従来どおり状態変化時のみ通知する。
+        """
+
+        if not force and self.road_blocked_state == is_blocked:
             return
 
         self.road_blocked_state = is_blocked

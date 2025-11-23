@@ -466,15 +466,21 @@ class GuiCore:
     def _discover_params(self, profile: NodeLaunchProfile) -> List[str]:
         params: List[str] = []
         search_dirs: List[Path] = []
-        package_name = profile.param_package or profile.package
-        try:
-            share_dir = Path(get_package_share_directory(package_name))
+        package_candidates = []
+        if profile.param_package:
+            package_candidates.append(profile.param_package)
+        if profile.package not in package_candidates:
+            package_candidates.append(profile.package)
+
+        for package_name in package_candidates:
+            try:
+                share_dir = Path(get_package_share_directory(package_name))
+            except Exception:
+                continue
             for sub in ('params', 'config'):
                 candidate = share_dir / sub
                 if candidate.exists():
                     search_dirs.append(candidate)
-        except Exception:
-            pass
         extra_roots = {
             Path(__file__).resolve().parent.parent
             / 'config'
@@ -1117,7 +1123,7 @@ def default_launch_profiles() -> List[NodeLaunchProfile]:
             alternate_launch_file='yolo_with_route_blockage.launch.py',
             launch_toggle_label='yolo_node モード',
             use_alternate_launch=False,
-            param_package='route_blockage_detector',
+            param_package='yolo_detector',
             param_argument='route_param_file',
             simulator_launch_file='camera_simulator_node.launch.py',
         ),

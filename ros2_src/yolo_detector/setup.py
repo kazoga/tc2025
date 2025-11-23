@@ -8,35 +8,34 @@ package_name = 'yolo_detector'
 
 
 def list_data_files(target_dir: str) -> List[Tuple[str, List[str]]]:
-    entries = []
+    """指定ディレクトリ配下のファイルを構造を保ったままインストールする。"""
+
+    data_entries: List[Tuple[str, List[str]]] = []
     for root, _, files in os.walk(target_dir):
         if not files:
             continue
-        install_dir = os.path.join('share', package_name, os.path.relpath(root, '.'))
+
+        rel_path = os.path.relpath(root, '.')
+        install_dir = os.path.join('share', package_name, rel_path)
         src_files = [os.path.join(root, file_name) for file_name in files]
-        entries.append((install_dir, src_files))
-    return entries
+        data_entries.append((install_dir, src_files))
 
+    return data_entries
 
-# modelsディレクトリ内のファイルのみを取得（ディレクトリは除外）
-model_files = [f for f in glob('models/*') if os.path.isfile(f)]
-
-# scriptsディレクトリのファイルも含める
-script_files = glob('scripts/*.py')
 
 data_files = [
     ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
     ('share/' + package_name, ['package.xml']),
 ]
 
-if model_files:
-    data_files.append((os.path.join('share', package_name, 'models'), model_files))
+for subdir in ['models', 'params', 'launch']:
+    if os.path.isdir(subdir):
+        data_files.extend(list_data_files(subdir))
 
+# scriptsディレクトリのファイルも含める
+script_files = glob('scripts/*.py')
 if script_files:
     data_files.append((os.path.join('share', package_name, 'scripts'), script_files))
-
-if os.path.isdir('params'):
-    data_files.extend(list_data_files('params'))
 
 setup(
     name=package_name,

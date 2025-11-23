@@ -81,7 +81,7 @@ ros2 run yolo_detector yolo_node --ros-args \
 ```bash
 ros2 run yolo_detector yolo_node --ros-args \
   -p image_topic:=/usb_cam/image_raw \
-  -p detection_interval:=1.0 \
+  -p detection_interval:=0.5 \
   -p model_path:=/home/nkb/ros2_ws/src/yolo_detector/models/best.pt \
   -p image_size:=256 \
   -p confidence_threshold:=0.5
@@ -94,7 +94,7 @@ ros2 run yolo_detector yolo_node --ros-args \
 - `image_topic` (string, default: "/usb_cam/image_raw")
   - サブスクライブする画像トピック名
 
-- `detection_interval` (double, default: 1.0)
+- `detection_interval` (double, default: 0.5)
   - 推論タイマーの周期（秒）。この間隔で直接推論を実行する。
 
 - `confidence_threshold` (double, default: 0.5)

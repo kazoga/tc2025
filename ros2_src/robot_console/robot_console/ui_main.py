@@ -1009,12 +1009,6 @@ class UiMain:
                     )
                     mode_frame = ttk.Frame(card)
                     mode_frame.grid(row=current_row, column=0, sticky='w', pady=(2, 0))
-                    ttk.Label(mode_frame, text='起動モード').grid(
-                        row=0,
-                        column=0,
-                        sticky='w',
-                        padx=(0, 8),
-                    )
 
                     def _on_change_mode(*_args: object) -> None:
                         self._core.update_launch_file_selection(
@@ -1023,7 +1017,7 @@ class UiMain:
 
                     for column, (label, value) in enumerate(
                         (('yolo_ncnn', 'yolo_ncnn'), ('yolo', 'yolo')),
-                        start=1,
+                        start=0,
                     ):
                         ttk.Radiobutton(
                             mode_frame,

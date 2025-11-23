@@ -107,11 +107,9 @@ class RouteBlockageDetector(Node):
         if pose is None:
             self.get_logger().warn('自己位置が取得できないため検知をスキップします。')
             self._record_count(detection_time, 0)
-            self._evaluate_decision(detection_time, None)
             return
 
-        if self._is_within_blocked_positions(pose):
-            self._record_count(detection_time, 0)
+        if self._suppress_near_blocked_position(pose, detection_time):
             return
 
         valid_count = self._count_valid_detections(msg.detections)
@@ -262,8 +260,8 @@ class RouteBlockageDetector(Node):
             f"x={confirmation_pose.position.x:.2f}, y={confirmation_pose.position.y:.2f}"
         )
 
-        self.temporary_decision_count = 0
-        self.blocked_state_started_at = None
+        self._reset_detection_history()
+        self._reset_temporary_decision_state()
 
     def _lookup_pose(self, stamp: Time) -> Optional[Pose]:
         """TF または最新 amcl_pose から現在位置を取得する."""
@@ -279,11 +277,25 @@ class RouteBlockageDetector(Node):
             pose.orientation = transform.transform.rotation
             return pose
         except TransformException:
-            pass
+            if self.latest_amcl_pose is not None:
+                self.get_logger().warn(
+                    '指定時刻で TF を取得できなかったため最新の /amcl_pose を使用します。'
+                )
+                return self._copy_pose(self.latest_amcl_pose)
 
-        if self.latest_amcl_pose is not None:
-            self.get_logger().warn('TF 取得に失敗したため最新の /amcl_pose を使用します。')
-            return self._copy_pose(self.latest_amcl_pose)
+            try:
+                transform = self.tf_buffer.lookup_transform('map', 'base_link', Time())
+                pose = Pose()
+                pose.position.x = transform.transform.translation.x
+                pose.position.y = transform.transform.translation.y
+                pose.position.z = transform.transform.translation.z
+                pose.orientation = transform.transform.rotation
+                self.get_logger().warn(
+                    '指定時刻および最新の /amcl_pose を取得できなかったため最新の TF を使用します。'
+                )
+                return pose
+            except TransformException:
+                pass
 
         return None
 
@@ -298,6 +310,28 @@ class RouteBlockageDetector(Node):
             if distance < self.multi_detection_suppression_range:
                 return True
         return False
+
+    def _suppress_near_blocked_position(self, pose: Pose, stamp: Time) -> bool:
+        """確定済み封鎖地点近傍での多重検知を抑制する."""
+
+        if not self._is_within_blocked_positions(pose):
+            return False
+
+        self._record_count(stamp, 0)
+        self._reset_detection_history()
+        self._reset_temporary_decision_state()
+        return True
+
+    def _reset_temporary_decision_state(self) -> None:
+        """仮判定関連の状態を初期化する."""
+
+        self.temporary_decision_count = 0
+        self.blocked_state_started_at = None
+
+    def _reset_detection_history(self) -> None:
+        """検知履歴をリセットする."""
+
+        self.count_history.clear()
 
     def _publish_road_blocked(self, is_blocked: bool) -> None:
         """状態が変化した場合に road_blocked を Publish する."""

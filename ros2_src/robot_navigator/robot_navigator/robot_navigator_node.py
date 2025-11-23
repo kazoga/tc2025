@@ -159,6 +159,7 @@ class RobotNavigator(Node):
         self._road_block_stop_until: Optional[float] = None
         self._road_block_goal_sequence: Optional[int] = None
         self._road_block_release_candidate_sequence: Optional[int] = None
+        self._road_block_release_by_false: bool = False
         self.current_route_version: Optional[int] = None
         self._road_block_route_version: Optional[int] = None
         self._road_block_release_candidate_route_version: Optional[int] = None
@@ -314,6 +315,7 @@ class RobotNavigator(Node):
             self._road_block_stop_until = now + self.road_block_hold_sec
             self._road_block_goal_sequence = self._goal_sequence
             self._road_block_release_candidate_sequence = None
+            self._road_block_release_by_false = False
             self._road_block_route_version = self.current_route_version
             self._road_block_release_candidate_route_version = None
             self._road_block_goal_stamp = self._last_goal_stamp
@@ -323,8 +325,17 @@ class RobotNavigator(Node):
             )
         else:
             if self._road_block_active:
+                hold_until = now + self.road_block_hold_sec
+                if self._road_block_stop_until is None:
+                    self._road_block_stop_until = hold_until
+                else:
+                    self._road_block_stop_until = max(self._road_block_stop_until, hold_until)
+                self._road_block_release_candidate_sequence = self._goal_sequence
+                self._road_block_release_candidate_route_version = self.current_route_version
+                self._road_block_release_candidate_stamp = self._last_goal_stamp
+                self._road_block_release_by_false = True
                 self.get_logger().info(
-                    'road_blocked=False を受信しました。停止解除条件の達成を待ちます。',
+                    'road_blocked=False を受信しました。停止解除条件の再評価を待ちます。',
                 )
             else:
                 self.get_logger().info(
@@ -471,6 +482,8 @@ class RobotNavigator(Node):
         """active_target の更新により解除条件が満たされたか判定する。"""
         if self._road_block_release_candidate_stamp is None:
             return False
+        if self._road_block_release_by_false:
+            return True
         if (
             self._road_block_goal_stamp is not None
             and self._road_block_release_candidate_stamp == self._road_block_goal_stamp
@@ -494,6 +507,7 @@ class RobotNavigator(Node):
         self._road_block_stop_until = None
         self._road_block_goal_sequence = None
         self._road_block_release_candidate_sequence = None
+        self._road_block_release_by_false = False
         self._road_block_route_version = None
         self._road_block_release_candidate_route_version = None
         self._road_block_goal_stamp = None

@@ -15,6 +15,7 @@ route_blockage_detector ノードは YOLO 推論結果と自己位置を入力�
 - 検知開始から `confirmation_duration` 秒経過前に封鎖検知が途切れた場合、`road_blocked` を false で publish し、robot_navigator が走行を再開する（誤検知扱い）。
 - 検知が `confirmation_duration` を超えて継続した場合は封鎖を確定し、封鎖位置を `blocked_positions` に追加する。`road_blocked` は true のまま維持し、ロボットは停止を継続する。
 - 封鎖確定後、`route_follower` 側で `stagnation_duration_sec` が経過すると滞留と判定され、`report_stuck` を `route_manager` に要求する。`route_manager` はリルートを実施し、封鎖を回避した経路で走行を再開する。
+- 検知が取り消され `road_blocked=false` を publish した場合、robot_navigator は hold 時間経過後に解除候補として取り込むため、誤検知時に自動で走行再開できる。
 
 ## 4. ノードの役割・責務
 | 区分 | 内容 |

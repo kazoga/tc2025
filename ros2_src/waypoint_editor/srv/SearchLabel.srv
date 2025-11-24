@@ -1,0 +1,14 @@
+int32 label
+---
+bool success
+string message
+float64 x
+float64 y
+float64 z
+float64 yaw
+float64 right_is_open
+float64 left_is_open
+int32 line_is_stop
+int32 signal_is_stop
+int32 isnot_skipnum
+float64 node

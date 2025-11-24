@@ -1,0 +1,6 @@
+int32 label
+float64 shift_x
+float64 shift_y
+---
+bool success
+string message

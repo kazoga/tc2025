@@ -142,6 +142,7 @@ class NodeLaunchManager:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                **self._build_popen_options(),
             )
             self._processes[profile.profile_id] = process
             self._status_callback(profile.profile_id, NodeLaunchStatus.RUNNING, process.pid, None)
@@ -166,6 +167,7 @@ class NodeLaunchManager:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                **self._build_popen_options(),
             )
             with self._lock:
                 self._sim_processes[profile.profile_id] = sim_process
@@ -223,21 +225,57 @@ class NodeLaunchManager:
 
         if process.poll() is not None:
             return
+        self._send_signal(process, signal.SIGINT)
+        if self._wait_process(process, timeout=5.0):
+            return
+        self._send_signal(process, signal.SIGTERM)
+        if self._wait_process(process, timeout=3.0):
+            return
+        self._send_signal(process, signal.SIGKILL)
+        self._wait_process(process, timeout=1.0, suppress_timeout=True)
+
+    def _build_popen_options(self) -> Dict[str, object]:
+        """サブプロセス起動時のオプションを構築する。"""
+
+        options: Dict[str, object] = {}
+        if os.name == 'nt':
+            options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            options['preexec_fn'] = os.setsid
+        return options
+
+    def _send_signal(self, process: subprocess.Popen[str], sig: signal.Signals) -> None:
+        """プロセスグループにシグナルを送信し、失敗時は個別プロセスに送る。"""
+
+        if process.poll() is not None:
+            return
+        if os.name != 'nt':
+            try:
+                os.killpg(os.getpgid(process.pid), sig)
+                return
+            except (ProcessLookupError, PermissionError, AttributeError, OSError):
+                pass
         try:
-            process.send_signal(signal.SIGINT)
+            process.send_signal(sig)
         except (ProcessLookupError, AttributeError, ValueError):
-            process.terminate()
+            try:
+                process.terminate()
+            except (ProcessLookupError, AttributeError, ValueError):
+                return
+
+    @staticmethod
+    def _wait_process(
+        process: subprocess.Popen[str], timeout: float, suppress_timeout: bool = False
+    ) -> bool:
+        """指定時間でプロセス終了を待ち、終了したら True を返す。"""
+
         try:
-            process.wait(timeout=5.0)
-            return
+            process.wait(timeout=timeout)
+            return True
         except subprocess.TimeoutExpired:
-            process.terminate()
-        try:
-            process.wait(timeout=3.0)
-            return
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=1.0)
+            if suppress_timeout:
+                return False
+            return False
 
     def _start_reader_threads(self, profile_id: str, process: subprocess.Popen[str]) -> None:
         """stdout/stderr を読み取るスレッドを起動する。"""

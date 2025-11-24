@@ -9,6 +9,9 @@ def generate_launch_description() -> LaunchDescription:
     pkg_share = FindPackageShare('yolo_detector')
     default_param = PathJoinSubstitution([pkg_share, 'params', 'route_blockage_detector.yaml'])
 
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time', default_value='true', description='シミュレーション時間の利用有無'
+    )
     param_file_arg = DeclareLaunchArgument(
         'param_file',
         default_value=default_param,
@@ -20,7 +23,10 @@ def generate_launch_description() -> LaunchDescription:
         executable='route_blockage_detector',
         name='route_blockage_detector',
         output='screen',
-        parameters=[LaunchConfiguration('param_file')],
+        parameters=[
+            LaunchConfiguration('param_file'),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
     )
 
-    return LaunchDescription([param_file_arg, route_blockage_node])
+    return LaunchDescription([use_sim_time_arg, param_file_arg, route_blockage_node])

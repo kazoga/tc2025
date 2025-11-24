@@ -9,6 +9,9 @@ def generate_launch_description() -> LaunchDescription:
     pkg_share = FindPackageShare('yolo_detector')
     default_route_param = PathJoinSubstitution([pkg_share, 'params', 'route_blockage_detector.yaml'])
 
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time', default_value='true', description='シミュレーション時間の利用有無'
+    )
     image_topic_arg = DeclareLaunchArgument(
         'image_topic', default_value='/usb_cam/image_raw', description='購読する画像トピック'
     )
@@ -44,6 +47,7 @@ def generate_launch_description() -> LaunchDescription:
                 'detection_interval': LaunchConfiguration('detection_interval'),
                 'image_size': LaunchConfiguration('image_size'),
                 'confidence_threshold': LaunchConfiguration('confidence_threshold'),
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
             }
         ],
     )
@@ -53,11 +57,15 @@ def generate_launch_description() -> LaunchDescription:
         executable='route_blockage_detector',
         name='route_blockage_detector',
         output='screen',
-        parameters=[LaunchConfiguration('route_param_file')],
+        parameters=[
+            LaunchConfiguration('route_param_file'),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
     )
 
     return LaunchDescription(
         [
+            use_sim_time_arg,
             image_topic_arg,
             model_path_arg,
             detection_interval_arg,

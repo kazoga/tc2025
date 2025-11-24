@@ -154,6 +154,8 @@ ros2 run yolo_detector route_blockage_detector --ros-args \
 検出時に参照する閾値がまとめられています。利用環境に合わせて値を変更してください。
 封鎖確定に必要な継続時間は `route_follower` の `stagnation_duration_sec` と整合を取るため、
 ノード内に固定しており YAML では変更できません。
+シミュレーションや rosbag 再生で利用する場合は、`use_sim_time:=true` を指定するか、
+同梱の launch ファイルを使用すると時間軸の不整合による TF 取得失敗を避けられます。
 
 ## 出力例
 

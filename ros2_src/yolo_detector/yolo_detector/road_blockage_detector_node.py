@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""route_blockage_detector ノードの実装モジュール."""
+"""road_blockage_detector ノードの実装モジュール."""
 
 from collections import deque
 import math
@@ -14,11 +14,11 @@ from std_msgs.msg import Bool
 from vision_msgs.msg import Detection2D, Detection2DArray
 
 
-class RouteBlockageDetector(Node):
+class RoadBlockageDetector(Node):
     """YOLO 検知結果から経路封鎖を判定するノード."""
 
     def __init__(self) -> None:
-        super().__init__('route_blockage_detector')
+        super().__init__('road_blockage_detector')
 
         self._declare_parameters()
         self._load_parameters()
@@ -46,7 +46,7 @@ class RouteBlockageDetector(Node):
         )
         self.road_blocked_publisher = self.create_publisher(Bool, '/road_blocked', 10)
 
-        self.get_logger().info('route_blockage_detector を起動しました。')
+        self.get_logger().info('road_blockage_detector を起動しました。')
 
     def _declare_parameters(self) -> None:
         """ノードが使用するパラメータを宣言する."""
@@ -356,7 +356,7 @@ class RouteBlockageDetector(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
 
-    node = RouteBlockageDetector()
+    node = RoadBlockageDetector()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

@@ -6,7 +6,7 @@ route_blockage_detector ノードは YOLO 推論結果と自己位置を入力�
 
 ## 2. 背景と前提条件
 - YOLO 推論結果は yolo_detector パッケージが `vision_msgs/msg/Detection2DArray` として publish 済みである。
-- ノードは TF2 を通して `map -> base_link` の変換を `amcl_pose` として取得できる。失敗時は最新の `/amcl_pose` subscribe 値を利用する。
+- ノードは `/amcl_pose` を唯一の自己位置情報として使用し、TF2 には依存しない。
 - 画像オーバーレイ描画と `/yolo_detector/image_raw` publish 要件は削除済みのため、本ノードでは行わない。
 - 過去の経路封鎖位置はノード内メモリで累積保持すればよい。永続化要件は無し。
 
@@ -24,23 +24,24 @@ route_blockage_detector ノードは YOLO 推論結果と自己位置を入力�
 | 責務1 | 検知パラメータ（クラス ID・スコア・バウンディングボックス閾値）に基づくフィルタリング処理を実装する。 |
 | 責務2 | 判定期間内のカウント履歴から封鎖確率を評価し、`road_blocked` Bool を publish する。 |
 | 責務3 | 確定封鎖とみなした自己位置を履歴として保持し、再侵入時の多重検知抑止を行う。 |
-| 責務4 | TF 取得失敗時のフォールバック（最新 `/amcl_pose`）や想定外値の入力に対する警告ログを出力する。 |
+| 責務4 | `/amcl_pose` が取得できない場合や Detection と `/amcl_pose` の時刻差が大きい場合に警告ログを出力する。 |
 
 ## 5. 外部 I/F
 ### 5.1 サブスクライブ
 | トピック | 型 | QoS | 用途 |
 | -------- | -- | --- | ---- |
 | `/yolo_detector/detections` | `vision_msgs/msg/Detection2DArray` | SensorData | YOLO 推論結果受信。 |
-| `/amcl_pose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | Default | 最新の自己位置キャッシュ（TF 失敗時に使用）。 |
+| `/amcl_pose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | Default | 最新の自己位置キャッシュ。Detection 時刻との差も確認する。 |
 
 ### 5.2 Publish
 | トピック | 型 | QoS | 条件 |
 | -------- | -- | --- | ---- |
 | `/road_blocked` | `std_msgs/msg/Bool` | Default | 仮判定状態遷移時（false→true、true→false）にのみ publish し、robot_navigator へ通知する。 |
 
-### 5.3 TF2 参照
-- `lookup_transform('map', 'base_link', time=header.stamp)` を利用し、Detection ヘッダー時刻基準で自己位置を取得する。
-- 失敗時は警告を出しつつ最新 `/amcl_pose` を使用する。最新値も無い場合は検知処理をスキップ。
+### 5.3 自己位置取得
+- `/amcl_pose` を subscribe し、メッセージヘッダーの時刻を含めてキャッシュする。
+- Detection2DArray のヘッダー時刻と最新の `/amcl_pose` ヘッダー時刻に 3 秒以上の差がある場合は警告を出すが、処理自体は続行する。
+- 最新 `/amcl_pose` が未取得の場合は警告を出して検知処理をスキップする。
 
 ## 6. パラメータ仕様
 | 名称 | 型 | 既定値 | 説明 |
@@ -63,19 +64,20 @@ route_blockage_detector ノードは YOLO 推論結果と自己位置を入力�
 | `count_history` | `collections.deque[tuple[float, int]]` | 「秒単位バケットの開始時刻（float, ROS time 秒）」と、その1秒間に記録した判定カウントの合計を保持。`decision_duration` 秒を超えた古いバケットは随時削除する。検知周期に依存せず秒単位のスライディングウィンドウを構成する。 |
 | `last_detection_time` | `builtin_interfaces/msg/Time` | 最後に `detections` を処理した時刻。間引きや欠損検出に利用。 |
 | `temporary_decision_count` | int | 仮判定カウント。秒バケット割合に応じて加算／リセット。 |
-| `blocked_positions` | `list[geometry_msgs.msg.Pose]` | 確定封鎖と判断した際の `map` 座標（TF 取得結果）。多重検知抑止に使用。 |
+| `blocked_positions` | `list[geometry_msgs.msg.Pose]` | 確定封鎖と判断した際の `map` 座標（`/amcl_pose` 基準）。多重検知抑止に使用。 |
 | `latest_amcl_pose` | `Pose` | `/amcl_pose` からの最新値キャッシュ。 |
+| `latest_amcl_time` | `rclpy.time.Time` | `/amcl_pose` メッセージヘッダーの時刻。Detection のヘッダー時刻との乖離チェックに利用。 |
 | `blocked_state_started_at` | float | road_blocked=true に遷移した ROS 時刻 (秒)。経過時間で確定判定。 |
 
 ## 8. 処理フロー
 1. **起動処理**
    - パラメータ宣言・取得。
-   - サブスクライバ／パブリッシャ／TF2 バッファを生成。
+   - サブスクライバ／パブリッシャを生成。
    - 判定期間から秒単位バケットの上限幅を決定し、deque を初期化。
    - ロガーで起動を通知。
 
 2. **検知メッセージ受信 (`Detection2DArray` コールバック)**
-   1. メッセージヘッダー時刻で TF から `map` 上の pose を取得。失敗時は最新 `/amcl_pose` を利用。どちらも無ければ処理終了。
+   1. 最新の `/amcl_pose` を取得できていない場合は警告を出して処理を終了。取得済みの場合はヘッダー時刻差を確認し、3 秒以上ずれていれば警告を出す。
    2. `blocked_positions` と比較し、現在位置がいずれかの確定封鎖地点から `multi_detection_suppression_range` 未満なら、`count_history` へ 0 を push し残処理をスキップ。
    3. 各 `Detection2D` について以下を実施：
       - `results` を走査し、最大スコアクラスを決定。
@@ -95,19 +97,19 @@ route_blockage_detector ノードは YOLO 推論結果と自己位置を入力�
 
 4. **封鎖確定処理**
    - `temporary_decision_count > 0` かつ `blocked_state_started_at` が設定済みの場合に経過時間をチェック。
-   - `now - blocked_state_started_at >= confirmation_duration` なら、最新 TF から取得した pose を `blocked_positions` に追加し、仮判定カウントを 0 にクリア、`blocked_state_started_at` も None に戻す。road_blocked は true のまま維持し、以降は `route_follower` の滞留判定と `route_manager` のリルート処理により走行再開が行われる。
+   - `now - blocked_state_started_at >= confirmation_duration` なら、最新 `/amcl_pose` から取得した pose を `blocked_positions` に追加し、仮判定カウントを 0 にクリア、`blocked_state_started_at` も None に戻す。road_blocked は true のまま維持し、以降は `route_follower` の滞留判定と `route_manager` のリルート処理により走行再開が行われる。
 
 ## 9. ロギング方針
 | レベル | タイミング |
 | ------ | ---------- |
 | info | ノード起動、road_blocked true/false への遷移、封鎖確定時（位置情報含む）。 |
-| warn | TF 取得失敗時（フォールバック使用）、検知メッセージが連続で欠損した場合。 |
+| warn | `/amcl_pose` 未取得時、Detection と `/amcl_pose` の時刻差が 3 秒以上ある場合、検知メッセージが連続で欠損した場合。 |
 | debug | フィルタ後の検知数、割合計算結果、履歴長などの内部状態（パラメータでオンオフ可）。 |
 
 ## 10. エラー／例外ハンドリング
 - `Detection2DArray` に要素が無い場合でも `count_history` へ 0 を push し、割合計算を継続する。
-- TF2 ルックアップが連続して失敗し `/amcl_pose` も未取得の場合は処理をスキップし、警告ログを出力する。回復後は通常処理へ復帰する。
-- メッセージヘッダー時刻が `TF2Exception` を引き起こした場合は `rclpy.time.Time()`（最新）を指定してリトライする。
+- `/amcl_pose` が未取得の場合は処理をスキップし、警告ログを出力する。回復後は通常処理へ復帰する。
+- Detection のヘッダー時刻と `/amcl_pose` のヘッダー時刻の差が大きい場合は警告のみを出し、処理は継続する。
 
 ## 11. 今後の検討事項
 - road_blocked publish の QoS（信頼性・一回送信）を要件に応じて調整する。

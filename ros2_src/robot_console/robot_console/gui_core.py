@@ -214,7 +214,9 @@ class NodeLaunchManager:
 
         with self._lock:
             self._cleanup_finished_process_locked()
-            return profile_id in self._processes
+            if profile_id in self._processes:
+                return True
+            return profile_id in self._sim_processes
 
     def _terminate_process(self, process: subprocess.Popen[str]) -> None:
         """プロセスに対し SIGINT → SIGTERM → SIGKILL の順で停止要求を行う。"""

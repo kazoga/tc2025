@@ -9,11 +9,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from rclpy.time import Time
-from geometry_msgs.msg import Pose, PoseWithCovarianceStamped, TransformStamped
+from geometry_msgs.msg import Pose, PoseWithCovarianceStamped
 from std_msgs.msg import Bool
 from vision_msgs.msg import Detection2D, Detection2DArray
-import tf2_ros
-from tf2_ros import TransformException
 
 
 class RouteBlockageDetector(Node):
@@ -27,6 +25,7 @@ class RouteBlockageDetector(Node):
 
         self.count_history: Deque[Tuple[int, int]] = deque()
         self.latest_amcl_pose: Optional[Pose] = None
+        self.latest_amcl_time: Optional[Time] = None
         self.blocked_positions: List[Pose] = []
         self.temporary_decision_count = 0
         self.blocked_state_started_at: Optional[float] = None
@@ -46,9 +45,6 @@ class RouteBlockageDetector(Node):
             10,
         )
         self.road_blocked_publisher = self.create_publisher(Bool, '/road_blocked', 10)
-
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.get_logger().info('route_blockage_detector を起動しました。')
 
@@ -98,6 +94,7 @@ class RouteBlockageDetector(Node):
         """最新の amcl_pose をキャッシュする."""
 
         self.latest_amcl_pose = msg.pose.pose
+        self.latest_amcl_time = Time.from_msg(msg.header.stamp)
 
     def _detections_callback(self, msg: Detection2DArray) -> None:
         """Detection2DArray を受信し、判定処理を行う."""
@@ -250,7 +247,8 @@ class RouteBlockageDetector(Node):
         if now_sec - self.blocked_state_started_at < self.confirmation_duration:
             return
 
-        confirmation_pose = pose or self._lookup_pose(Time())
+        target_stamp = self.latest_amcl_time or Time()
+        confirmation_pose = pose or self._lookup_pose(target_stamp)
         if confirmation_pose is None:
             self.get_logger().warn('封鎖確定時に自己位置を取得できませんでした。記録をスキップします。')
             return
@@ -265,40 +263,18 @@ class RouteBlockageDetector(Node):
         self._reset_temporary_decision_state()
 
     def _lookup_pose(self, stamp: Time) -> Optional[Pose]:
-        """TF または最新 amcl_pose から現在位置を取得する."""
+        """最新の amcl_pose から現在位置を取得する."""
 
-        try:
-            transform: TransformStamped = self.tf_buffer.lookup_transform(
-                'map', 'base_link', stamp
+        if self.latest_amcl_pose is None or self.latest_amcl_time is None:
+            return None
+
+        time_diff_sec = abs(self.latest_amcl_time.nanoseconds - stamp.nanoseconds) / 1e9
+        if time_diff_sec >= 3.0:
+            self.get_logger().warn(
+                'Detection と /amcl_pose のタイムスタンプに3秒以上の差があります。'
             )
-            pose = Pose()
-            pose.position.x = transform.transform.translation.x
-            pose.position.y = transform.transform.translation.y
-            pose.position.z = transform.transform.translation.z
-            pose.orientation = transform.transform.rotation
-            return pose
-        except TransformException:
-            if self.latest_amcl_pose is not None:
-                #self.get_logger().warn(
-                #    '指定時刻で TF を取得できなかったため最新の /amcl_pose を使用します。'
-                #)
-                return self._copy_pose(self.latest_amcl_pose)
 
-            try:
-                transform = self.tf_buffer.lookup_transform('map', 'base_link', Time())
-                pose = Pose()
-                pose.position.x = transform.transform.translation.x
-                pose.position.y = transform.transform.translation.y
-                pose.position.z = transform.transform.translation.z
-                pose.orientation = transform.transform.rotation
-                self.get_logger().warn(
-                    '指定時刻および最新の /amcl_pose を取得できなかったため最新の TF を使用します。'
-                )
-                return pose
-            except TransformException:
-                pass
-
-        return None
+        return self._copy_pose(self.latest_amcl_pose)
 
     def _is_within_blocked_positions(self, pose: Pose) -> bool:
         """過去の封鎖位置近傍にいるかを判定する."""

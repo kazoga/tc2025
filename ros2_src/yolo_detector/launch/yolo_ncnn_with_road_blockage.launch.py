@@ -7,7 +7,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     pkg_share = FindPackageShare('yolo_detector')
-    default_route_param = PathJoinSubstitution([pkg_share, 'params', 'route_blockage_detector.yaml'])
+    default_route_param = PathJoinSubstitution([pkg_share, 'params', 'road_blockage_detector.yaml'])
 
     image_topic_arg = DeclareLaunchArgument(
         'image_topic', default_value='/usb_cam/image_raw', description='購読する画像トピック'
@@ -28,7 +28,7 @@ def generate_launch_description() -> LaunchDescription:
     route_param_file_arg = DeclareLaunchArgument(
         'route_param_file',
         default_value=default_route_param,
-        description='route_blockage_detectorのパラメータファイル',
+        description='road_blockage_detectorのパラメータファイル',
     )
 
     yolo_ncnn_node = Node(
@@ -46,10 +46,10 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    route_blockage_node = Node(
+    road_blockage_node = Node(
         package='yolo_detector',
-        executable='route_blockage_detector',
-        name='route_blockage_detector',
+        executable='road_blockage_detector',
+        name='road_blockage_detector',
         output='screen',
         parameters=[LaunchConfiguration('route_param_file')],
     )
@@ -62,6 +62,6 @@ def generate_launch_description() -> LaunchDescription:
             confidence_threshold_arg,
             route_param_file_arg,
             yolo_ncnn_node,
-            route_blockage_node,
+            road_blockage_node,
         ]
     )

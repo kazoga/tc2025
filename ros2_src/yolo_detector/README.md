@@ -140,17 +140,17 @@ ros2 run yolo_detector camera_simulator_node --ros-args \
 - `frame_ratio` (double, default: 10.0)
   - 画像をpublishするレート(Hz)。
 
-### 方法4: route_blockage_detectorノードで経路封鎖を検知
+### 方法4: road_blockage_detectorノードで経路封鎖を検知
 
-YOLOの検出結果から経路封鎖看板を検知する`route_blockage_detector`は、他パッケージと同様に
+YOLOの検出結果から経路封鎖看板を検知する`road_blockage_detector`は、他パッケージと同様に
 YAMLパラメータファイルで設定できるようになりました。インストール後は以下のコマンドで起動できます。
 
 ```bash
-ros2 run yolo_detector route_blockage_detector --ros-args \
-  --params-file $(ros2 pkg prefix yolo_detector)/share/yolo_detector/params/route_blockage_detector.yaml
+ros2 run yolo_detector road_blockage_detector --ros-args \
+  --params-file $(ros2 pkg prefix yolo_detector)/share/yolo_detector/params/road_blockage_detector.yaml
 ```
 
-`params/route_blockage_detector.yaml` にはクラスID、スコア閾値、バウンディングボックスの範囲など、
+`params/road_blockage_detector.yaml` にはクラスID、スコア閾値、バウンディングボックスの範囲など、
 検出時に参照する閾値がまとめられています。利用環境に合わせて値を変更してください。
 封鎖確定に必要な継続時間は `route_follower` の `stagnation_duration_sec` と整合を取るため、
 ノード内に固定しており YAML では変更できません。

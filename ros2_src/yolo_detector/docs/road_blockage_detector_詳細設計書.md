@@ -1,8 +1,8 @@
 # 日本語文書
-# route_blockage_detector 詳細設計書
+# road_blockage_detector 詳細設計書
 
 ## 1. 目的とスコープ
-route_blockage_detector ノードは YOLO 推論結果と自己位置を入力として、経路封鎖看板の有無と封鎖位置を判定する。判定結果は robot_navigator を経由してロボット動作（停止／再開）へ反映される。本設計書ではノードの責務、I/F、内部処理、保持データ構造、異常時動作を定義する。
+road_blockage_detector ノードは YOLO 推論結果と自己位置を入力として、経路封鎖看板の有無と封鎖位置を判定する。判定結果は robot_navigator を経由してロボット動作（停止／再開）へ反映される。本設計書ではノードの責務、I/F、内部処理、保持データ構造、異常時動作を定義する。
 
 ## 2. 背景と前提条件
 - YOLO 推論結果は yolo_detector パッケージが `vision_msgs/msg/Detection2DArray` として publish 済みである。

@@ -1,0 +1,9 @@
+int32 label
+float64 right_is_open
+float64 left_is_open
+int32 line_is_stop
+int32 signal_is_stop
+int32 isnot_skipnum
+---
+bool success
+string message

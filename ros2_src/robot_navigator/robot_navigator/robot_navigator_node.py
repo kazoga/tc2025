@@ -762,10 +762,23 @@ class RobotNavigator(Node):
         marker.lifetime = Duration(seconds=0.0).to_msg()
         self.marker_pub.publish(marker)
 
+    def publish_stop_command(self) -> None:
+        """終了時に停止指令を送出し、再起動時の安全性を高める。"""
+        stop_twist = Twist()
+        stop_twist.linear.x = 0.0
+        stop_twist.linear.y = 0.0
+        stop_twist.linear.z = 0.0
+        stop_twist.angular.x = 0.0
+        stop_twist.angular.y = 0.0
+        stop_twist.angular.z = 0.0
+        self.get_logger().info('終了処理として cmd_vel に速度ゼロを publish します。')
+        self.cmd_pub.publish(stop_twist)
+
     # -------------------- 終了処理 --------------------
     def destroy_node(self) -> bool:
-        """ノード破棄時にログファイルをクローズする。"""
+        """ノード破棄時に停止指令を送り、ログファイルをクローズする。"""
         try:
+            self.publish_stop_command()
             if hasattr(self, '_log_fp') and self._log_fp:
                 self._log_fp.close()
         except Exception:

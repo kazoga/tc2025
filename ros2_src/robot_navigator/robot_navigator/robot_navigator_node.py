@@ -34,7 +34,7 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose, Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Float32
 from route_msgs.msg import ObstacleAvoidanceHint, Route
 from visualization_msgs.msg import Marker
 
@@ -170,6 +170,14 @@ class RobotNavigator(Node):
         self._within_goal_pos_tolerance: bool = False
         # 目標角度の許容範囲へ入ったことを保持するフラグ。
         self._within_goal_ang_tolerance: bool = False
+        # 走行距離/時間計測用の状態。
+        self._prev_odom_pose: Optional[Pose] = None
+        self._prev_odom_stamp: Optional[float] = None
+        self._last_travel_time_stamp: Optional[float] = None
+        self._travel_distance_m: float = 0.0
+        self._travel_time_sec: float = 0.0
+        self._travel_started: bool = False
+        self._odom_speed_outlier_scale: float = 1.5
 
         # --- Publisher/Subscriber の設定 ---
         # /cmd_vel は Reliable/Volatile で十分
@@ -179,6 +187,12 @@ class RobotNavigator(Node):
             depth=10,
         )
         self.cmd_pub = self.create_publisher(Twist, cmd_vel_topic, pub_qos)
+        self.travel_time_pub = self.create_publisher(
+            Float32, '/robot_navigator/travel_time', 10
+        )
+        self.travel_distance_pub = self.create_publisher(
+            Float32, '/robot_navigator/travel_distance', 10
+        )
 
         # Marker は 1 深度で十分
         marker_qos = QoSProfile(
@@ -262,8 +276,48 @@ class RobotNavigator(Node):
 
     # -------------------- コールバック群 --------------------
     def on_odom(self, msg: Odometry) -> None:
-        """/odom から現在速度を保持する。"""
+        """/odom から現在速度を保持し、走行距離と走行時間を更新する。"""
         self.current_velocity = msg.twist.twist
+
+        stamp = msg.header.stamp
+        stamp_sec = float(getattr(stamp, 'sec', 0)) + float(
+            getattr(stamp, 'nanosec', 0)
+        ) * 1.0e-9
+
+        if self._prev_odom_pose is not None and self._prev_odom_stamp is not None:
+            delta_time = stamp_sec - self._prev_odom_stamp
+            if delta_time > 0.0:
+                dx = msg.pose.pose.position.x - self._prev_odom_pose.position.x
+                dy = msg.pose.pose.position.y - self._prev_odom_pose.position.y
+                distance = math.hypot(dx, dy)
+                estimated_speed = distance / delta_time if delta_time > 0.0 else 0.0
+                max_speed_threshold = self.max_v * self._odom_speed_outlier_scale
+
+                if estimated_speed <= max_speed_threshold:
+                    self._travel_distance_m += distance
+                else:
+                    self.get_logger().warn(
+                        '走行距離計測をスキップ: 推定速度が上限を超過しました。',
+                        throttle_duration_sec=1.0,
+                    )
+
+                if self._travel_started:
+                    if self._last_travel_time_stamp is not None:
+                        self._travel_time_sec += delta_time
+                    self._last_travel_time_stamp = stamp_sec
+            else:
+                self.get_logger().warn(
+                    '走行距離/時間計測をスキップ: odomの時間差が非正です。',
+                    throttle_duration_sec=1.0,
+                )
+        elif self._travel_started:
+            self._last_travel_time_stamp = stamp_sec
+
+        self._prev_odom_pose = msg.pose.pose
+        self._prev_odom_stamp = stamp_sec
+
+        self.travel_distance_pub.publish(Float32(data=float(self._travel_distance_m)))
+        self.travel_time_pub.publish(Float32(data=float(self._travel_time_sec)))
 
     def on_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
         """/amcl_pose から現在姿勢（Pose）を保持する。"""
@@ -416,6 +470,11 @@ class RobotNavigator(Node):
             current_velocity=self.current_velocity,
             target_pose=self.current_goal,
         )
+
+        if not self._travel_started and abs(cmd_vel.linear.x) > 0.0:
+            self._travel_started = True
+            self._last_travel_time_stamp = None
+            self.get_logger().info('走行計測を開始します。')
 
         # 指令を発行
         self.cmd_pub.publish(cmd_vel)

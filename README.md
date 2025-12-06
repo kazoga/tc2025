@@ -45,3 +45,10 @@ ros2 run <パッケージ名> <ノード名>
 ```
 
 パッケージや各種設定ファイル、スクリプトは今後 `tc2025` / `tc2025_ros2` 配下に追加していきます。
+
+### robot_navigator ノードで確認できるトピック
+
+`ros2 run robot_navigator robot_navigator` で起動すると、走行距離と走行時間を以下のトピックへ Float32 で配信します。
+
+* `/robot_navigator/travel_distance`: ノード起動後の走行距離[m]。異常な速度が検出された区間は積算から除外されます。
+* `/robot_navigator/travel_time`: 走行時間[sec]。cmd_velの線速度が初めて0を超えた瞬間から odometry 間隔を積算。

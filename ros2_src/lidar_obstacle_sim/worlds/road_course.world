@@ -43,7 +43,7 @@
     <!-- Left turn road: along +y direction -->
     <model name="road_segment_2">
       <static>true</static>
-      <!-- Centered at (50,25) and rotated 90deg to connect end-to-end -->
+      <!-- Centered near (50,25) and rotated 90deg -->
       <pose>50 25 0 0 0 1.5708</pose>
       <link name="link">
         <collision name="collision">

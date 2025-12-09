@@ -12,6 +12,7 @@ from typing import List, Tuple
 import rclpy
 from gazebo_msgs.srv import SpawnEntity
 from geometry_msgs.msg import Pose
+from rclpy.logging import get_logger
 from rclpy.node import Node
 
 
@@ -27,6 +28,9 @@ class RandomPylonSpawner(Node):
         self.declare_parameter('x_min', 5.0)
         self.declare_parameter('x_max', 35.0)
         self.declare_parameter('y_center', 0.0)
+        self.declare_parameter('spawn_service', '/spawn_entity')
+        self.declare_parameter('service_wait_timeout', 60.0)
+        self.declare_parameter('service_wait_interval', 1.0)
 
         model_path = self.get_parameter('model_path').get_parameter_value().string_value
         if not model_path or not os.path.exists(model_path):
@@ -34,11 +38,24 @@ class RandomPylonSpawner(Node):
         else:
             self.get_logger().info(f'Using pylon model: {model_path}')
 
-        self.client = self.create_client(SpawnEntity, '/spawn_entity')
-        if not self.client.wait_for_service(timeout_sec=10.0):
-            self.get_logger().error('/spawn_entity service not available.')
-            rclpy.shutdown()
-            return
+        spawn_service = self.get_parameter('spawn_service').get_parameter_value().string_value
+        wait_timeout = self.get_parameter('service_wait_timeout').get_parameter_value().double_value
+        wait_interval = (
+            self.get_parameter('service_wait_interval').get_parameter_value().double_value
+        )
+
+        self.client = self.create_client(SpawnEntity, spawn_service)
+        elapsed = 0.0
+        while not self.client.wait_for_service(timeout_sec=wait_interval):
+            elapsed += wait_interval
+            self.get_logger().warn(
+                f'{spawn_service} が利用不可のため待機中... '
+                f'({elapsed:.1f}s / {wait_timeout:.1f}s)'
+            )
+            if elapsed >= wait_timeout:
+                message = f'{spawn_service} service not available after {elapsed:.1f}s.'
+                self.get_logger().error(message)
+                raise RuntimeError(message)
 
         self.get_logger().info('RandomPylonSpawner started. Spawning pylons...')
         self.spawn_pylons_once()
@@ -115,14 +132,25 @@ class RandomPylonSpawner(Node):
 def main(args=None) -> None:
     """エントリーポイント."""
     rclpy.init(args=args)
-    node = RandomPylonSpawner()
+    logger = get_logger('random_pylon_spawner')
+    node = None
+
+    try:
+        node = RandomPylonSpawner()
+    except RuntimeError as exc:
+        logger.fatal(f'ノードの起動に失敗しました: {exc}')
+        if rclpy.ok():
+            rclpy.shutdown()
+        return
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        if rclpy.ok():
+        if node is not None:
             node.destroy_node()
+        if rclpy.ok():
             rclpy.shutdown()
 
 

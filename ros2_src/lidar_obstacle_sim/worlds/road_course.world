@@ -149,7 +149,7 @@
     <include>
       <uri>model://simple_robot</uri>
       <name>simple_robot</name>
-      <pose>5 1.5 0.5 0 0 0</pose>
+      <pose>1.4 0 0.5 0 0 0</pose>
     </include>
   </world>
 </sdf>

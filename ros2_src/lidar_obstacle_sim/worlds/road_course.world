@@ -43,8 +43,8 @@
     <!-- Left turn road: along +y direction -->
     <model name="road_segment_2">
       <static>true</static>
-      <!-- Centered near (25,25) and rotated 90deg -->
-      <pose>25 25 0 0 0 1.5708</pose>
+      <!-- Centered at (50,25) and rotated 90deg to connect end-to-end -->
+      <pose>50 25 0 0 0 1.5708</pose>
       <link name="link">
         <collision name="collision">
           <geometry>
@@ -67,10 +67,10 @@
       </link>
     </model>
 
-    <!-- Intersection pad at (25,0) to fill the inside corner -->
+    <!-- Intersection pad at (50,0) to fill the inside corner -->
     <model name="intersection_pad_corner_bottom">
       <static>true</static>
-      <pose>25 0 0 0 0 0</pose>
+      <pose>50 0 0 0 0 0</pose>
       <link name="link">
         <collision name="collision">
           <geometry>
@@ -96,7 +96,7 @@
     <!-- Right turn road: along +x again -->
     <model name="road_segment_3">
       <static>true</static>
-      <pose>50 50 0 0 0 0</pose>
+      <pose>75 50 0 0 0 0</pose>
       <link name="link">
         <collision name="collision">
           <geometry>
@@ -119,10 +119,10 @@
       </link>
     </model>
 
-    <!-- Intersection pad at (25,50) to fill the inside corner -->
+    <!-- Intersection pad at (50,50) to fill the inside corner -->
     <model name="intersection_pad_corner_top">
       <static>true</static>
-      <pose>25 50 0 0 0 0</pose>
+      <pose>50 50 0 0 0 0</pose>
       <link name="link">
         <collision name="collision">
           <geometry>

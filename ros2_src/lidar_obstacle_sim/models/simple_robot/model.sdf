@@ -1,0 +1,133 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="simple_robot">
+    <static>false</static>
+    <pose>0 0 0.6 0 0 0</pose>
+
+    <!-- Base link -->
+    <link name="base_link">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <mass>50.0</mass>
+        <inertia>
+          <ixx>5.0</ixx>
+          <iyy>5.0</iyy>
+          <izz>5.0</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>0.6 0.8 1.2</size>
+          </box>
+        </geometry>
+      </collision>
+
+      <visual name="visual">
+        <geometry>
+          <box>
+            <size>0.6 0.8 1.2</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.8 1</ambient>
+          <diffuse>0.2 0.2 0.8 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+    <!-- UTM-30 (2D LiDAR) -->
+    <link name="utm30_link">
+      <pose>0.15 0 0.4 0 0 0</pose>
+      <sensor name="utm30" type="ray">
+        <pose>0 0 0 0 0 0</pose>
+        <update_rate>40</update_rate>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>1080</samples>
+              <resolution>1</resolution>
+              <min_angle>-2.35619</min_angle>
+              <max_angle>2.35619</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.1</min>
+            <max>30.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </ray>
+        <plugin name="utm30_plugin" filename="libgazebo_ros_ray_sensor.so">
+          <ros>
+            <namespace>/</namespace>
+            <remapping>~/out:=scan</remapping>
+          </ros>
+          <output_type>sensor_msgs/LaserScan</output_type>
+          <frame_name>utm30_link</frame_name>
+        </plugin>
+      </sensor>
+    </link>
+
+    <!-- Mid-360-like 3D LiDAR -->
+    <link name="mid360_link">
+      <pose>0 0 1.0 0 0 0</pose>
+      <sensor name="mid360" type="ray">
+        <pose>0 0 0 0 0 0</pose>
+        <update_rate>10</update_rate>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>720</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159</min_angle>
+              <max_angle>3.14159</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>32</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.52</min_angle>
+              <max_angle>0.52</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.3</min>
+            <max>50.0</max>
+            <resolution>0.02</resolution>
+          </range>
+        </ray>
+        <plugin name="mid360_plugin" filename="libgazebo_ros_ray_sensor.so">
+          <ros>
+            <namespace>/</namespace>
+            <remapping>~/out:=mid360/points</remapping>
+          </ros>
+          <output_type>sensor_msgs/PointCloud2</output_type>
+          <frame_name>mid360_link</frame_name>
+        </plugin>
+      </sensor>
+    </link>
+
+    <!-- Simple diff drive plugin (approximate) -->
+    <plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">
+      <ros>
+        <namespace>/</namespace>
+        <remapping>cmd_vel:=cmd_vel</remapping>
+        <remapping>odom:=odom</remapping>
+      </ros>
+      <update_rate>50</update_rate>
+      <!-- NOTE: For a real robot you should define wheel links/joints.
+           Here we reuse base_link for simplicity, as the goal is to get /odom. -->
+      <left_wheel>base_link</left_wheel>
+      <right_wheel>base_link</right_wheel>
+      <wheel_separation>0.6</wheel_separation>
+      <wheel_diameter>0.2</wheel_diameter>
+      <odom_frame>odom</odom_frame>
+      <base_frame>base_link</base_frame>
+      <publish_tf>true</publish_tf>
+    </plugin>
+
+  </model>
+</sdf>

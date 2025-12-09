@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from typing import List, Dict
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess
 from launch_ros.actions import Node
@@ -29,6 +29,15 @@ def generate_launch_description() -> LaunchDescription:
     else:
         gazebo_model_path = models_path
 
+    # Gazebo plugin path に gazebo_ros のライブラリを明示的に追加
+    gazebo_ros_prefix = get_package_prefix('gazebo_ros')
+    gazebo_ros_plugin_path = os.path.join(gazebo_ros_prefix, 'lib')
+    gazebo_plugin_path = os.environ.get('GAZEBO_PLUGIN_PATH', '')
+    if gazebo_plugin_path:
+        gazebo_plugin_path = gazebo_plugin_path + os.pathsep + gazebo_ros_plugin_path
+    else:
+        gazebo_plugin_path = gazebo_ros_plugin_path
+
     gazebo_cmd: List[str] = [
         'gazebo',
         '--verbose',
@@ -39,6 +48,7 @@ def generate_launch_description() -> LaunchDescription:
 
     gazebo_env: Dict[str, str] = {
         'GAZEBO_MODEL_PATH': gazebo_model_path,
+        'GAZEBO_PLUGIN_PATH': gazebo_plugin_path,
     }
 
     gazebo_process = ExecuteProcess(

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import random
 from dataclasses import dataclass
@@ -50,6 +51,9 @@ class RandomPylonSpawner(Node):
         self.declare_parameter('service_wait_interval', 1.0)
         self.declare_parameter('min_longitudinal_spacing', 5.0)
         self.declare_parameter('longitudinal_margin', 1.0)
+
+        # Gazebo 原点周辺を避ける安全距離[m]
+        self.origin_safety_radius = 5.0
 
         model_path = self.get_parameter('model_path').get_parameter_value().string_value
         if not model_path or not os.path.exists(model_path):
@@ -130,6 +134,11 @@ class RandomPylonSpawner(Node):
 
                 for lateral_offset in lateral_offsets:
                     pose = self._build_pose(road_segment, axis_position, lateral_offset)
+                    if self._is_inside_origin_safety_zone(pose):
+                        self.get_logger().debug(
+                            '原点から5m以内のためパイロン生成をスキップします。'
+                        )
+                        continue
                     name = f'{road_segment.name}_pylon_{pylon_index}'
                     self._spawn_single_pylon(model_path, name, pose)
                     pylon_index += 1
@@ -229,6 +238,11 @@ class RandomPylonSpawner(Node):
             self.get_logger().info(f'Spawned pylon: {name}')
         else:
             self.get_logger().error(f'Failed to spawn pylon: {name}')
+
+    def _is_inside_origin_safety_zone(self, pose: Pose) -> bool:
+        """Gazebo 原点からの距離が安全半径内か判定する."""
+        distance = math.hypot(pose.position.x, pose.position.y)
+        return distance < self.origin_safety_radius
 
 
 def main(args=None) -> None:

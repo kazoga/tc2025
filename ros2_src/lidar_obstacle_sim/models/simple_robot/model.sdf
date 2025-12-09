@@ -2,7 +2,7 @@
 <sdf version="1.6">
   <model name="simple_robot">
     <static>false</static>
-    <pose>0 0 0.6 0 0 0</pose>
+    <pose>0 0 0.5 0 0 0</pose>
 
     <!-- Base link -->
     <link name="base_link">
@@ -22,7 +22,7 @@
       <collision name="collision">
         <geometry>
           <box>
-            <size>0.6 0.8 1.2</size>
+            <size>0.8 0.6 1.0</size>
           </box>
         </geometry>
       </collision>
@@ -30,12 +30,26 @@
       <visual name="visual">
         <geometry>
           <box>
-            <size>0.6 0.8 1.2</size>
+            <size>0.8 0.6 1.0</size>
           </box>
         </geometry>
         <material>
           <ambient>0.2 0.2 0.8 1</ambient>
           <diffuse>0.2 0.2 0.8 1</diffuse>
+        </material>
+      </visual>
+
+      <visual name="front_marker_body">
+        <pose>0.5 0 0.4 0 1.5708 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.05</radius>
+            <length>0.4</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.8 0.2 0.2 1</ambient>
+          <diffuse>0.8 0.2 0.2 1</diffuse>
         </material>
       </visual>
     </link>

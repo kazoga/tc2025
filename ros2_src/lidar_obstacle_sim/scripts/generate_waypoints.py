@@ -3,7 +3,8 @@
 
 """道路中心線に沿った waypoint.csv を生成するスクリプト.
 
-- 折れ線: (0,0) → (20,0) → (20,20) → (40,20) を道路中心線とみなす。
+- 折れ線: (0,0) → (50,0) → (50,50) → (100,50) を道路中心線とみなす。
+- 各道路セグメントの長さは 50m。最初の waypoint は 5m 位置 (5,0) から開始する。
 - 5m 間隔でサンプリングし、さらに折れ角が 45° 以上の曲がり角に waypoint を追加する。
 - 出力する CSV は、元の waypoint.csv 仕様から「緯度経度(latitude,longitude)」「node」列を除いた形式とする。
 - right_is_open と left_is_open には「waypoint から右/左の道路端までの距離[m]」を出力する。
@@ -31,13 +32,15 @@ class Pose2D:
 
 def segment_points(p0: Tuple[float, float],
                    p1: Tuple[float, float],
-                   step: float) -> List[Pose2D]:
+                   step: float,
+                   start_offset: float = 0.0) -> List[Pose2D]:
     """p0→p1 区間を step[m] ごとにサンプリングする.
 
     Args:
         p0: 始点 (x0, y0)
         p1: 終点 (x1, y1)
         step: サンプリング間隔[m]
+        start_offset: 始点から最初のサンプルまでの距離[m]
 
     Returns:
         Pose2D のリスト（終点は含まない）
@@ -53,9 +56,13 @@ def segment_points(p0: Tuple[float, float],
     if length <= 0.0:
         return poses
 
-    n_steps = int(length // step)
+    effective_length = length - start_offset
+    if effective_length <= 0.0:
+        return poses
+
+    n_steps = int(effective_length // step)
     for i in range(n_steps):
-        s = step * i
+        s = start_offset + step * i
         t = s / length
         x = x0 + dx * t
         y = y0 + dy * t
@@ -69,9 +76,9 @@ def generate_waypoints() -> List[Pose2D]:
     # 折れ線（道路中心線）
     points: List[Tuple[float, float]] = [
         (0.0, 0.0),
-        (20.0, 0.0),
-        (20.0, 20.0),
-        (40.0, 20.0),
+        (50.0, 0.0),
+        (50.0, 50.0),
+        (100.0, 50.0),
     ]
     step = 5.0
     angle_threshold = math.radians(45.0)
@@ -81,9 +88,10 @@ def generate_waypoints() -> List[Pose2D]:
     for i in range(len(points) - 1):
         p0 = points[i]
         p1 = points[i + 1]
+        start_offset = 5.0 if i == 0 else 0.0
 
         # セグメント内の5m刻み
-        seg_poses = segment_points(p0, p1, step)
+        seg_poses = segment_points(p0, p1, step, start_offset=start_offset)
         waypoints.extend(seg_poses)
 
         # 曲がり角の処理（45°以上なら角に waypoint を追加）

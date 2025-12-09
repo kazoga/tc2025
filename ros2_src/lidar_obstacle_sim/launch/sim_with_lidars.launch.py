@@ -65,10 +65,8 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[
             {'model_path': pylon_model_path},
-            {'road_width': 5.0},
-            {'x_min': 5.0},
-            {'x_max': 35.0},
-            {'y_center': 0.0},
+            {'min_longitudinal_spacing': 5.0},
+            {'longitudinal_margin': 1.0},
         ],
     )
 

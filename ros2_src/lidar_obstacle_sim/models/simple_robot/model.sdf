@@ -38,6 +38,34 @@
           <diffuse>0.2 0.2 0.8 1</diffuse>
         </material>
       </visual>
+
+      <visual name="front_marker_body">
+        <pose>0.4 0 0.4 0 1.5708 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.05</radius>
+            <length>0.4</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.8 0.2 0.2 1</ambient>
+          <diffuse>0.8 0.2 0.2 1</diffuse>
+        </material>
+      </visual>
+
+      <visual name="front_marker_tip">
+        <pose>0.6 0 0.4 0 1.5708 0</pose>
+        <geometry>
+          <cone>
+            <radius>0.08</radius>
+            <length>0.12</length>
+          </cone>
+        </geometry>
+        <material>
+          <ambient>0.9 0.4 0.2 1</ambient>
+          <diffuse>0.9 0.4 0.2 1</diffuse>
+        </material>
+      </visual>
     </link>
 
     <!-- Left wheel link -->

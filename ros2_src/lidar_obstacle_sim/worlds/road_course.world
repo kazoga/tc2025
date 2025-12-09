@@ -67,8 +67,8 @@
       </link>
     </model>
 
-    <!-- Intersection pad at (20,0) to fill the inside corner -->
-    <model name="intersection_pad_1">
+    <!-- Intersection pad at (50,0) to fill the inside corner -->
+    <model name="intersection_pad_corner_bottom">
       <static>true</static>
       <pose>50 0 0 0 0 0</pose>
       <link name="link">
@@ -119,8 +119,8 @@
       </link>
     </model>
 
-    <!-- Intersection pad at (20,20) to fill the inside corner -->
-    <model name="intersection_pad_2">
+    <!-- Intersection pad at (50,50) to fill the inside corner -->
+    <model name="intersection_pad_corner_top">
       <static>true</static>
       <pose>50 50 0 0 0 0</pose>
       <link name="link">

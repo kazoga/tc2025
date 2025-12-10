@@ -297,20 +297,20 @@ world 座標系をそのまま `map` / `odom` と同一視し、
 
   * 水平:
 
-    * `<samples>720</samples>`
+    * `<samples>900</samples>`
     * `<resolution>1</resolution>`
     * `<min_angle>-3.14159</min_angle>`（-180°）
     * `<max_angle>3.14159</max_angle>`（+180°）
   * 垂直:
 
-    * `<samples>32</samples>`
+    * `<samples>24</samples>`
     * `<resolution>1</resolution>`
-    * `<min_angle>-0.52</min_angle>`（約 -30°）
-    * `<max_angle>0.52</max_angle>`（約 +30°）
+    * `<min_angle>-0.122173</min_angle>`（約 -7°）
+    * `<max_angle>0.907571</max_angle>`（約 +52°）
 * 測距設定:
 
-  * `<min>0.3</min>`
-  * `<max>50.0</max>`
+  * `<min>0.2</min>`
+  * `<max>40.0</max>`
   * `<resolution>0.02</resolution>`
 
 ### Gazebo → ROS2 プラグイン

@@ -227,14 +227,22 @@
     <plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">
       <ros>
         <namespace>/</namespace>
-        <remapping>cmd_vel:=cmd_vel</remapping>
-        <remapping>odom:=odom</remapping>
+        <!--
+          Gazebo_ros_diff_drive はデフォルトでモデル名を名前空間に付与するため、
+          そのままでは `/simple_robot/odom` のようなトピック名になる。
+          `fake_amcl_pose` ノードは `/odom` を購読して `/amcl_pose` を生成する
+          前提のため、絶対パスでリマップしてルート直下に固定する。
+        -->
+        <remapping>cmd_vel:=/cmd_vel</remapping>
+        <remapping>odom:=/odom</remapping>
       </ros>
       <update_rate>50</update_rate>
       <left_joint>left_wheel_joint</left_joint>
       <right_joint>right_wheel_joint</right_joint>
       <wheel_separation>0.5</wheel_separation>
       <wheel_diameter>0.2</wheel_diameter>
+      <!-- publish_odom が false の場合は /odom が生成されないため明示的に有効化する -->
+      <publish_odom>true</publish_odom>
       <odom_frame>odom</odom_frame>
       <base_frame>base_link</base_frame>
       <publish_tf>true</publish_tf>

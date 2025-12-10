@@ -82,8 +82,24 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    base_to_mid360_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_base_to_mid360',
+        arguments=['-0.425', '0', '1.005', '0', '0', '0', 'base_link', 'mid360_frame'],
+    )
+
+    base_to_laser_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_base_to_laser',
+        arguments=['0.075', '0', '0.49', '0', '0', '0', 'base_link', 'laser'],
+    )
+
     return LaunchDescription([
         gazebo_process,
         spawn_pylons_node,
         fake_amcl_node,
+        base_to_mid360_tf,
+        base_to_laser_tf,
     ])

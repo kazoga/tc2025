@@ -154,8 +154,8 @@
     </joint>
 
     <!-- UTM-30 (2D LiDAR) -->
-    <link name="utm30_link">
-      <pose>0.15 0 0.4 0 0 0</pose>
+    <link name="laser">
+      <pose>0.075 0 0.49 0 0 0</pose>
       <sensor name="utm30" type="ray">
         <pose>0 0 0 0 0 0</pose>
         <update_rate>40</update_rate>
@@ -180,14 +180,14 @@
             <remapping>~/out:=/scan</remapping>
           </ros>
           <output_type>sensor_msgs/LaserScan</output_type>
-          <frame_name>utm30_link</frame_name>
+          <frame_name>laser</frame_name>
         </plugin>
       </sensor>
     </link>
 
     <!-- Mid-360-like 3D LiDAR -->
-    <link name="mid360_link">
-      <pose>0 0 1.0 0 0 0</pose>
+    <link name="mid360_frame">
+      <pose>-0.425 0 1.005 0 0 0</pose>
       <sensor name="mid360" type="ray">
         <pose>0 0 0 0 0 0</pose>
         <update_rate>10</update_rate>
@@ -215,10 +215,10 @@
         <plugin name="mid360_plugin" filename="libgazebo_ros_ray_sensor.so">
           <ros>
             <namespace>/</namespace>
-            <remapping>~/out:=mid360/points</remapping>
+            <remapping>~/out:=/mid360/livox/lidar</remapping>
           </ros>
           <output_type>sensor_msgs/PointCloud2</output_type>
-          <frame_name>mid360_link</frame_name>
+          <frame_name>mid360_frame</frame_name>
         </plugin>
       </sensor>
     </link>

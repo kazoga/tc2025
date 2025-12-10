@@ -10,7 +10,7 @@
 * 自ロボットに以下2種類の LiDAR を搭載:
 
   * 北陽電機 UTM-30 相当の **2D LiDAR**（`/scan` / LaserScan）
-  * Livox Mid-360 風の **3D LiDAR**（`/mid360/points` / PointCloud2）
+  * Livox Mid-360 風の **3D LiDAR**（`/mid360/livox/lidar` / PointCloud2）
 * 道幅 5m の道路コース（直進 → 左折 → 直進 → 右折）上でロボットが走行する環境
 * ランダムな位置・本数（1〜3本）のパイロン（コーン）が、進行方向に対して「横一列」に配置される障害物
 * Gazebo の `/odom` を元に `/amcl_pose` を擬似生成し、既存の `amcl_pose` ベースのロジックと整合を取る
@@ -49,7 +49,7 @@
 
    * world ファイル（`road_course.world`）を用いて Gazebo を起動
    * 自ロボット（`simple_robot`）を spawn
-   * 2D LiDAR `/scan` と 3D LiDAR `/mid360/points` を Gazebo → ROS2 へ publish
+  * 2D LiDAR `/scan` と 3D LiDAR `/mid360/livox/lidar` を Gazebo → ROS2 へ publish
 2. **ランダムパイロン生成**
 
    * Gazebo の `/spawn_entity` サービスを利用し、パイロンモデルを 1〜3本ランダムに横一列で配置
@@ -267,27 +267,28 @@ world 座標系をそのまま `map` / `odom` と同一視し、
 * ファイル: `libgazebo_ros_ray_sensor.so`
 * `<ros>` 設定:
 
-  * `<namespace>/</namespace>`
-  * `<remapping>~/out:=scan</remapping>`
+* `<namespace>/</namespace>`
+* `<remapping>~/out:=/scan</remapping>`
 
     * Gazebo 内部の出力トピック `~/out` を ROS2 トピック `/scan` に remap
 * 出力型:
 
-  * `<output_type>sensor_msgs/LaserScan</output_type>`
+* `<output_type>sensor_msgs/LaserScan</output_type>`
 * フレーム名:
 
-  * `<frame_name>utm30_link</frame_name>`
+* `<frame_name>laser</frame_name>`
 
-→ 結果として、ROS2 側で `/scan` (LaserScan) を受信可能。
+→ 結果として、ROS2 側で `/scan` (LaserScan) を受信可能かつ `/laser` フレームが
+  実機同様に利用できる。
 
 ## 7.3 3D LiDAR (Mid-360 風)
 
 ### リンク位置
 
-* link 名: `mid360_link`
-* `<pose>0 0 1.0 0 0 0</pose>`
+* link 名: `mid360_frame`
+* `<pose>-0.425 0 1.005 0 0 0</pose>`
 
-  * base_link 中心から高さ 1.0m 上
+  * 実機の tf `/base_link -> /mid360_frame` と同じ位置・姿勢に合わせる
 
 ### センサ設定
 
@@ -319,16 +320,17 @@ world 座標系をそのまま `map` / `odom` と同一視し、
 * ファイル: `libgazebo_ros_ray_sensor.so`
 * `<ros>` 設定:
 
-  * `<namespace>/</namespace>`
-  * `<remapping>~/out:=mid360/points</remapping>`
+* `<namespace>/</namespace>`
+* `<remapping>~/out:=/mid360/livox/lidar</remapping>`
 * 出力型:
 
-  * `<output_type>sensor_msgs/PointCloud2</output_type>`
+* `<output_type>sensor_msgs/PointCloud2</output_type>`
 * フレーム名:
 
-  * `<frame_name>mid360_link</frame_name>`
+* `<frame_name>mid360_frame</frame_name>`
 
-→ `/mid360/points` (PointCloud2) を ROS2 で受信可能。
+→ `/mid360/livox/lidar` (PointCloud2) を ROS2 で受信可能かつ `/mid360_frame` tf を
+  実機と同名で利用できる。
 
 ## 7.4 差動駆動プラグイン（簡易版）
 
@@ -601,6 +603,18 @@ class Pose2D:
      * `odom_topic`: `/odom`
      * `amcl_topic`: `/amcl_pose`
 
+4. 静的 tf (`/base_link -> /mid360_frame`)
+
+   * package: `tf2_ros`
+   * executable: `static_transform_publisher`
+   * arguments: `-0.425 0 1.005 0 0 0 base_link mid360_frame`
+
+5. 静的 tf (`/base_link -> /laser`)
+
+   * package: `tf2_ros`
+   * executable: `static_transform_publisher`
+   * arguments: `0.075 0 0.49 0 0 0 base_link laser`
+
 ※ 今後、`obstacle_monitor`, `robot_navigator`, `route_follower` などをこの launch に追加する想定。
 
 ---
@@ -609,14 +623,13 @@ class Pose2D:
 
 本パッケージ単体で扱う主なトピックは以下の通り。
 
-| トピック名            | 型                                             | 発行元                     | 説明                     |
-| ---------------- | --------------------------------------------- | ----------------------- | ---------------------- |
-| `/scan`          | `sensor_msgs/msg/LaserScan`                   | Gazebo (utm30_plugin)   | UTM-30 相当 2D LiDAR     |
-| `/mid360/points` | `sensor_msgs/msg/PointCloud2`                 | Gazebo (mid360_plugin)  | Mid-360 風 3D LiDAR     |
-| `/odom`          | `nav_msgs/msg/Odometry`                       | Gazebo diff_drive プラグイン | ロボットのオドメトリ             |
-| `/amcl_pose`     | `geometry_msgs/msg/PoseWithCovarianceStamped` | `fake_amcl_pose` ノード    | Gazebo 真値をもとにした擬似 AMCL |
-| `/cmd_vel`       | `geometry_msgs/msg/Twist`                     | 上位ノード（未実装）              | ロボットへの速度指令             |
-
+| トピック名            | 型                                             | 発行元                         | 説明                           |
+| --------------------- | --------------------------------------------- | ---------------------------- | ------------------------------ |
+| `/scan`               | `sensor_msgs/msg/LaserScan`                   | Gazebo (utm30_plugin)        | UTM-30 相当 2D LiDAR           |
+| `/mid360/livox/lidar` | `sensor_msgs/msg/PointCloud2`                 | Gazebo (mid360_plugin)       | Mid-360 風 3D LiDAR            |
+| `/odom`               | `nav_msgs/msg/Odometry`                       | Gazebo diff_drive プラグイン | ロボットのオドメトリ           |
+| `/amcl_pose`          | `geometry_msgs/msg/PoseWithCovarianceStamped` | `fake_amcl_pose` ノード      | Gazebo 真値をもとにした擬似 AMCL |
+| `/cmd_vel`            | `geometry_msgs/msg/Twist`                     | 上位ノード（未実装）          | ロボットへの速度指令           |
 QoS は全てデフォルト（reliable, keep last, depth=10）を想定する。
 
 ---

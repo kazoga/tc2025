@@ -217,6 +217,9 @@ class RandomPylonSpawner(Node):
             pose.position.y = axis_position
 
         pose.position.z = 0.35  # パイロン高さ 0.7m の中心付近
+        # Gazebo の SpawnEntity では無効なクォータニオンが指定されるとスポーンに失敗するため、
+        # 姿勢が不要でも単位クォータニオンを必ず設定する。
+        pose.orientation.w = 1.0
         return pose
 
     def _spawn_single_pylon(self, model_path: str, name: str, pose: Pose) -> None:

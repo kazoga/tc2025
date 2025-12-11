@@ -352,6 +352,10 @@ world 座標系をそのまま `map` / `odom` と同一視し、
   * `<base_frame>base_link</base_frame>`
   * `<publish_tf>true</publish_tf>`
 
+左右ホイールの `collision` には Gazebo ODE 係数を明示し、`mu=mu2=10.0`、`slip1=slip2=0.0`
+で高い縦方向摩擦とゼロスリップを設定する。これにより `/cmd_vel` の並進速度が車輪の空転に
+左右されず、物理シミュレーション上の移動量と一致するようにしている。
+
 `/cmd_vel` は diff drive プラグインによって左右ホイール joint 角速度に換算され、
 車輪間隔 0.6 m、車輪径 0.3 m の運動モデルで `/odom` が生成される。
 

@@ -339,21 +339,21 @@ world 座標系をそのまま `map` / `odom` と同一視し、
 * `<ros>` 設定:
 
   * `<namespace>/</namespace>`
-  * `<remapping>cmd_vel:=cmd_vel</remapping>`
-  * `<remapping>odom:=odom</remapping>`
+  * `<remapping>cmd_vel:=/cmd_vel</remapping>`
+  * `<remapping>odom:=/ypspur_ros/odom</remapping>`
 * パラメータ:
 
   * `<update_rate>50</update_rate>`
   * `<left_joint>left_wheel_joint</left_joint>`
   * `<right_joint>right_wheel_joint</right_joint>`
   * `<wheel_separation>0.6</wheel_separation>`
-  * `<wheel_diameter>0.2</wheel_diameter>`
+  * `<wheel_diameter>0.3</wheel_diameter>`
   * `<odom_frame>odom</odom_frame>`
   * `<base_frame>base_link</base_frame>`
   * `<publish_tf>true</publish_tf>`
 
 `/cmd_vel` は diff drive プラグインによって左右ホイール joint 角速度に換算され、
-車輪間隔 0.6 m、車輪径 0.2 m の運動モデルで `/odom` が生成される。
+車輪間隔 0.6 m、車輪径 0.3 m の運動モデルで `/odom` が生成される。
 
 ---
 

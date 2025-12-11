@@ -3,12 +3,7 @@
   <model name="pylon">
     <static>true</static>
     <link name="link">
-      <!--
-           長さ0.7mのシリンダーが地面上に立つよう、重心位置を高さ0.35mに設定する。
-           元の設定ではモデル中心が地面と一致していたため、上端が0.35mとなり、
-           高さ0.49mにあるUTM-30のレーザー平面より低くビームが当たらなかった。
-      -->
-      <pose>0 0 0.35 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
 
       <inertial>
         <mass>1.0</mass>

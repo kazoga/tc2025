@@ -1,26 +1,26 @@
 <?xml version="1.0"?>
 <sdf version="1.6">
-
   <model name="icart_middle_robot">
     <static>false</static>
+    <!-- モデル原点は world 原点に一致 -->
     <pose>0 0 0 0 0 0</pose>
 
     <!-- ===================================================== -->
     <!--                    Base Link                          -->
     <!-- ===================================================== -->
-    <!-- 条件:
-         - 車体奥行: 0.6 m
-         - 車体幅: 0.4 m（Visual）
-         - Collision 幅: 0.36 m（Wheel collision と干渉しないように）
-         - 厚み: 0.5 m
-         - 車軸高さ = 0.15 m → 本体底面高さと一致
-         - 本体 center = 0.15 + 0.25 = 0.4 m
+    <!-- base_link フレーム原点:
+         - 左右駆動輪の車軸中心の中点
+         - 高さ z = 0.15 (車輪半径)
     -->
     <link name="base_link">
-      <pose>0 0 0.4 0 0 0</pose>
+      <pose>0 0 0.15 0 0 0</pose>
 
       <inertial>
+        <!-- 車体の質量。柱やセンサより十分重い前提 -->
         <mass>50.0</mass>
+        <!-- 車体全体の重心を x=-0.1 m 後方へオフセットして、
+             前方に倒れにくくする -->
+        <pose>-0.1 0 0 0 0 0</pose>
         <inertia>
           <ixx>5.0</ixx>
           <iyy>5.0</iyy>
@@ -31,15 +31,26 @@
         </inertia>
       </inertial>
 
+      <!-- 車体直方体:
+           - サイズ: 0.6 (X) x 0.4 (Y) x 0.5 (Z)
+           - 車体幅: 0.4 → 側面 y = ±0.2
+           - 前面: base_link 原点から +0.05 m
+           - 底面: base_link 原点と同じ高さ z=0.15
+           → 中心 x = 0.05 - 0.6/2 = -0.25
+             中心 z = 0.15 + 0.5/2 = 0.4
+             → base_link からのオフセット: (-0.25, 0, +0.25)
+      -->
       <collision name="collision">
+        <pose>-0.25 0 0.25 0 0 0</pose>
         <geometry>
           <box>
-            <size>0.6 0.36 0.5</size>
+            <size>0.6 0.4 0.5</size>
           </box>
         </geometry>
       </collision>
 
       <visual name="visual">
+        <pose>-0.25 0 0.25 0 0 0</pose>
         <geometry>
           <box>
             <size>0.6 0.4 0.5</size>
@@ -53,68 +64,52 @@
     </link>
 
     <!-- ===================================================== -->
-    <!--                       Wheels                           -->
+    <!--              UTM-30 Target Box (10cm)                 -->
     <!-- ===================================================== -->
-    <!-- 条件:
-         - 半径 0.15 m
-         - 厚み 0.05 m
-         - TREAD = 0.6 → ±0.3
-         - 円柱Z軸を +Y に向ける（roll=90°）
-         - Base 前面(x=0.3) に円柱前面が一致 → x=0.15
+    <!-- UTM-30LX 原点:
+         - base_link 原点から前方 +0.075 m (x=0.075)
+         - 地面から高さ 0.25 m
+         → (x,y,z) = (0.075, 0, 0.25)
+       立方体はこの点を中心に配置し、mid360 と同じ色にする。
     -->
-
-    <link name="left_wheel_link">
-      <pose>0.15 0.3 0.15 0 0 0</pose>
-
+    <link name="utm30_target_box">
+      <pose>0.075 0 0.25 0 0 0</pose>
       <inertial>
-        <mass>1.0</mass>
+        <mass>0.1</mass>
         <inertia>
-          <ixx>0.01</ixx>
-          <iyy>0.01</iyy>
-          <izz>0.005</izz>
-          <ixy>0</ixy>
-          <ixz>0</ixz>
-          <iyz>0</iyz>
+          <ixx>1e-4</ixx>
+          <iyy>1e-4</iyy>
+          <izz>1e-4</izz>
         </inertia>
       </inertial>
-
-      <collision name="collision">
-        <pose>0 0 0 1.5708 0 0</pose>
-        <geometry>
-          <cylinder>
-            <radius>0.15</radius>
-            <length>0.05</length>
-          </cylinder>
-        </geometry>
-        <surface>
-          <friction>
-            <ode>
-              <mu>10.0</mu>
-              <mu2>10.0</mu2>
-              <slip1>0.0</slip1>
-              <slip2>0.0</slip2>
-            </ode>
-          </friction>
-        </surface>
-      </collision>
-
       <visual name="visual">
-        <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
-          <cylinder>
-            <radius>0.15</radius>
-            <length>0.05</length>
-          </cylinder>
+          <box><size>0.1 0.1 0.1</size></box>
         </geometry>
         <material>
-          <ambient>0.1 0.1 0.1 1</ambient>
-          <diffuse>0.1 0.1 0.1 1</diffuse>
+          <!-- mid360 と同じグレー系 -->
+          <ambient>0.5 0.5 0.5 1</ambient>
+          <diffuse>0.5 0.5 0.5 1</diffuse>
         </material>
       </visual>
     </link>
 
-    <link name="right_wheel_link">
-      <pose>0.15 -0.3 0.15 0 0 0</pose>
+    <joint name="utm30_target_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>utm30_target_box</child>
+    </joint>
+
+    <!-- ===================================================== -->
+    <!--                    Left Wheel                         -->
+    <!-- ===================================================== -->
+    <!-- Wheel 条件:
+         - 半径: 0.15 m
+         - 幅(length): 0.05 m
+         - center (base_link 相対): x=0, y=+0.25, z=0.15
+         - 色: 黒
+    -->
+    <link name="left_wheel_link">
+      <pose>0 0.25 0.15 0 0 0</pose>
 
       <inertial>
         <mass>1.0</mass>
@@ -122,13 +117,11 @@
           <ixx>0.01</ixx>
           <iyy>0.01</iyy>
           <izz>0.005</izz>
-          <ixy>0</ixy>
-          <ixz>0</ixz>
-          <iyz>0</iyz>
         </inertia>
       </inertial>
 
       <collision name="collision">
+        <!-- Y 軸回転になるようロール 90deg -->
         <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
@@ -136,16 +129,6 @@
             <length>0.05</length>
           </cylinder>
         </geometry>
-        <surface>
-          <friction>
-            <ode>
-              <mu>10.0</mu>
-              <mu2>10.0</mu2>
-              <slip1>0.0</slip1>
-              <slip2>0.0</slip2>
-            </ode>
-          </friction>
-        </surface>
       </collision>
 
       <visual name="visual">
@@ -157,8 +140,8 @@
           </cylinder>
         </geometry>
         <material>
-          <ambient>0.1 0.1 0.1 1</ambient>
-          <diffuse>0.1 0.1 0.1 1</diffuse>
+          <ambient>0 0 0 1</ambient>
+          <diffuse>0 0 0 1</diffuse>
         </material>
       </visual>
     </link>
@@ -166,6 +149,7 @@
     <joint name="left_wheel_joint" type="revolute">
       <parent>base_link</parent>
       <child>left_wheel_link</child>
+      <pose>0 0 0 0 0 0</pose>
       <axis>
         <xyz>0 1 0</xyz>
         <limit>
@@ -174,10 +158,52 @@
         </limit>
       </axis>
     </joint>
+
+    <!-- ===================================================== -->
+    <!--                    Right Wheel                        -->
+    <!-- ===================================================== -->
+    <!-- center (base_link 相対): x=0, y=-0.25, z=0.15 -->
+    <link name="right_wheel_link">
+      <pose>0 -0.25 0.15 0 0 0</pose>
+
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.01</ixx>
+          <iyy>0.01</iyy>
+          <izz>0.005</izz>
+        </inertia>
+      </inertial>
+
+      <collision name="collision">
+        <pose>0 0 0 1.5708 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.15</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+      </collision>
+
+      <visual name="visual">
+        <pose>0 0 0 1.5708 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.15</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0 0 0 1</ambient>
+          <diffuse>0 0 0 1</diffuse>
+        </material>
+      </visual>
+    </link>
 
     <joint name="right_wheel_joint" type="revolute">
       <parent>base_link</parent>
       <child>right_wheel_link</child>
+      <pose>0 0 0 0 0 0</pose>
       <axis>
         <xyz>0 1 0</xyz>
         <limit>
@@ -188,27 +214,22 @@
     </joint>
 
     <!-- ===================================================== -->
-    <!--                     Rear Caster                       -->
+    <!--                    Rear Caster                        -->
     <!-- ===================================================== -->
-    <!-- 条件:
-         - 半径 0.07 m（拡大）
-         - 中心 x = -0.3（Base 後端に一致）
-         - 中心 z = 0.07（床接触）
-         - Joint は fixed（球が床との摩擦で回転しキャスター挙動を模擬）
+    <!-- キャスタの球の中心が、車体の後端 (x=-0.55) に来るように:
+         - 車体後端: 車体中心 x=-0.25, サイズ 0.6 → 後端 = -0.25 - 0.3 = -0.55
+         → center x = -0.55
     -->
-
     <link name="rear_caster_link">
-      <pose>-0.3 0 0.07 0 0 0</pose>
+      <!-- 半径 0.07 → 中心高さ 0.07 で地面 z=0 に接触 -->
+      <pose>-0.55 0 0.07 0 0 0</pose>
 
       <inertial>
-        <mass>0.3</mass>
+        <mass>5.0</mass>
         <inertia>
-          <ixx>0.001</ixx>
-          <iyy>0.001</iyy>
-          <izz>0.001</izz>
-          <ixy>0</ixy>
-          <ixz>0</ixz>
-          <iyz>0</iyz>
+          <ixx>0.01</ixx>
+          <iyy>0.01</iyy>
+          <izz>0.01</izz>
         </inertia>
       </inertial>
 
@@ -227,24 +248,39 @@
           </sphere>
         </geometry>
         <material>
-          <ambient>0.3 0.3 0.3 1</ambient>
-          <diffuse>0.3 0.3 0.3 1</diffuse>
+          <ambient>0 0 0 1</ambient>
+          <diffuse>0 0 0 1</diffuse>
         </material>
       </visual>
     </link>
 
-    <joint name="rear_caster_joint" type="fixed">
+    <joint name="rear_caster_joint" type="ball">
       <parent>base_link</parent>
       <child>rear_caster_link</child>
-      <pose>-0.3 0 0.07 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
     </joint>
 
     <!-- ===================================================== -->
-    <!--                 UTM-30LX (2D LiDAR)                   -->
+    <!--                        UTM-30LX                       -->
     <!-- ===================================================== -->
-
+    <!-- UTM-30LX 本体。
+         - XY中心: 駆動輪車軸中心から前方にシフト → (0.075, 0)
+         - 高さ: z = 0.25
+         - 視野: 約 270deg (±135deg)
+         - range: 0.2 ～ 30 m
+         - 出力: /scan (sensor_msgs/LaserScan)
+    -->
     <link name="laser">
-      <pose>0.075 0 0.49 0 0 0</pose>
+      <pose>0.075 0 0.25 0 0 0</pose>
+
+      <inertial>
+        <mass>2.0</mass>
+        <inertia>
+          <ixx>0.01</ixx>
+          <iyy>0.01</iyy>
+          <izz>0.01</izz>
+        </inertia>
+      </inertial>
 
       <sensor name="utm30" type="ray">
         <pose>0 0 0 0 0 0</pose>
@@ -254,100 +290,230 @@
           <scan>
             <horizontal>
               <samples>1080</samples>
-              <resolution>1</resolution>
               <min_angle>-2.35619</min_angle>
               <max_angle>2.35619</max_angle>
             </horizontal>
           </scan>
-
           <range>
-            <min>0.1</min>
-            <max>30.0</max>
-            <resolution>0.01</resolution>
+            <min>0.2</min>
+            <max>30</max>
           </range>
         </ray>
 
         <plugin name="utm30_plugin" filename="libgazebo_ros_ray_sensor.so">
           <ros>
-            <namespace>/</namespace>
             <remapping>~/out:=/scan</remapping>
           </ros>
           <output_type>sensor_msgs/LaserScan</output_type>
-          <frame_name>laser</frame_name>
         </plugin>
       </sensor>
     </link>
 
-    <!-- ===================================================== -->
-    <!--                  Mid-360 3D LiDAR                     -->
-    <!-- ===================================================== -->
+    <joint name="utm30_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>laser</child>
+    </joint>
 
+    <!-- ===================================================== -->
+    <!--                    Mid360 支柱                       -->
+    <!-- ===================================================== -->
+    <!-- 車体条件:
+         - 車体幅: 0.4 → 側面 y = ±0.2
+         - 支柱の外側面を側面に一致
+           → 支柱幅 0.1 → 中心 y = ±(0.2 - 0.05) = ±0.15
+         - 支柱前面を車体前面 (x=+0.05) に一致
+           → 支柱幅 0.1 → 中心 x = 0.05 - 0.05 = 0.0
+         - 支柱底面を車体上面 (z=0.65) に一致
+         - 支柱上面を z=0.955 に合わせる
+           → 高さ = 0.955 - 0.65 = 0.305
+           → 中心 z = (0.955 + 0.65)/2 = 0.8025
+    -->
+    <link name="pillar_left">
+      <pose>0 0.15 0.8025 0 0 0</pose>
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.005</ixx>
+          <iyy>0.005</iyy>
+          <izz>0.005</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <box><size>0.1 0.1 0.305</size></box>
+        </geometry>
+      </visual>
+    </link>
+
+    <joint name="pillar_left_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>pillar_left</child>
+    </joint>
+
+    <link name="pillar_right">
+      <pose>0 -0.15 0.8025 0 0 0</pose>
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.005</ixx>
+          <iyy>0.005</iyy>
+          <izz>0.005</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <box><size>0.1 0.1 0.305</size></box>
+        </geometry>
+      </visual>
+    </link>
+
+    <joint name="pillar_right_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>pillar_right</child>
+    </joint>
+
+    <!-- ===================================================== -->
+    <!--                    Mid360 横梁                       -->
+    <!-- ===================================================== -->
+    <!-- 横梁条件:
+         - 前面を車体前面 (x=+0.05) に一致
+           → 幅 0.1 → 中心 x = 0.05 - 0.05 = 0.0
+         - 上面を支柱上面 (z=0.955) に一致
+           → 厚み 0.1 → 中心 z = 0.955 - 0.05 = 0.905
+         - Y方向長さ 0.4 で支柱を跨ぐ
+    -->
+    <link name="pillar_beam">
+      <pose>0 0 0.905 0 0 0</pose>
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.005</ixx>
+          <iyy>0.005</iyy>
+          <izz>0.005</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <box><size>0.1 0.4 0.1</size></box>
+        </geometry>
+      </visual>
+    </link>
+
+    <joint name="pillar_beam_joint" type="fixed">
+      <parent>pillar_left</parent>
+      <child>pillar_beam</child>
+    </joint>
+
+    <!-- ===================================================== -->
+    <!--                    Mid360 ダミー                      -->
+    <!-- ===================================================== -->
+    <!-- Mid360 円柱条件:
+         - XY中心: 駆動輪車軸中心の真上 → (0, 0)
+         - 高さ: z = 1.005
+    -->
+    <link name="mid360_dummy">
+      <pose>0 0 1.005 0 0 0</pose>
+      <inertial>
+        <mass>2.0</mass>
+        <inertia>
+          <ixx>0.01</ixx>
+          <iyy>0.01</iyy>
+          <izz>0.01</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>0.05</radius>
+            <length>0.1</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <!-- UTM立方体と同じグレー系 -->
+          <ambient>0.5 0.5 0.5 1</ambient>
+          <diffuse>0.5 0.5 0.5 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+    <joint name="mid360_dummy_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>mid360_dummy</child>
+    </joint>
+
+    <!-- ===================================================== -->
+    <!--                    Mid360 センサ                      -->
+    <!-- ===================================================== -->
     <link name="mid360_frame">
-      <pose>-0.425 0 1.005 0 0 0</pose>
+      <pose>0 0 1.005 0 0 0</pose>
+      <inertial>
+        <mass>2.0</mass>
+        <inertia>
+          <ixx>0.01</ixx>
+          <iyy>0.01</iyy>
+          <izz>0.01</izz>
+        </inertia>
+      </inertial>
 
       <sensor name="mid360" type="ray">
-        <pose>0 0 0 0 0 0</pose>
         <update_rate>10</update_rate>
-
         <ray>
           <scan>
             <horizontal>
               <samples>900</samples>
-              <resolution>1</resolution>
               <min_angle>-3.14159</min_angle>
               <max_angle>3.14159</max_angle>
             </horizontal>
-
             <vertical>
               <samples>24</samples>
-              <resolution>1</resolution>
-              <min_angle>-0.122173</min_angle>
-              <max_angle>0.907571</max_angle>
+              <min_angle>-0.122</min_angle>
+              <max_angle>0.907</max_angle>
             </vertical>
           </scan>
-
           <range>
             <min>0.2</min>
-            <max>40.0</max>
-            <resolution>0.02</resolution>
+            <max>40</max>
           </range>
         </ray>
 
         <plugin name="mid360_plugin" filename="libgazebo_ros_ray_sensor.so">
           <ros>
-            <namespace>/</namespace>
             <remapping>~/out:=/mid360/livox/lidar</remapping>
           </ros>
           <output_type>sensor_msgs/PointCloud2</output_type>
-          <frame_name>mid360_frame</frame_name>
         </plugin>
       </sensor>
     </link>
 
-    <!-- ===================================================== -->
-    <!--                 Diff Drive Plugin                     -->
-    <!-- ===================================================== -->
+    <joint name="mid360_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>mid360_frame</child>
+    </joint>
 
+    <!-- ===================================================== -->
+    <!--                Diff Drive Plugin (ROS2)               -->
+    <!-- ===================================================== -->
+    <!-- 差動二輪の条件:
+         - wheel_separation: 0.5 m (y=±0.25)
+         - wheel_diameter: 0.3 m
+         - cmd_vel: /cmd_vel
+         - odom: /ypspur_ros/odom
+         - TF と odom を publish
+    -->
     <plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">
       <ros>
-        <namespace>/</namespace>
         <remapping>cmd_vel:=/cmd_vel</remapping>
         <remapping>odom:=/ypspur_ros/odom</remapping>
       </ros>
 
-      <update_rate>50</update_rate>
-
       <left_joint>left_wheel_joint</left_joint>
       <right_joint>right_wheel_joint</right_joint>
 
-      <wheel_separation>0.6</wheel_separation>
+      <wheel_separation>0.5</wheel_separation>
       <wheel_diameter>0.3</wheel_diameter>
 
       <publish_odom>true</publish_odom>
       <publish_tf>true</publish_tf>
-
-      <odom_frame>odom</odom_frame>
-      <base_frame>base_link</base_frame>
     </plugin>
 
   </model>

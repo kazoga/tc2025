@@ -549,8 +549,8 @@ class ObstacleMonitorNode(Node):
         # 表示用リサイズ（ウィンドウ表示は行わず、画像トピックとして配信）
         grid_show = cv2.resize(grid, (resize_px, resize_px), interpolation=cv2.INTER_AREA)
         # デバッグ表示
-        #cv2.imshow("Sensor Viewer", grid_show)
-        #cv2.waitKey(1)
+        cv2.imshow("Sensor Viewer", grid_show)
+        cv2.waitKey(1)
 
         # bgr8 で publish
         img_msg = self.bridge.cv2_to_imgmsg(grid_show, encoding='bgr8')

@@ -82,6 +82,13 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    map_to_odom_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_map_to_odom',
+        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
+    )
+
     base_to_mid360_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -100,6 +107,7 @@ def generate_launch_description() -> LaunchDescription:
         gazebo_process,
         spawn_pylons_node,
         fake_amcl_node,
+        map_to_odom_tf,
         base_to_mid360_tf,
         base_to_laser_tf,
     ])

@@ -47,6 +47,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value='/obstacle_avoidance_hint',
         description='障害物ヒント入力トピック',
     )
+    velocity_baseline_source_arg = DeclareLaunchArgument(
+        'velocity_baseline_source',
+        default_value='odom',
+        description='現在速度の基準に使用するソース (odom/cmd_vel)',
+    )
 
     param_file = LaunchConfiguration('param_file')
     node_name = LaunchConfiguration('node_name')
@@ -57,6 +62,7 @@ def generate_launch_description() -> LaunchDescription:
     cmd_vel_topic = LaunchConfiguration('cmd_vel_topic')
     marker_topic = LaunchConfiguration('marker_topic')
     obstacle_hint_topic = LaunchConfiguration('obstacle_hint_topic')
+    velocity_baseline_source = LaunchConfiguration('velocity_baseline_source')
 
     navigator_node = Node(
         package='robot_navigator',
@@ -64,7 +70,7 @@ def generate_launch_description() -> LaunchDescription:
         name=node_name,
         output='screen',
         emulate_tty=True,
-        parameters=[param_file],
+        parameters=[param_file, {'velocity_baseline_source': velocity_baseline_source}],
         remappings=[
             ('scan', scan_topic),
             ('odom', odom_topic),
@@ -87,6 +93,7 @@ def generate_launch_description() -> LaunchDescription:
             cmd_vel_topic_arg,
             marker_topic_arg,
             obstacle_hint_topic_arg,
+            velocity_baseline_source_arg,
             navigator_node,
         ]
     )

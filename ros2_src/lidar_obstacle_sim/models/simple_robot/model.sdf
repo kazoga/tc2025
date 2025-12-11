@@ -13,11 +13,11 @@
          - 車体幅: 0.4 m（Visual）
          - Collision 幅: 0.36 m（Wheel collision と干渉しないように）
          - 厚み: 0.5 m
-         - 車軸高さ = 0.148248 m → 本体底面高さと一致
-         - 本体 center = 0.148248 + 0.25 = 0.398248 m
+         - 車軸高さ = 0.15 m → 本体底面高さと一致
+         - 本体 center = 0.15 + 0.25 = 0.4 m
     -->
     <link name="base_link">
-      <pose>0 0 0.398248 0 0 0</pose>
+      <pose>0 0 0.4 0 0 0</pose>
 
       <inertial>
         <mass>50.0</mass>
@@ -56,15 +56,15 @@
     <!--                       Wheels                           -->
     <!-- ===================================================== -->
     <!-- 条件:
-         - 半径 0.148248 m
+         - 半径 0.15 m
          - 厚み 0.05 m
-         - TREAD = 0.405 → ±0.2025
+         - TREAD = 0.6 → ±0.3
          - 円柱Z軸を +Y に向ける（roll=90°）
-         - Base 前面(x=0.3) に円柱前面が一致 → x=0.151752
+         - Base 前面(x=0.3) に円柱前面が一致 → x=0.15
     -->
 
     <link name="left_wheel_link">
-      <pose>0.151752 0.2025 0.148248 0 0 0</pose>
+      <pose>0.15 0.3 0.15 0 0 0</pose>
 
       <inertial>
         <mass>1.0</mass>
@@ -82,7 +82,7 @@
         <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.148248</radius>
+            <radius>0.15</radius>
             <length>0.05</length>
           </cylinder>
         </geometry>
@@ -92,7 +92,7 @@
         <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.148248</radius>
+            <radius>0.15</radius>
             <length>0.05</length>
           </cylinder>
         </geometry>
@@ -104,7 +104,7 @@
     </link>
 
     <link name="right_wheel_link">
-      <pose>0.151752 -0.2025 0.148248 0 0 0</pose>
+      <pose>0.15 -0.3 0.15 0 0 0</pose>
 
       <inertial>
         <mass>1.0</mass>
@@ -122,7 +122,7 @@
         <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.148248</radius>
+            <radius>0.15</radius>
             <length>0.05</length>
           </cylinder>
         </geometry>
@@ -132,7 +132,7 @@
         <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.148248</radius>
+            <radius>0.15</radius>
             <length>0.05</length>
           </cylinder>
         </geometry>
@@ -320,8 +320,8 @@
       <left_joint>left_wheel_joint</left_joint>
       <right_joint>right_wheel_joint</right_joint>
 
-      <wheel_separation>0.405</wheel_separation>
-      <wheel_diameter>0.296496</wheel_diameter>
+      <wheel_separation>0.6</wheel_separation>
+      <wheel_diameter>0.3</wheel_diameter>
 
       <publish_odom>true</publish_odom>
       <publish_tf>true</publish_tf>

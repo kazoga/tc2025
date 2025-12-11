@@ -334,9 +334,6 @@ world 座標系をそのまま `map` / `odom` と同一視し、
 
 ## 7.4 差動駆動プラグイン（簡易版）
 
-目的は「/cmd_vel を受けて /odom を publish し、FakeAmclPose に渡すこと」であり、
-ホイールモデルは厳密でなくてよい。
-
 * プラグイン名: `diff_drive`
 * ファイル: `libgazebo_ros_diff_drive.so`
 * `<ros>` 設定:
@@ -347,18 +344,16 @@ world 座標系をそのまま `map` / `odom` と同一視し、
 * パラメータ:
 
   * `<update_rate>50</update_rate>`
-  * `<left_wheel>base_link</left_wheel>`
-  * `<right_wheel>base_link</right_wheel>`
-
-    * 実際にはホイールリンクを指定すべきだが、本設計では簡易化のため base_link を指定
+  * `<left_joint>left_wheel_joint</left_joint>`
+  * `<right_joint>right_wheel_joint</right_joint>`
   * `<wheel_separation>0.6</wheel_separation>`
   * `<wheel_diameter>0.2</wheel_diameter>`
   * `<odom_frame>odom</odom_frame>`
   * `<base_frame>base_link</base_frame>`
   * `<publish_tf>true</publish_tf>`
 
-※ 将来的にホイールを正しくモデル化する場合は、
-`left_wheel_link`, `right_wheel_link` を定義し、それらへの joint として差し替える想定。
+`/cmd_vel` は diff drive プラグインによって左右ホイール joint 角速度に換算され、
+車輪間隔 0.6 m、車輪径 0.2 m の運動モデルで `/odom` が生成される。
 
 ---
 

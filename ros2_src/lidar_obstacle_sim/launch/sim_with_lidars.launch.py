@@ -77,7 +77,7 @@ def generate_launch_description() -> LaunchDescription:
         name='fake_amcl_pose',
         output='screen',
         parameters=[
-            {'odom_topic': '/odom'},
+            {'odom_topic': '/ypspur_ros/odom'},
             {'amcl_topic': '/amcl_pose'},
         ],
     )

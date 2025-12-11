@@ -1,12 +1,24 @@
-<?xml version="1.0" ?>
+<?xml version="1.0"?>
 <sdf version="1.6">
-  <model name="simple_robot">
-    <static>false</static>
-    <pose>0 0 0.5 0 0 0</pose>
 
-    <!-- Base link -->
+  <model name="icart_middle_robot">
+    <static>false</static>
+    <pose>0 0 0 0 0 0</pose>
+
+    <!-- ===================================================== -->
+    <!--                    Base Link                          -->
+    <!-- ===================================================== -->
+    <!-- 条件:
+         - 車体奥行: 0.6 m
+         - 車体幅: 0.4 m（Visual）
+         - Collision 幅: 0.36 m（Wheel collision と干渉しないように）
+         - 厚み: 0.5 m
+         - 車軸高さ = 0.148248 m → 本体底面高さと一致
+         - 本体 center = 0.148248 + 0.25 = 0.398248 m
+    -->
     <link name="base_link">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0 0 0.398248 0 0 0</pose>
+
       <inertial>
         <mass>50.0</mass>
         <inertia>
@@ -22,7 +34,7 @@
       <collision name="collision">
         <geometry>
           <box>
-            <size>0.8 0.6 1.0</size>
+            <size>0.6 0.36 0.5</size>
           </box>
         </geometry>
       </collision>
@@ -30,7 +42,7 @@
       <visual name="visual">
         <geometry>
           <box>
-            <size>0.8 0.6 1.0</size>
+            <size>0.6 0.4 0.5</size>
           </box>
         </geometry>
         <material>
@@ -38,25 +50,22 @@
           <diffuse>0.2 0.2 0.8 1</diffuse>
         </material>
       </visual>
-
-      <visual name="front_marker_body">
-        <pose>0.5 0 0.4 0 1.5708 0</pose>
-        <geometry>
-          <cylinder>
-            <radius>0.05</radius>
-            <length>0.4</length>
-          </cylinder>
-        </geometry>
-        <material>
-          <ambient>0.8 0.2 0.2 1</ambient>
-          <diffuse>0.8 0.2 0.2 1</diffuse>
-        </material>
-      </visual>
     </link>
 
-    <!-- Left wheel link -->
+    <!-- ===================================================== -->
+    <!--                       Wheels                           -->
+    <!-- ===================================================== -->
+    <!-- 条件:
+         - 半径 0.148248 m
+         - 厚み 0.05 m
+         - TREAD = 0.405 → ±0.2025
+         - 円柱Z軸を +Y に向ける（roll=90°）
+         - Base 前面(x=0.3) に円柱前面が一致 → x=0.151752
+    -->
+
     <link name="left_wheel_link">
-      <pose>0 0.25 0.2 0 1.5708 0</pose>
+      <pose>0.151752 0.2025 0.148248 0 0 0</pose>
+
       <inertial>
         <mass>1.0</mass>
         <inertia>
@@ -68,18 +77,22 @@
           <iyz>0</iyz>
         </inertia>
       </inertial>
+
       <collision name="collision">
+        <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.1</radius>
+            <radius>0.148248</radius>
             <length>0.05</length>
           </cylinder>
         </geometry>
       </collision>
+
       <visual name="visual">
+        <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.1</radius>
+            <radius>0.148248</radius>
             <length>0.05</length>
           </cylinder>
         </geometry>
@@ -90,9 +103,9 @@
       </visual>
     </link>
 
-    <!-- Right wheel link -->
     <link name="right_wheel_link">
-      <pose>0 -0.25 0.2 0 1.5708 0</pose>
+      <pose>0.151752 -0.2025 0.148248 0 0 0</pose>
+
       <inertial>
         <mass>1.0</mass>
         <inertia>
@@ -104,18 +117,22 @@
           <iyz>0</iyz>
         </inertia>
       </inertial>
+
       <collision name="collision">
+        <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.1</radius>
+            <radius>0.148248</radius>
             <length>0.05</length>
           </cylinder>
         </geometry>
       </collision>
+
       <visual name="visual">
+        <pose>0 0 0 1.5708 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.1</radius>
+            <radius>0.148248</radius>
             <length>0.05</length>
           </cylinder>
         </geometry>
@@ -126,11 +143,9 @@
       </visual>
     </link>
 
-    <!-- Wheel joints -->
     <joint name="left_wheel_joint" type="revolute">
       <parent>base_link</parent>
       <child>left_wheel_link</child>
-      <pose>0 0 0 0 0 0</pose>
       <axis>
         <xyz>0 1 0</xyz>
         <limit>
@@ -143,7 +158,6 @@
     <joint name="right_wheel_joint" type="revolute">
       <parent>base_link</parent>
       <child>right_wheel_link</child>
-      <pose>0 0 0 0 0 0</pose>
       <axis>
         <xyz>0 1 0</xyz>
         <limit>
@@ -153,12 +167,69 @@
       </axis>
     </joint>
 
-    <!-- UTM-30 (2D LiDAR) -->
+    <!-- ===================================================== -->
+    <!--                     Rear Caster                       -->
+    <!-- ===================================================== -->
+    <!-- 条件:
+         - 半径 0.07 m（拡大）
+         - 中心 x = -0.3（Base 後端に一致）
+         - 中心 z = 0.07（床接触）
+         - Joint は fixed（球が床との摩擦で回転しキャスター挙動を模擬）
+    -->
+
+    <link name="rear_caster_link">
+      <pose>-0.3 0 0.07 0 0 0</pose>
+
+      <inertial>
+        <mass>0.3</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <iyy>0.001</iyy>
+          <izz>0.001</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <collision name="collision">
+        <geometry>
+          <sphere>
+            <radius>0.07</radius>
+          </sphere>
+        </geometry>
+      </collision>
+
+      <visual name="visual">
+        <geometry>
+          <sphere>
+            <radius>0.07</radius>
+          </sphere>
+        </geometry>
+        <material>
+          <ambient>0.3 0.3 0.3 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+    <joint name="rear_caster_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>rear_caster_link</child>
+      <pose>-0.3 0 0.07 0 0 0</pose>
+    </joint>
+
+    <!-- ===================================================== -->
+    <!--                 UTM-30LX (2D LiDAR)                   -->
+    <!-- ===================================================== -->
+
     <link name="laser">
       <pose>0.075 0 0.49 0 0 0</pose>
+
       <sensor name="utm30" type="ray">
         <pose>0 0 0 0 0 0</pose>
         <update_rate>40</update_rate>
+
         <ray>
           <scan>
             <horizontal>
@@ -168,12 +239,14 @@
               <max_angle>2.35619</max_angle>
             </horizontal>
           </scan>
+
           <range>
             <min>0.1</min>
             <max>30.0</max>
             <resolution>0.01</resolution>
           </range>
         </ray>
+
         <plugin name="utm30_plugin" filename="libgazebo_ros_ray_sensor.so">
           <ros>
             <namespace>/</namespace>
@@ -185,12 +258,17 @@
       </sensor>
     </link>
 
-    <!-- Mid-360-like 3D LiDAR -->
+    <!-- ===================================================== -->
+    <!--                  Mid-360 3D LiDAR                     -->
+    <!-- ===================================================== -->
+
     <link name="mid360_frame">
       <pose>-0.425 0 1.005 0 0 0</pose>
+
       <sensor name="mid360" type="ray">
         <pose>0 0 0 0 0 0</pose>
         <update_rate>10</update_rate>
+
         <ray>
           <scan>
             <horizontal>
@@ -199,6 +277,7 @@
               <min_angle>-3.14159</min_angle>
               <max_angle>3.14159</max_angle>
             </horizontal>
+
             <vertical>
               <samples>24</samples>
               <resolution>1</resolution>
@@ -206,12 +285,14 @@
               <max_angle>0.907571</max_angle>
             </vertical>
           </scan>
+
           <range>
             <min>0.2</min>
             <max>40.0</max>
             <resolution>0.02</resolution>
           </range>
         </ray>
+
         <plugin name="mid360_plugin" filename="libgazebo_ros_ray_sensor.so">
           <ros>
             <namespace>/</namespace>
@@ -223,30 +304,32 @@
       </sensor>
     </link>
 
-    <!-- Diff drive plugin configured with wheel joints -->
+    <!-- ===================================================== -->
+    <!--                 Diff Drive Plugin                     -->
+    <!-- ===================================================== -->
+
     <plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">
       <ros>
         <namespace>/</namespace>
-        <!--
-          Gazebo_ros_diff_drive はデフォルトでモデル名を名前空間に付与するため、
-          そのままでは `/simple_robot/odom` のようなトピック名になる。
-          `fake_amcl_pose` ノードは `/odom` を購読して `/amcl_pose` を生成する
-          前提のため、絶対パスでリマップしてルート直下に固定する。
-        -->
         <remapping>cmd_vel:=/cmd_vel</remapping>
-        <remapping>odom:=/odom</remapping>
+        <remapping>odom:=/ypspur_ros/odom</remapping>
       </ros>
+
       <update_rate>50</update_rate>
+
       <left_joint>left_wheel_joint</left_joint>
       <right_joint>right_wheel_joint</right_joint>
-      <wheel_separation>0.5</wheel_separation>
-      <wheel_diameter>0.2</wheel_diameter>
-      <!-- publish_odom が false の場合は /odom が生成されないため明示的に有効化する -->
+
+      <wheel_separation>0.405</wheel_separation>
+      <wheel_diameter>0.296496</wheel_diameter>
+
       <publish_odom>true</publish_odom>
+      <publish_tf>true</publish_tf>
+
       <odom_frame>odom</odom_frame>
       <base_frame>base_link</base_frame>
-      <publish_tf>true</publish_tf>
     </plugin>
 
   </model>
 </sdf>
+

@@ -482,7 +482,7 @@ AMCL を走らせなくても `/amcl_pose` を利用する既存ロジックが�
 ### 8.2.6 注意事項
 
 * TF においては、Gazebo の diff_drive プラグインが `/odom` → `/base_link` の TF を publish することを想定する。
-* `/amcl_pose` の frame_id を `map` としているため、厳密な TF 整合性を取るならば `map→odom` の静的 TF を Identity で publish するノードを別途用意してもよい（本設計では簡略化）。
+* `/amcl_pose` の frame_id を `map` としているため、`map→odom` の静的 TF を Identity で publish するノードを追加し、実機同様に `map` を起点とした TF 木を維持する。
 
 ---
 
@@ -603,13 +603,21 @@ class Pose2D:
      * `odom_topic`: `/odom`
      * `amcl_topic`: `/amcl_pose`
 
-4. 静的 tf (`/base_link -> /mid360_frame`)
+4. 静的 tf (`/map -> /odom`)
+
+   * package: `tf2_ros`
+   * executable: `static_transform_publisher`
+   * arguments: `0 0 0 0 0 0 map odom`
+   * 実機では `mcl_3dl` が `/map -> /odom` を publish しており、シミュレーションでも
+     同フレーム構成を維持するため恒等変換として送出する。
+
+5. 静的 tf (`/base_link -> /mid360_frame`)
 
    * package: `tf2_ros`
    * executable: `static_transform_publisher`
    * arguments: `-0.425 0 1.005 0 0 0 base_link mid360_frame`
 
-5. 静的 tf (`/base_link -> /laser`)
+6. 静的 tf (`/base_link -> /laser`)
 
    * package: `tf2_ros`
    * executable: `static_transform_publisher`

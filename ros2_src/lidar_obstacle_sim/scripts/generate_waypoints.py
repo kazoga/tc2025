@@ -96,31 +96,90 @@ def segment_points(p0, p1, step, start_offset=0.0) -> List[Pose2D]:
 
 def generate_waypoints_from_polyline(points: List[Tuple[float, float]],
                                      step: float,
-                                     angle_threshold_rad: float) -> List[Pose2D]:
-    """中心線折れ線に沿って waypoint を生成."""
-    waypoints: List[Pose2D] = []
+                                     angle_threshold_rad: float,
+                                     start_offset: float = 1.0,
+                                     end_offset: float = 1.0) -> List[Pose2D]:
+    """中心線折れ線に沿って waypoint を生成.
 
+    最初と最後の waypoint は道路端から 1m 内側に配置するため、中心線上の
+    start_offset/end_offset を考慮した距離を生成に利用する。
+    """
+    if len(points) < 2:
+        return []
+
+    # セグメント長の累積距離を求め、折れ線上の任意距離を補間するための準備を行う。
+    cumulative_distances: List[float] = [0.0]
+    segment_yaws: List[float] = []
     for i in range(len(points) - 1):
         p0 = points[i]
         p1 = points[i + 1]
-        start_offset = step if i == 0 else 0.0
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        seg_len = math.hypot(dx, dy)
+        cumulative_distances.append(cumulative_distances[-1] + seg_len)
+        segment_yaws.append(math.atan2(dy, dx))
 
-        segposes = segment_points(p0, p1, step, start_offset=start_offset)
-        waypoints.extend(segposes)
+    total_length = cumulative_distances[-1]
 
-        # 次のセグメントがあれば曲がり角チェック
-        if i < len(points) - 2:
-            p2 = points[i + 2]
-            yaw_curr = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
-            yaw_next = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-            dyaw = (yaw_next - yaw_curr + math.pi) % (2 * math.pi) - math.pi
-            if abs(dyaw) >= angle_threshold_rad:
-                waypoints.append(Pose2D(x=p1[0], y=p1[1], yaw=yaw_next))
+    def interpolate_pose(distance: float) -> Pose2D:
+        """折れ線上の指定距離に対応する Pose2D を返す."""
+        for i in range(len(points) - 1):
+            if distance <= cumulative_distances[i + 1] + 1e-9:
+                seg_len = cumulative_distances[i + 1] - cumulative_distances[i]
+                if seg_len <= 0.0:
+                    return Pose2D(x=points[i][0], y=points[i][1], yaw=0.0)
 
-    # 最後の点を追加
-    last = points[-1]
-    last_yaw = waypoints[-1].yaw if waypoints else 0.0
-    waypoints.append(Pose2D(x=last[0], y=last[1], yaw=last_yaw))
+                ratio = (distance - cumulative_distances[i]) / seg_len
+                x = points[i][0] + (points[i + 1][0] - points[i][0]) * ratio
+                y = points[i][1] + (points[i + 1][1] - points[i][1]) * ratio
+                return Pose2D(x=x, y=y, yaw=segment_yaws[i])
+
+        # 端数誤差でここに来た場合は終点を返す
+        return Pose2D(x=points[-1][0], y=points[-1][1], yaw=segment_yaws[-1])
+
+    valid_start = min(max(start_offset, 0.0), total_length)
+    valid_end_candidate = max(total_length - end_offset, 0.0)
+    valid_end = max(min(valid_end_candidate, total_length), valid_start)
+
+    # 1m オフセット起点と 5m ピッチのサンプル地点を列挙
+    sampled_distances: List[Tuple[float, float | None]] = []
+    sampled_distances.append((valid_start, segment_yaws[0]))
+
+    current_distance = valid_start + step
+    while current_distance <= valid_end + 1e-6:
+        sampled_distances.append((current_distance, None))
+        current_distance += step
+
+    # 最終 1m 手前の地点を追加
+    sampled_distances.append((valid_end, segment_yaws[-1]))
+
+    # 曲がり角がしきい値以上の場合は必ず waypoint を置く
+    for i in range(1, len(points) - 1):
+        yaw_prev = segment_yaws[i - 1]
+        yaw_next = segment_yaws[i]
+        dyaw = (yaw_next - yaw_prev + math.pi) % (2 * math.pi) - math.pi
+        if abs(dyaw) >= angle_threshold_rad:
+            if valid_start - 1e-6 <= cumulative_distances[i] <= valid_end + 1e-6:
+                sampled_distances.append((cumulative_distances[i], yaw_next))
+
+    # 距離の昇順で統合し、重複距離は後勝ち（曲がり角優先）で上書きする。
+    sampled_distances.sort(key=lambda item: item[0])
+    merged_distances: List[Tuple[float, float | None]] = []
+    for dist, yaw_override in sampled_distances:
+        if merged_distances and abs(dist - merged_distances[-1][0]) < 1e-6:
+            prev_dist, prev_yaw_override = merged_distances[-1]
+            merged_distances[-1] = (
+                prev_dist,
+                yaw_override if yaw_override is not None else prev_yaw_override,
+            )
+        else:
+            merged_distances.append((dist, yaw_override))
+
+    waypoints: List[Pose2D] = []
+    for dist, yaw_override in merged_distances:
+        pose = interpolate_pose(dist)
+        if yaw_override is not None:
+            pose.yaw = yaw_override
+        waypoints.append(pose)
 
     return waypoints
 

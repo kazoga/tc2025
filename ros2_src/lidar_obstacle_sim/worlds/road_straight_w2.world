@@ -1,0 +1,18 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="road_straight_w2">
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- 直線 100m 幅 2m -->
+    <include>
+      <uri>model://road_straight_100m_w2</uri>
+    </include>
+
+  </world>
+</sdf>
+

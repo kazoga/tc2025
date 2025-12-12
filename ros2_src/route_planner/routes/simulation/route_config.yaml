@@ -1,2 +1,2 @@
 blocks:
-  - { type: fixed, name: 20251210, segment_id: "fixed/fixed.csv" }
+  - { type: fixed, name: 20251210, segment_id: "fixed/straight_2m.csv" }

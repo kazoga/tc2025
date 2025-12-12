@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""道路中心線に沿った waypoint.csv を生成するスクリプト.
+"""
+road_generator.py で生成した道路（直線/クランク/S字）に対応する
+waypoint.csv を生成するスクリプト。
 
-- 折れ線: (0,0) → (50,0) → (50,50) → (100,50) を道路中心線とみなす。
-- 各道路セグメントの長さは 50m。最初の waypoint は 5m 位置 (5,0) から開始する。
-- 5m 間隔でサンプリングし、さらに折れ角が 45° 以上の曲がり角に waypoint を追加する。
-- 出力する CSV は、元の waypoint.csv 仕様から「緯度経度(latitude,longitude)」「node」列を除いた形式とする。
-- right_is_open と left_is_open には「waypoint から右/左の道路端までの距離[m]」を出力する。
-  道路幅 5m、waypoint は常に中心線上にある前提なので、両方とも 2.5m 固定とする。
-- line_is_stop, signal_is_stop は全て 0。
-- isnot_skipnum は全て 1。
+- 道路中心線は関数で定義（直線/クランク/S字）
+- 中心線に沿って 5m ごとに waypoint を生成
+- 25度以上折れ曲がる交点では waypoint を追加
+- waypoint.csv の形式は既存仕様に合わせる
 """
 
 from __future__ import annotations
@@ -21,39 +19,64 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 
+# -----------------------------------------------------------------------------
+# 基本データ型
+# -----------------------------------------------------------------------------
+
 @dataclass
 class Pose2D:
-    """2次元の姿勢表現."""
-
     x: float
     y: float
     yaw: float  # [rad]
 
 
-def segment_points(p0: Tuple[float, float],
-                   p1: Tuple[float, float],
-                   step: float,
-                   start_offset: float = 0.0) -> List[Pose2D]:
-    """p0→p1 区間を step[m] ごとにサンプリングする.
+# -----------------------------------------------------------------------------
+# 道路中心線の定義（road_generator.py と一致）
+# -----------------------------------------------------------------------------
 
-    Args:
-        p0: 始点 (x0, y0)
-        p1: 終点 (x1, y1)
-        step: サンプリング間隔[m]
-        start_offset: 始点から最初のサンプルまでの距離[m]
+def get_straight_100m() -> List[Tuple[float, float]]:
+    return [(0.0, 0.0), (100.0, 0.0)]
 
-    Returns:
-        Pose2D のリスト（終点は含まない）
-    """
+
+def get_crank_50m() -> List[Tuple[float, float]]:
+    # 直線 50m → 左折 50m → 右折 50m
+    return [
+        (0.0, 0.0),
+        (50.0, 0.0),
+        (50.0, 50.0),
+        (100.0, 50.0),
+    ]
+
+
+def get_scurve_100m() -> List[Tuple[float, float]]:
+    """S字（曲率B）: road_generator.py と同条件"""
+    length_x = 100.0
+    amplitude = 20.0
+    base_y = 50.0
+    num_points = 41  # 約 2.5m ピッチ
+
+    pts = []
+    for i in range(num_points):
+        x = length_x * i / (num_points - 1)
+        y = base_y + amplitude * math.sin(2.0 * math.pi * x / length_x)
+        pts.append((x, y))
+    return pts
+
+
+# -----------------------------------------------------------------------------
+# サンプリング処理
+# -----------------------------------------------------------------------------
+
+def segment_points(p0, p1, step, start_offset=0.0) -> List[Pose2D]:
+    """p0→p1 を step[m] 間隔でサンプリング."""
     x0, y0 = p0
     x1, y1 = p1
-    dx = x1 - x0
-    dy = y1 - y0
+    dx, dy = x1 - x0, y1 - y0
     length = math.hypot(dx, dy)
     yaw = math.atan2(dy, dx)
 
-    poses: List[Pose2D] = []
-    if length <= 0.0:
+    poses = []
+    if length <= 1e-6:
         return poses
 
     effective_length = length - start_offset
@@ -64,135 +87,130 @@ def segment_points(p0: Tuple[float, float],
     for i in range(n_steps):
         s = start_offset + step * i
         t = s / length
-        x = x0 + dx * t
-        y = y0 + dy * t
-        poses.append(Pose2D(x=x, y=y, yaw=yaw))
-
+        poses.append(Pose2D(
+            x=x0 + dx * t,
+            y=y0 + dy * t,
+            yaw=yaw
+        ))
     return poses
 
 
-def generate_waypoints() -> List[Pose2D]:
-    """道路中心線に沿った waypoint の Pose2D リストを生成する."""
-    # 折れ線（道路中心線）
-    points: List[Tuple[float, float]] = [
-        (0.0, 0.0),
-        (50.0, 0.0),
-        (50.0, 50.0),
-        (100.0, 50.0),
-    ]
-    step = 5.0
-    angle_threshold = math.radians(45.0)
-
+def generate_waypoints_from_polyline(points: List[Tuple[float, float]],
+                                     step: float,
+                                     angle_threshold_rad: float) -> List[Pose2D]:
+    """中心線折れ線に沿って waypoint を生成."""
     waypoints: List[Pose2D] = []
 
     for i in range(len(points) - 1):
         p0 = points[i]
         p1 = points[i + 1]
-        start_offset = 5.0 if i == 0 else 0.0
+        start_offset = step if i == 0 else 0.0
 
-        # セグメント内の5m刻み
-        seg_poses = segment_points(p0, p1, step, start_offset=start_offset)
-        waypoints.extend(seg_poses)
+        segposes = segment_points(p0, p1, step, start_offset=start_offset)
+        waypoints.extend(segposes)
 
-        # 曲がり角の処理（45°以上なら角に waypoint を追加）
+        # 次のセグメントがあれば曲がり角チェック
         if i < len(points) - 2:
-            p_next = points[i + 2]
+            p2 = points[i + 2]
             yaw_curr = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
-            yaw_next = math.atan2(p_next[1] - p1[1], p_next[0] - p1[0])
-            # -pi〜pi に正規化した差分
-            dyaw = (yaw_next - yaw_curr + math.pi) % (2.0 * math.pi) - math.pi
-            if abs(dyaw) >= angle_threshold:
+            yaw_next = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+            dyaw = (yaw_next - yaw_curr + math.pi) % (2 * math.pi) - math.pi
+            if abs(dyaw) >= angle_threshold_rad:
                 waypoints.append(Pose2D(x=p1[0], y=p1[1], yaw=yaw_next))
 
-    # 終点も追加
+    # 最後の点を追加
     last = points[-1]
-    if waypoints:
-        yaw_last = waypoints[-1].yaw
-    else:
-        yaw_last = 0.0
-    waypoints.append(Pose2D(x=last[0], y=last[1], yaw=yaw_last))
+    last_yaw = waypoints[-1].yaw if waypoints else 0.0
+    waypoints.append(Pose2D(x=last[0], y=last[1], yaw=last_yaw))
 
     return waypoints
 
 
-def write_waypoints_csv(waypoints: List[Pose2D], output_path: str) -> None:
-    """waypoint リストを waypoint.csv として書き出す.
+# -----------------------------------------------------------------------------
+# waypoint.csv 出力
+# -----------------------------------------------------------------------------
 
-    出力カラムは次の通り:
-    label,x,y,z,q1,q2,q3,q4,right_is_open,left_is_open,line_is_stop,signal_is_stop,isnot_skipnum
-
-    - label: 1 から始まる連番
-    - x,y,z: map/world 座標系。z は 0.0 固定
-    - q1,q2,q3,q4: quaternion (x,y,z,w)。yaw のみを持つ回転を z 軸まわりに付与する。
-    - right_is_open,left_is_open: waypoint から右/左の道路端までの距離[m]。道路幅 5m のため両方 2.5。
-    - line_is_stop,signal_is_stop: すべて 0
-    - isnot_skipnum: すべて 1
-    """
+def write_waypoint_csv(waypoints: List[Pose2D], width: float, path: str) -> None:
     header = [
-        'label',
-        'x',
-        'y',
-        'z',
-        'q1',
-        'q2',
-        'q3',
-        'q4',
-        'right_is_open',
-        'left_is_open',
-        'line_is_stop',
-        'signal_is_stop',
+        'label', 'x', 'y', 'z',
+        'q1', 'q2', 'q3', 'q4',
+        'right_is_open', 'left_is_open',
+        'line_is_stop', 'signal_is_stop',
         'isnot_skipnum',
     ]
+    half_width = width / 2.0
 
-    road_width = 5.0
-    half_width = road_width / 2.0
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f)
+        w.writerow(header)
 
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-
-        for idx, wp in enumerate(waypoints, start=1):
+        for i, p in enumerate(waypoints, start=1):
             z = 0.0
-            # yaw -> quaternion (x,y,z,w)
-            half = wp.yaw / 2.0
-            q1 = 0.0
-            q2 = 0.0
+            half = p.yaw / 2.0
+            q1, q2 = 0.0, 0.0  # roll,pitch 無し
             q3 = math.sin(half)
             q4 = math.cos(half)
 
-            # 左右の道路端までの距離[m]
-            right_dist = half_width
-            left_dist = half_width
-
-            line_is_stop = 0
-            signal_is_stop = 0
-            isnot_skipnum = 1
-
             row = [
-                idx,
-                wp.x,
-                wp.y,
-                z,
-                q1,
-                q2,
-                q3,
-                q4,
-                right_dist,
-                left_dist,
-                line_is_stop,
-                signal_is_stop,
-                isnot_skipnum,
+                i, p.x, p.y, z,
+                q1, q2, q3, q4,
+                half_width, half_width,
+                0, 0, 1,
             ]
-            writer.writerow(row)
+            w.writerow(row)
 
 
-def main() -> None:
-    """エントリーポイント."""
-    waypoints = generate_waypoints()
-    output_path = 'waypoints.csv'
-    write_waypoints_csv(waypoints, output_path)
-    print(f'Generated {output_path} with {len(waypoints)} poses.')
+# -----------------------------------------------------------------------------
+# メイン
+# -----------------------------------------------------------------------------
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--road",
+        choices=["straight", "crank", "scurve"],
+        required=True,
+        help="道路種類"
+    )
+    parser.add_argument(
+        "--width",
+        type=float,
+        required=True,
+        help="道幅[m]（2,3,5 など）"
+    )
+    parser.add_argument(
+        "--output",
+        default="waypoints.csv",
+        help="出力 waypoint.csv のパス"
+    )
+
+    args = parser.parse_args()
+
+    # 道路中心線取得
+    if args.road == "straight":
+        points = get_straight_100m()
+    elif args.road == "crank":
+        points = get_crank_50m()
+    elif args.road == "scurve":
+        points = get_scurve_100m()
+    else:
+        raise ValueError("unknown road type")
+
+    # waypoint 生成
+    waypoints = generate_waypoints_from_polyline(
+        points,
+        step=5.0,
+        angle_threshold_rad=math.radians(25.0),
+    )
+
+    # CSV 出力
+    write_waypoint_csv(waypoints, args.width, args.output)
+
+    print(f"Generated {args.output} with {len(waypoints)} waypoints.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
+

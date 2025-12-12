@@ -1,0 +1,18 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="road_scurve_w5">
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- S字 100m × 5m -->
+    <include>
+      <uri>model://road_scurve_100m_w5</uri>
+    </include>
+
+  </world>
+</sdf>
+

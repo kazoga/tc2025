@@ -171,16 +171,21 @@ class RandomPylonSpawner(Node):
 
     # ------------------ 中心線上の位置計算 ------------------
 
-    def _sample_longitudinal_positions(
+    def _sample_positions_on_segment(
         self,
+        segment_index: int,
+        segment: Segment,
+        start_s: float,
         min_spacing: float,
         margin: float,
-        desired_count_range: Tuple[int, int],
     ) -> List[float]:
-        """中心線全体の長手方向で配置位置 s[m] をランダムに決める."""
-        s_min = margin
-        s_max = max(self.total_length - margin, s_min)
-        desired_count = random.randint(*desired_count_range)
+        """各セグメント長に応じて長手方向の配置位置を決める."""
+        s_min = start_s + margin
+        s_max = start_s + max(segment.length - margin, margin)
+
+        # 50m あたり 2〜4 本を基本とし、セグメント長に比例させる
+        segment_factor = max(1, math.ceil(segment.length / 50.0))
+        desired_count = random.randint(2, 4) * segment_factor
 
         positions: List[float] = []
         attempts = 0
@@ -192,7 +197,9 @@ class RandomPylonSpawner(Node):
 
         positions.sort()
         if not positions:
-            self.get_logger().warn('中心線上にパイロンを配置できませんでした。パラメータを確認してください。')
+            self.get_logger().warn(
+                f'Segment {segment_index} にパイロンを配置できませんでした。範囲を確認してください。'
+            )
 
         return positions
 
@@ -284,9 +291,7 @@ class RandomPylonSpawner(Node):
             else:
                 merged.append((a, b))
 
-        coverage_min = merged[0][0]
-        coverage_max = merged[-1][1]
-        covered_width = coverage_max - coverage_min
+        covered_width = sum(b - a for a, b in merged)
         remaining_width = road_width - covered_width
         return remaining_width >= required_gap
 
@@ -309,41 +314,47 @@ class RandomPylonSpawner(Node):
 
         pylon_index = 0
 
-        # 長手方向の位置 s[m] を決定
-        axis_positions = self._sample_longitudinal_positions(
-            min_spacing=min_spacing,
-            margin=margin,
-            desired_count_range=desired_count_range,
-        )
-
-        for s in axis_positions:
-            center_x, center_y, yaw = self._pose_on_centerline(s)
-
-            # 1〜3 本ランダムに配置しつつ、隙間 1m を残す
-            num_pylons = random.randint(1, 3)
-            arrangement = self._choose_arrangement(num_pylons)
-            lateral_offsets = self._compute_lateral_offsets(
-                num_pylons, self.road_width, arrangement
+        # セグメント単位で長手方向の位置 s[m] を決定
+        start_s = 0.0
+        for segment_index, segment in enumerate(self.segments):
+            axis_positions = self._sample_positions_on_segment(
+                segment_index=segment_index,
+                segment=segment,
+                start_s=start_s,
+                min_spacing=min_spacing,
+                margin=margin,
             )
 
-            if not self._has_enough_lateral_gap(lateral_offsets, self.road_width):
-                # 隙間が足りない場合は本数を減らす（最終的には1本センター）
-                self.get_logger().debug(
-                    '隙間 1m を確保できない配置のため、配置パターンを簡素化します。'
-                )
-                lateral_offsets = [0.0]
+            start_s += segment.length
 
-            # 各オフセットごとにパイロンをスポーン
-            for lateral_offset in lateral_offsets:
-                pose = self._build_pose(center_x, center_y, yaw, lateral_offset)
-                if self._is_inside_origin_safety_zone(pose):
+            for s in axis_positions:
+                center_x, center_y, yaw = self._pose_on_centerline(s)
+
+                # 1〜3 本ランダムに配置しつつ、隙間 1m を残す
+                num_pylons = random.randint(1, 3)
+                arrangement = self._choose_arrangement(num_pylons)
+                lateral_offsets = self._compute_lateral_offsets(
+                    num_pylons, self.road_width, arrangement
+                )
+
+                if not self._has_enough_lateral_gap(lateral_offsets, self.road_width):
+                    # 隙間が足りない場合は本数を減らす（最終的には1本センター）
                     self.get_logger().debug(
-                        '原点から 5m 以内のためパイロン生成をスキップします。'
+                        '隙間 1m を確保できない配置のため、配置パターンを簡素化します。'
                     )
-                    continue
-                name = f'{self.road_type}_pylon_{pylon_index}'
-                self._spawn_single_pylon(model_path, name, pose)
-                pylon_index += 1
+                    lateral_offsets = [0.0]
+
+                # 各オフセットごとにパイロンをスポーン
+                for lateral_offset in lateral_offsets:
+                    pose = self._build_pose(center_x, center_y, yaw, lateral_offset)
+                    if self._is_inside_origin_safety_zone(pose):
+                        self.get_logger().debug(
+                            '原点から 5m 以内のためパイロン生成をスキップします。'
+                        )
+                        continue
+                    name = f'{self.road_type}_pylon_{pylon_index}'
+                    self._spawn_single_pylon(model_path, name, pose)
+                    pylon_index += 1
 
     def _build_pose(self, cx: float, cy: float, yaw: float, lateral_offset: float) -> Pose:
         """中心線上の点 (cx,cy,yaw) と左右オフセットから Pose を構築."""

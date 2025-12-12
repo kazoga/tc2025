@@ -309,6 +309,9 @@ class RandomPylonSpawner(Node):
         )
         margin = self.get_parameter('longitudinal_margin').get_parameter_value().double_value
 
+        segment_equiv = max(1, int(math.ceil(self.total_length / 50.0)))
+        desired_count_range = (segment_equiv * 2, segment_equiv * 4)
+
         pylon_index = 0
 
         # セグメント単位で長手方向の位置 s[m] を決定

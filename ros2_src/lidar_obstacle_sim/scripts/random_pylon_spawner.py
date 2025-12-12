@@ -330,7 +330,7 @@ class RandomPylonSpawner(Node):
             for s in axis_positions:
                 center_x, center_y, yaw = self._pose_on_centerline(s)
 
-                # 1〜3 本ランダムに配置しつつ、隙間 1m を残す
+                # 1〜3 本ランダムに配置しつつ、隙間 1m を残す。
                 num_pylons = random.randint(1, 3)
                 arrangement = self._choose_arrangement(num_pylons)
                 lateral_offsets = self._compute_lateral_offsets(
@@ -338,11 +338,37 @@ class RandomPylonSpawner(Node):
                 )
 
                 if not self._has_enough_lateral_gap(lateral_offsets, self.road_width):
-                    # 隙間が足りない場合は本数を減らす（最終的には1本センター）
-                    self.get_logger().debug(
-                        '隙間 1m を確保できない配置のため、配置パターンを簡素化します。'
-                    )
-                    lateral_offsets = [0.0]
+                    # gap 判定で弾かれた場合は配置パターンを組み替えて再挑戦する。
+                    fallback_arrangements = ['spread', 'cluster']
+                    for candidate in fallback_arrangements:
+                        lateral_offsets = self._compute_lateral_offsets(
+                            num_pylons, self.road_width, candidate
+                        )
+                        if self._has_enough_lateral_gap(
+                            lateral_offsets, self.road_width
+                        ):
+                            arrangement = candidate
+                            break
+
+                if not self._has_enough_lateral_gap(lateral_offsets, self.road_width):
+                    # それでも隙間を確保できない場合のみ本数を減らす。
+                    while num_pylons > 1:
+                        num_pylons -= 1
+                        arrangement = self._choose_arrangement(num_pylons)
+                        lateral_offsets = self._compute_lateral_offsets(
+                            num_pylons, self.road_width, arrangement
+                        )
+                        if self._has_enough_lateral_gap(
+                            lateral_offsets, self.road_width
+                        ):
+                            break
+                    if not self._has_enough_lateral_gap(
+                        lateral_offsets, self.road_width
+                    ):
+                        self.get_logger().debug(
+                            '隙間 1m を確保できないためセンター 1 本に縮退します。'
+                        )
+                        lateral_offsets = [0.0]
 
                 # 各オフセットごとにパイロンをスポーン
                 for lateral_offset in lateral_offsets:

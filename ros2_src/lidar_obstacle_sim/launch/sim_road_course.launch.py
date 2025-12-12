@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import os
-from typing import List, Dict
+from typing import Dict
 
 from ament_index_python.packages import (
     get_package_prefix,
@@ -27,7 +27,7 @@ from launch.actions import (
 from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
-    TextSubstitution,
+    PythonExpression,
 )
 from launch_ros.substitutions import FindPackageShare
 from launch.conditions import IfCondition
@@ -73,14 +73,18 @@ def generate_launch_description() -> LaunchDescription:
     #   crank:    w3, w5
     #   scurve:   w3, w5
     #
+    world_file_name = PythonExpression([
+        "'road_' + ",
+        road_type,
+        " + '_w' + ",
+        road_width,
+        " + '.world'",
+    ])
+
     world_path = PathJoinSubstitution([
         FindPackageShare('lidar_obstacle_sim'),
         'worlds',
-        TextSubstitution(text='road_'),
-        road_type,
-        TextSubstitution(text='_w'),
-        road_width,
-        TextSubstitution(text='.world'),
+        world_file_name,
     ])
 
     # ============================================================

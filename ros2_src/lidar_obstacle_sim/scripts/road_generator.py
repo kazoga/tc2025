@@ -200,6 +200,7 @@ def build_road_model_sdf(
     width: float,
     panel_max_length: float = 5.0,
     height: float = 0.1,
+    overlap_length: float = 0.0,
 ) -> str:
     """複数セグメントから 1 つの道路モデル SDF を生成.
 
@@ -209,6 +210,7 @@ def build_road_model_sdf(
         width: 道幅 [m].
         panel_max_length: パネル1枚の最大長さ.
         height: 道路の厚み [m].
+        overlap_length: 隣接パネル同士の隙間を埋めるために前後へ上乗せする長さ.
 
     Returns:
         model.sdf 全体の XML 文字列.
@@ -222,12 +224,13 @@ def build_road_model_sdf(
     for idx, panel in enumerate(panel_segments):
         center_x, center_y = panel.center
         link_name = f"panel_{idx:03d}"
+        panel_length = panel.length + overlap_length * 2.0
         link_xml_list.append(
             make_box_link_sdf(
                 link_name=link_name,
                 center_x=center_x,
                 center_y=center_y,
-                length=panel.length,
+                length=panel_length,
                 width=width,
                 height=height,
                 yaw=panel.yaw,
@@ -270,11 +273,10 @@ def build_crank_50m_segments(width: float) -> List[RoadSegment]:
     図示すると概ね以下のような形（上から見た図）:
         (0,0) → (50,0) → (50,50) → (100,50)
     """
-    w2 = width / 2.0
     p0 = (0.0, 0.0)
-    p1 = (50.0 + w2, 0.0)          # ← 左折前の直線を延伸
-    p2 = (50.0, 50.0 + w2)    # ← 左折後も延伸
-    p3 = (100.0, 50.0)   # ← 右折後も延伸
+    p1 = (50.0, 0.0)
+    p2 = (50.0, 50.0)
+    p3 = (100.0, 50.0)
 
     return segments_along_polyline([p0, p1, p2, p3])
 
@@ -345,6 +347,7 @@ def main() -> None:
             width=width,
             panel_max_length=5.0,
             height=0.1,
+            overlap_length=width / 2.0,
         )
         write_model(model_name, sdf)
 
@@ -358,6 +361,7 @@ def main() -> None:
             width=width,
             panel_max_length=5.0,
             height=0.1,
+            overlap_length=width / 2.0,
         )
         write_model(model_name, sdf)
 

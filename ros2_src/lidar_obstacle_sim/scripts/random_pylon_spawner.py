@@ -182,7 +182,9 @@ class RandomPylonSpawner(Node):
 
         parameter = self.get_parameter(name)
         parameter_value = parameter.get_parameter_value()
-        param_type = parameter_value.type_
+        param_type = getattr(parameter_value, 'type', None)
+        if param_type is None:
+            param_type = getattr(parameter, 'type_', None)
 
         if param_type == Parameter.Type.DOUBLE:
             return parameter_value.double_value

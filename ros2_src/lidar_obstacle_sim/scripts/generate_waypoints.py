@@ -52,13 +52,12 @@ def get_scurve_100m() -> List[Tuple[float, float]]:
     """S字（曲率B）: road_generator.py と同条件"""
     length_x = 100.0
     amplitude = 20.0
-    base_y = 50.0
     num_points = 41  # 約 2.5m ピッチ
 
     pts = []
     for i in range(num_points):
         x = length_x * i / (num_points - 1)
-        y = base_y + amplitude * math.sin(2.0 * math.pi * x / length_x)
+        y = amplitude * math.sin(2.0 * math.pi * x / length_x)
         pts.append((x, y))
     return pts
 

@@ -24,6 +24,7 @@ from gazebo_msgs.srv import SpawnEntity
 from geometry_msgs.msg import Pose
 from rclpy.logging import get_logger
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 
 
 # ==========================
@@ -129,13 +130,9 @@ class RandomPylonSpawner(Node):
 
         # 道路パラメータ
         self.road_type = self.get_parameter('road_type').get_parameter_value().string_value
-        self.road_width = self.get_parameter('road_width').get_parameter_value().double_value
-        self.min_lateral_gap = (
-            self.get_parameter('min_lateral_gap').get_parameter_value().double_value
-        )
-        self.pylon_block_half = (
-            self.get_parameter('pylon_block_half').get_parameter_value().double_value
-        )
+        self.road_width = self._get_parameter_as_float('road_width')
+        self.min_lateral_gap = self._get_parameter_as_float('min_lateral_gap')
+        self.pylon_block_half = self._get_parameter_as_float('pylon_block_half')
 
         self.get_logger().info(
             f'Road type: {self.road_type}, width: {self.road_width:.2f} m'
@@ -168,6 +165,47 @@ class RandomPylonSpawner(Node):
 
         self.get_logger().info('RandomPylonSpawner started. Spawning pylons...')
         self.spawn_pylons_once()
+
+    def _get_parameter_as_float(self, name: str) -> float:
+        """数値パラメータを文字列入力も考慮して float に変換する.
+
+        LaunchConfiguration から渡された場合など、型が string のまま届くと
+        get_parameter(...).double_value が 0.0 になってしまうため、整数・文字列を
+        包括的に受け付けて float へ変換する。
+
+        Args:
+            name (str): 取得するパラメータ名。
+
+        Returns:
+            float: 変換後の値。変換不可の場合は警告を出して 0.0 を返す。
+        """
+
+        parameter = self.get_parameter(name)
+        parameter_value = parameter.get_parameter_value()
+        param_type = getattr(parameter_value, 'type', None)
+        if param_type is None:
+            param_type = getattr(parameter, 'type_', None)
+
+        if param_type == Parameter.Type.DOUBLE:
+            return parameter_value.double_value
+        if param_type == Parameter.Type.INTEGER:
+            return float(parameter_value.integer_value)
+        if param_type == Parameter.Type.STRING:
+            try:
+                return float(parameter_value.string_value)
+            except ValueError:
+                self.get_logger().warn(
+                    f'{name} を float に変換できませんでした: '
+                    f"'{parameter_value.string_value}'"
+                )
+
+        try:
+            return float(parameter.value)
+        except (TypeError, ValueError):
+            self.get_logger().warn(
+                f'{name} を float に変換できないため 0.0 を使用します。'
+            )
+        return 0.0
 
     # ------------------ 中心線上の位置計算 ------------------
 
@@ -330,7 +368,7 @@ class RandomPylonSpawner(Node):
             for s in axis_positions:
                 center_x, center_y, yaw = self._pose_on_centerline(s)
 
-                # 1〜3 本ランダムに配置しつつ、隙間 1m を残す
+                # 1〜3 本ランダムに配置しつつ、隙間 1m を残す。
                 num_pylons = random.randint(1, 3)
                 arrangement = self._choose_arrangement(num_pylons)
                 lateral_offsets = self._compute_lateral_offsets(
@@ -338,11 +376,37 @@ class RandomPylonSpawner(Node):
                 )
 
                 if not self._has_enough_lateral_gap(lateral_offsets, self.road_width):
-                    # 隙間が足りない場合は本数を減らす（最終的には1本センター）
-                    self.get_logger().debug(
-                        '隙間 1m を確保できない配置のため、配置パターンを簡素化します。'
-                    )
-                    lateral_offsets = [0.0]
+                    # gap 判定で弾かれた場合は配置パターンを組み替えて再挑戦する。
+                    fallback_arrangements = ['spread', 'cluster']
+                    for candidate in fallback_arrangements:
+                        lateral_offsets = self._compute_lateral_offsets(
+                            num_pylons, self.road_width, candidate
+                        )
+                        if self._has_enough_lateral_gap(
+                            lateral_offsets, self.road_width
+                        ):
+                            arrangement = candidate
+                            break
+
+                if not self._has_enough_lateral_gap(lateral_offsets, self.road_width):
+                    # それでも隙間を確保できない場合のみ本数を減らす。
+                    while num_pylons > 1:
+                        num_pylons -= 1
+                        arrangement = self._choose_arrangement(num_pylons)
+                        lateral_offsets = self._compute_lateral_offsets(
+                            num_pylons, self.road_width, arrangement
+                        )
+                        if self._has_enough_lateral_gap(
+                            lateral_offsets, self.road_width
+                        ):
+                            break
+                    if not self._has_enough_lateral_gap(
+                        lateral_offsets, self.road_width
+                    ):
+                        self.get_logger().debug(
+                            '隙間 1m を確保できないためセンター 1 本に縮退します。'
+                        )
+                        lateral_offsets = [0.0]
 
                 # 各オフセットごとにパイロンをスポーン
                 for lateral_offset in lateral_offsets:

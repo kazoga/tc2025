@@ -74,11 +74,11 @@ def generate_launch_description() -> LaunchDescription:
     #   scurve:   w3, w5
     #
     world_file_name = PythonExpression([
-        "'road_' + ",
+        "'road_' + '",
         road_type,
-        " + '_w' + ",
+        "' + '_w' + '",
         road_width,
-        " + '.world'",
+        "' + '.world'",
     ])
 
     world_path = PathJoinSubstitution([

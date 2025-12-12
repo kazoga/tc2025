@@ -76,13 +76,12 @@ def get_polyline_points(road_type: str) -> List[Tuple[float, float]]:
         # road_generator.py の S 字と同条件（曲率 B）
         length_x = 100.0
         amplitude = 20.0
-        base_y = 50.0
         num_points = 41  # 約 2.5m ピッチ
 
         pts: List[Tuple[float, float]] = []
         for i in range(num_points):
             x = length_x * i / (num_points - 1)
-            y = base_y + amplitude * math.sin(2.0 * math.pi * x / length_x)
+            y = amplitude * math.sin(2.0 * math.pi * x / length_x)
             pts.append((x, y))
         return pts
 
@@ -176,7 +175,7 @@ class RandomPylonSpawner(Node):
         self,
         min_spacing: float,
         margin: float,
-        desired_count_range: Tuple[int, int] = (2, 4),
+        desired_count_range: Tuple[int, int],
     ) -> List[float]:
         """中心線全体の長手方向で配置位置 s[m] をランダムに決める."""
         s_min = margin
@@ -285,16 +284,11 @@ class RandomPylonSpawner(Node):
             else:
                 merged.append((a, b))
 
-        # 未被覆区間（隙間）の幅を確認
-        prev = -half_w
-        for a, b in merged:
-            gap = a - prev
-            if gap >= required_gap:
-                return True
-            prev = b
-        # 最後の区間の右端〜道路端
-        final_gap = half_w - prev
-        return final_gap >= required_gap
+        coverage_min = merged[0][0]
+        coverage_max = merged[-1][1]
+        covered_width = coverage_max - coverage_min
+        remaining_width = road_width - covered_width
+        return remaining_width >= required_gap
 
     # ------------------ スポーン処理 ------------------
 
@@ -310,13 +304,16 @@ class RandomPylonSpawner(Node):
         )
         margin = self.get_parameter('longitudinal_margin').get_parameter_value().double_value
 
+        segment_equiv = max(1, int(math.ceil(self.total_length / 50.0)))
+        desired_count_range = (segment_equiv * 2, segment_equiv * 4)
+
         pylon_index = 0
 
         # 長手方向の位置 s[m] を決定
         axis_positions = self._sample_longitudinal_positions(
             min_spacing=min_spacing,
             margin=margin,
-            desired_count_range=(2, 4),
+            desired_count_range=desired_count_range,
         )
 
         for s in axis_positions:

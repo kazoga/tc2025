@@ -133,6 +133,8 @@ class RandomPylonSpawner(Node):
         self.road_width = self._get_parameter_as_float('road_width')
         self.min_lateral_gap = self._get_parameter_as_float('min_lateral_gap')
         self.pylon_block_half = self._get_parameter_as_float('pylon_block_half')
+        # S 字路のみ長手方向の密度を抑えるための保持確率。
+        self.scurve_density_keep_prob = 0.5
 
         self.get_logger().info(
             f'Road type: {self.road_type}, width: {self.road_width:.2f} m'
@@ -362,6 +364,12 @@ class RandomPylonSpawner(Node):
                 min_spacing=min_spacing,
                 margin=margin,
             )
+
+            if self.road_type == 'scurve':
+                # S 字路はセグメント分割が多くなるため、長手方向の配置密度を約半減させる。
+                axis_positions = [
+                    s for s in axis_positions if random.random() < self.scurve_density_keep_prob
+                ]
 
             start_s += segment.length
 

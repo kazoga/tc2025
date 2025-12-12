@@ -261,7 +261,7 @@ def build_straight_100m_segments() -> List[RoadSegment]:
     return [RoadSegment(start=p0, end=p1)]
 
 
-def build_crank_50m_segments() -> List[RoadSegment]:
+def build_crank_50m_segments(width: float) -> List[RoadSegment]:
     """1辺 50m のクランク路のセグメント（中心線）を生成.
 
     ユーザ指定どおり:
@@ -270,10 +270,11 @@ def build_crank_50m_segments() -> List[RoadSegment]:
     図示すると概ね以下のような形（上から見た図）:
         (0,0) → (50,0) → (50,50) → (100,50)
     """
+    w2 = width / 2.0
     p0 = (0.0, 0.0)
-    p1 = (50.0, 0.0)   # 直線 50m
-    p2 = (50.0, 50.0)  # 左折して 50m
-    p3 = (100.0, 50.0)  # 右折して 50m
+    p1 = (50.0 + w2, 0.0)          # ← 左折前の直線を延伸
+    p2 = (50.0, 50.0 + w2)    # ← 左折後も延伸
+    p3 = (100.0, 50.0)   # ← 右折後も延伸
 
     return segments_along_polyline([p0, p1, p2, p3])
 
@@ -289,13 +290,12 @@ def build_s_curve_segments() -> List[RoadSegment]:
     """
     length_x = 100.0
     amplitude = 20.0  # 振幅（道の“振れ幅”）
-    base_y = 50.0
     num_points = 41  # 0, 2.5, 5.0, ..., 100.0 （約2.5m刻み）
 
     points: List[Tuple[float, float]] = []
     for i in range(num_points):
         x = length_x * i / (num_points - 1)
-        y = base_y + amplitude * math.sin(2.0 * math.pi * x / length_x)
+        y = amplitude * math.sin(2.0 * math.pi * x / length_x)
         points.append((x, y))
 
     segments = segments_along_polyline(points)
@@ -336,8 +336,8 @@ def main() -> None:
         write_model(model_name, sdf)
 
     # 2) クランク路（1辺 50m） 幅 3m, 5m
-    crank_segments = build_crank_50m_segments()
     for width in (3.0, 5.0):
+        crank_segments = build_crank_50m_segments(width)
         model_name = f"road_crank_50m_w{int(width)}"
         sdf = build_road_model_sdf(
             model_name=model_name,

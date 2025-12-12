@@ -129,6 +129,26 @@ def generate_launch_description() -> LaunchDescription:
     # ============================================================
     pylon_model_path = os.path.join(pkg_share, 'models', 'pylon', 'model.sdf')
 
+    simple_robot_path = os.path.join(pkg_share, 'models', 'simple_robot', 'model.sdf')
+
+    spawn_robot_node = Node(
+        package='gazebo_ros',
+        executable='spawn_entity.py',
+        arguments=[
+            '-entity',
+            'simple_robot',
+            '-file',
+            simple_robot_path,
+            '-x',
+            '1.4',
+            '-y',
+            '0',
+            '-z',
+            '0.5',
+        ],
+        output='screen',
+    )
+
     spawn_pylons_node = Node(
         package='lidar_obstacle_sim',
         executable='random_pylon_spawner.py',
@@ -191,6 +211,7 @@ def generate_launch_description() -> LaunchDescription:
         enable_pylons_arg,
 
         gazebo_process,
+        spawn_robot_node,
         spawn_pylons_node,
         fake_amcl_node,
         map_to_odom_tf,

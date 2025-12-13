@@ -33,6 +33,7 @@ public:
   void Load(physics::ModelPtr model, sdf::ElementPtr sdf) override
   {
     model_ = model;
+    initial_orientation_ = model_->WorldPose().Rot();
 
     if (!rclcpp::ok())
     {
@@ -95,6 +96,8 @@ private:
   {
     executor_.spin_some();
 
+    KeepHorizontalPose();
+
     ignition::math::Pose3d robot_pose;
     bool has_pose = false;
     {
@@ -149,6 +152,15 @@ private:
     }
   }
 
+  void KeepHorizontalPose()
+  {
+    ignition::math::Pose3d current_pose = model_->WorldPose();
+    current_pose.Rot() = initial_orientation_;
+    model_->SetWorldPose(current_pose);
+    model_->SetAngularVel(ignition::math::Vector3d::Zero);
+    model_->SetAngularAccel(ignition::math::Vector3d::Zero);
+  }
+
   physics::ModelPtr model_;
   event::ConnectionPtr update_connection_;
 
@@ -166,6 +178,7 @@ private:
   bool moving_started_{false};
   bool stopped_{false};
   ignition::math::Pose3d robot_pose_{0, 0, 0, 0, 0, 0};
+  ignition::math::Quaterniond initial_orientation_{1.0, 0.0, 0.0, 0.0};
   std::mutex pose_mutex_;
 };
 

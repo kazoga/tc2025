@@ -3,6 +3,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <gazebo/common/Events.hh>
 #include <gazebo/common/Plugin.hh>
@@ -33,7 +34,7 @@ public:
   {
     model_ = model;
 
-    if (!rclcpp::is_initialized())
+    if (!rclcpp::ok())
     {
       rclcpp::init(0, nullptr);
     }
@@ -58,7 +59,8 @@ public:
     }
 
     rclcpp::NodeOptions options;
-    options.use_sim_time(use_sim_time_);
+    options.automatically_declare_parameters_from_overrides(true);
+    options.parameter_overrides({rclcpp::Parameter("use_sim_time", use_sim_time_)});
     ros_node_ = rclcpp::Node::make_shared("moving_obstacle_plugin", options);
     executor_.add_node(ros_node_);
 

@@ -17,20 +17,20 @@
     <include>
       <uri>model://simple_robot</uri>
       <name>simple_robot</name>
-      <pose>-45 0 0.5 0 0 0</pose>
+      <pose>1 0 0.5 0 0 0</pose>
     </include>
 
     <!-- 直線路上の移動障害物 -->
     <include>
       <uri>model://moving_obstacle</uri>
       <name>moving_obstacle_front</name>
-      <pose>-10 0 0.25 0 0 3.14159</pose>
+      <pose>40 0 0.25 0 0 3.14159</pose>
     </include>
 
     <include>
       <uri>model://moving_obstacle</uri>
       <name>moving_obstacle_back</name>
-      <pose>20 0 0.25 0 0 3.14159</pose>
+      <pose>80 0 0.25 0 0 3.14159</pose>
     </include>
   </world>
 </sdf>

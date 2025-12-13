@@ -1,0 +1,626 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="road_straight_100m_w3">
+    <static>true</static>
+
+    <link name="panel_000">
+      <pose>2.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_000_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_000_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_001">
+      <pose>7.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_001_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_001_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_002">
+      <pose>12.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_002_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_002_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_003">
+      <pose>17.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_003_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_003_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_004">
+      <pose>22.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_004_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_004_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_005">
+      <pose>27.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_005_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_005_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_006">
+      <pose>32.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_006_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_006_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_007">
+      <pose>37.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_007_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_007_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_008">
+      <pose>42.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_008_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_008_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_009">
+      <pose>47.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_009_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_009_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_010">
+      <pose>52.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_010_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_010_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_011">
+      <pose>57.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_011_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_011_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_012">
+      <pose>62.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_012_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_012_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_013">
+      <pose>67.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_013_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_013_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_014">
+      <pose>72.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_014_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_014_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_015">
+      <pose>77.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_015_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_015_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_016">
+      <pose>82.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_016_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_016_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_017">
+      <pose>87.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_017_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_017_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_018">
+      <pose>92.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_018_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_018_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+
+    <link name="panel_019">
+      <pose>97.500 0.000 0.050 0 0 0.000000</pose>
+      <collision name="panel_019_collision">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="panel_019_visual">
+        <geometry>
+          <box>
+            <size>5.000 3.000 0.100</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+  </model>
+</sdf>

@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>lidar_obstacle_sim</name>
+  <version>0.0.1</version>
+
+  <description>
+    Gazebo-based simulation package for LiDAR obstacle scenarios.
+    Provides straight, crank, and S-curve road courses with optional
+    static pylon obstacles, using 2D and 3D LiDAR-equipped robot models.
+  </description>
+
+  <maintainer email="you@example.com">Your Name</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- ======================================================= -->
+  <!-- Build tool -->
+  <!-- ======================================================= -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- ======================================================= -->
+  <!-- Core runtime dependencies (Python nodes) -->
+  <!-- ======================================================= -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+
+  <!-- ======================================================= -->
+  <!-- Gazebo integration -->
+  <!-- ======================================================= -->
+  <!-- gazebo コマンドおよび gazebo_ros_init / factory を使用 -->
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_ros_pkgs</exec_depend>
+
+  <!-- ======================================================= -->
+  <!-- TF (static_transform_publisher を launch から使用) -->
+  <!-- ======================================================= -->
+  <exec_depend>tf2_ros</exec_depend>
+
+  <!-- ======================================================= -->
+  <!-- Launch system -->
+  <!-- ======================================================= -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- ======================================================= -->
+  <!-- Export -->
+  <!-- ======================================================= -->
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+

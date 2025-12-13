@@ -71,6 +71,7 @@ class RobotNavigator(Node):
         self.declare_parameter('max_w', 1.8)
         self.declare_parameter('max_acc_v', 1.0)
         self.declare_parameter('max_acc_w', 1.5)
+        self.declare_parameter('velocity_baseline_source', 'odom')
         self.declare_parameter('pos_tol', 0.5)
         self.declare_parameter('pos_tol_exit_margin', 0.2)
         self.declare_parameter('ang_tol', 0.25)
@@ -125,6 +126,14 @@ class RobotNavigator(Node):
             )
             self.obstacle_distance_mode = 'hint'
         self.marker_frame: str = str(self.get_parameter('marker_frame').value)
+
+        velocity_baseline = str(self.get_parameter('velocity_baseline_source').value)
+        self.velocity_baseline_source: str = velocity_baseline.lower()
+        if self.velocity_baseline_source not in {'odom', 'cmd_vel'}:
+            self.get_logger().warn(
+                "velocity_baseline_source は odom/cmd_vel のみを許容します。odom を使用します。"
+            )
+            self.velocity_baseline_source = 'odom'
 
         self.log_csv_path: str = str(self.get_parameter('log_csv_path').value)
 
@@ -406,10 +415,15 @@ class RobotNavigator(Node):
             self._publish_stop_for_road_block()
             return
 
-        if not (self.current_pose and self.current_velocity and self.current_goal):
+        if not (self.current_pose and self.current_goal):
             # 必要入力が揃わない場合は停止指令
             self._publish_stop_with_throttle()
             return
+
+        if self.velocity_baseline_source == 'odom':
+            if not self.current_velocity:
+                self._publish_stop_with_throttle()
+                return
 
         cmd_vel, dbg = self.compute_time_optimal_cmd_vel(
             current_pose=self.current_pose,
@@ -442,8 +456,12 @@ class RobotNavigator(Node):
 
     def _publish_stop_with_throttle(self) -> None:
         """入力未揃い時の安全停止（5秒スロットルの WARN ログ付き）。"""
+        required_topics = [self.amcl_pose_topic_name, self.goal_topic_name]
+        if self.velocity_baseline_source == 'odom':
+            required_topics.insert(1, self.odom_topic_name)
+        topic_str = ', '.join(required_topics)
         self.get_logger().warn(
-            f"データ待ち（{self.amcl_pose_topic_name}, {self.odom_topic_name}, {self.goal_topic_name})",
+            f"データ待ち（{topic_str})",
             throttle_duration_sec=5.0,
         )
         self.cmd_pub.publish(Twist())
@@ -578,7 +596,7 @@ class RobotNavigator(Node):
     def compute_time_optimal_cmd_vel(
         self,
         current_pose: Pose,
-        current_velocity: Twist,
+        current_velocity: Optional[Twist],
         target_pose: Pose,
     ) -> Tuple[Twist, Dict[str, float]]:
         """時間最適志向の近似ロジックで cmd_vel を算出する。
@@ -586,6 +604,7 @@ class RobotNavigator(Node):
         - 角速度は PID で計算（旧実装のゲイン）
         - 線速度は角度差でスケールし、障害物距離に応じて減速/停止
         - 加速度制限は線速度の上昇側を dt*max_acc_v で制限（旧実装踏襲）
+        - 現在速度の基準は velocity_baseline_source で選択する
 
         Args:
             current_pose: 現在姿勢。
@@ -595,13 +614,16 @@ class RobotNavigator(Node):
         Returns:
             Tuple[Twist, Dict[str, float]]: 出力 Twist とデバッグ辞書。
         """
-        # 現在速度を抽出（odometryがない場合は前回のcmd_velを使用）
-        if current_velocity:
-            v_current = float(current_velocity.linear.x)
-            w_current = float(current_velocity.angular.z)
-        else:
+        if self.velocity_baseline_source == 'cmd_vel':
             v_current = float(self.prev_cmd_vel.linear.x)
             w_current = float(self.prev_cmd_vel.angular.z)
+        else:
+            if current_velocity is None:
+                self.get_logger().error('odometry が未設定のまま制御計算が呼ばれました。')
+                return Twist(), {}
+
+            v_current = float(current_velocity.linear.x)
+            w_current = float(current_velocity.angular.z)
 
         # 位置・姿勢誤差を算出
         cx, cy = current_pose.position.x, current_pose.position.y

@@ -9,6 +9,8 @@
 
 ## 主な機能
 - `/odom`・`/amcl_pose`・`/active_target` を監視し、線速度・角速度の時間最適解を近似計算。
+  - `velocity_baseline_source` で `/odom` もしくは直近の `/cmd_vel` を「現在速度」の基準として選択し、
+    `max_acc_v`・`max_acc_w` の加速度上限に対する基準に使う。
 - `obstacle_distance_mode` に応じて `/scan` もしくは `/obstacle_avoidance_hint` から前方距離を取得し、
   `safety_distance`・`min_obstacle_distance` に基づき減速／停止を制御する。
 - 角速度は PID（`kp=0.65`, `ki=0.001`, `kd=0.02`）で生成し、角度誤差に応じて線速度をスケール。
@@ -23,6 +25,7 @@ ros2 launch robot_navigator robot_navigator.launch.py \
   obstacle_hint_topic:=/obstacle_avoidance_hint cmd_vel_topic:=/cmd_vel
 ```
 - launch 引数で入出力トピックをリマップ可能。`param_file` で任意の YAML を指定できます。
+- `velocity_baseline_source` で現在速度の基準を `odom`/`cmd_vel` から選択できます。
 - `obstacle_distance_mode` を `scan` に設定すると `/scan` を購読し、`hint` の場合は
   `/obstacle_avoidance_hint` を使用します。
 
@@ -59,6 +62,7 @@ ros2 run robot_navigator robot_navigator
 | `max_w` | double | `1.8` | 角速度の上限 [rad/s]。
 | `max_acc_v` | double | `1.0` | 線加速度上限 [m/s^2]。
 | `max_acc_w` | double | `1.5` | 角加速度上限 [rad/s^2]。
+| `velocity_baseline_source` | string | `"odom"` | 現在速度の基準に使うソース。`odom` または `cmd_vel` を選択。
 | `pos_tol` | double | `0.5` | 位置許容誤差 [m]。近接時に角度誤差処理へ切替。
 | `ang_tol` | double | `0.25` | 角度許容誤差 [rad]。
 | `control_rate_hz` | double | `20.0` | 制御ループ周期 [Hz]。
@@ -97,6 +101,21 @@ ros2 run robot_navigator robot_navigator
   ばらつきが常時発生しますが、「停止中にごくまれに 1m だけジャンプする」ような突発外れ値を再現する
   仕組みは現状ありません。単発のステップ状誤差を模擬する場合は、別途一時的にオフセットを加える
   ロジックの追加が必要です。
+
+### Gazebo シミュレータと組み合わせた際の速度が頭打ちになる事象
+`lidar_obstacle_sim` の Gazebo モデルでは `/cmd_vel` を `libgazebo_ros_diff_drive` に入力し、
+`/ypspur_ros/odom` を出力する構成になっています【F:ros2_src/lidar_obstacle_sim/models/simple_robot/model.sdf†L270-L336】。
+`robot_navigator` は `velocity_baseline_source` に応じて現在速度を決め、加速度上限 `max_acc_v` と
+制御周期 `control_rate_hz` から `v_current + max_acc_v * dt` の範囲でしか線速度指令を引き上げません
+【F:ros2_src/robot_navigator/robot_navigator/robot_navigator_node.py†L613-L742】。
+`velocity_baseline_source=odom`（既定）のまま、Gazebo が配信する `/ypspur_ros/odom` の
+`twist.twist.linear.x` が常に 0 付近となる場合、`v_current` が更新されず `dt*max_acc_v`
+（既定では約 0.05m/s）に近い値で頭打ちになり、直進路でも `cmd_vel` が 0.1m/s 未満に張り付く。
+
+上記の症状が出る場合は以下を確認・選択してください。
+1. Gazebo 側の `/ypspur_ros/odom` に実速度が入っているかを確認する（`ros2 topic echo` など）。
+2. `/odom` の Twist が欠落している環境では、`velocity_baseline_source:=cmd_vel` を指定し、
+   自ノードが直近の `/cmd_vel` を現在速度として扱うよう切り替える。
 
 ## 自己位置外れ値を模擬するための実装（外部トリガ方式）
 実ロボットで報告された「停止時に突発的に 1m ほど姿勢が跳ぶ」事象を再現するため、`robot_simulator`

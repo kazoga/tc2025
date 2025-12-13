@@ -13,9 +13,12 @@ find_package(rclpy REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(gazebo_msgs REQUIRED)
+find_package(eigen3_cmake_module REQUIRED)
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(gazebo_dev REQUIRED)
 
 include_directories(${GAZEBO_INCLUDE_DIRS})
+include_directories(${EIGEN3_INCLUDE_DIRS})
 link_directories(${GAZEBO_LIBRARY_DIRS})
 
 # ============================================================
@@ -26,12 +29,13 @@ ament_target_dependencies(
   moving_obstacle_plugin
   rclcpp
   geometry_msgs
+  Eigen3
   gazebo_dev
 )
 target_link_libraries(moving_obstacle_plugin ${GAZEBO_LIBRARIES})
 ament_export_targets(moving_obstacle_plugin HAS_LIBRARY_TARGET)
 ament_export_libraries(moving_obstacle_plugin)
-ament_export_dependencies(rclcpp geometry_msgs gazebo_dev)
+ament_export_dependencies(rclcpp geometry_msgs gazebo_dev Eigen3 eigen3_cmake_module)
 
 # ============================================================
 # Install Gazebo Model Plugin

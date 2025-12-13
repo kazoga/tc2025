@@ -158,7 +158,6 @@ private:
     current_pose.Rot() = initial_orientation_;
     model_->SetWorldPose(current_pose);
     model_->SetAngularVel(ignition::math::Vector3d::Zero);
-    model_->SetAngularAccel(ignition::math::Vector3d::Zero);
   }
 
   physics::ModelPtr model_;

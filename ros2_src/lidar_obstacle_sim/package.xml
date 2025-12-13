@@ -18,6 +18,20 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <!-- ======================================================= -->
+  <!-- C++ plugin dependencies -->
+  <!-- ======================================================= -->
+  <build_depend>rclcpp</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>gazebo_dev</build_depend>
+
+  <build_export_depend>rclcpp</build_export_depend>
+  <build_export_depend>geometry_msgs</build_export_depend>
+  <build_export_depend>gazebo_dev</build_export_depend>
+
+  <exec_depend>rclcpp</exec_depend>
+  <exec_depend>gazebo_dev</exec_depend>
+
+  <!-- ======================================================= -->
   <!-- Core runtime dependencies (Python nodes) -->
   <!-- ======================================================= -->
   <exec_depend>rclpy</exec_depend>

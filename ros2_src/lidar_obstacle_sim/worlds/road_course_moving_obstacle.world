@@ -1,0 +1,168 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="road_course_world">
+    <!-- Gravity -->
+    <gravity>0 0 -9.81</gravity>
+
+    <!-- Light -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- Ground plane -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- Straight road 1: along +x direction -->
+    <model name="road_segment_1">
+      <static>true</static>
+      <pose>25 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>50 5 0.1</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>50 5 0.1</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.3 0.3 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Left turn road: along +y direction -->
+    <model name="road_segment_2">
+      <static>true</static>
+      <!-- Centered near (50,25) and rotated 90deg -->
+      <pose>50 25 0 0 0 1.5708</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>50 5 0.1</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>50 5 0.1</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.3 0.3 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Intersection pad at (50,0) to fill the inside corner -->
+    <model name="intersection_pad_corner_bottom">
+      <static>true</static>
+      <pose>50 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>5 5 0.1</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>5 5 0.1</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.3 0.3 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Right turn road: along +x again -->
+    <model name="road_segment_3">
+      <static>true</static>
+      <pose>75 50 0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>50 5 0.1</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>50 5 0.1</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.3 0.3 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Intersection pad at (50,50) to fill the inside corner -->
+    <model name="intersection_pad_corner_top">
+      <static>true</static>
+      <pose>50 50 0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>5 5 0.1</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>5 5 0.1</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.3 0.3 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Robot spawn -->
+    <include>
+      <uri>model://simple_robot</uri>
+      <name>simple_robot</name>
+      <pose>1.4 0 0.5 0 0 0</pose>
+    </include>
+
+    <!-- Moving obstacles placed along the main straight segment -->
+    <include>
+      <uri>model://moving_obstacle</uri>
+      <name>moving_obstacle_front</name>
+      <pose>60 0 0.25 0 0 3.14159</pose>
+    </include>
+
+    <include>
+      <uri>model://moving_obstacle</uri>
+      <name>moving_obstacle_back</name>
+      <pose>90 0 0.25 0 0 3.14159</pose>
+    </include>
+  </world>
+</sdf>

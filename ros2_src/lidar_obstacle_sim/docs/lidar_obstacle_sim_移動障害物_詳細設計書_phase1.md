@@ -11,7 +11,7 @@ ROS2 Foxy + Gazebo Classic 11 環境で、直線路上をロボットと逆方�
 * 障害物サイズ: 0.5 m 立方
 * 初期速度: 0.5 m/s（ロボットと逆方向へ移動）
 * 停止距離: 1.0 m（ロボットとの距離が以下になったら一度だけ停止）
-* 走行開始距離: 15.0 m（ロボットとの距離が以下になったら走行開始）
+* 走行開始距離: 20.0 m（ロボットとの距離が以下になったら走行開始）
 * plugins/ 新設、models/ 追加を許可。既存 world/launch を基に新設。
 
 ---
@@ -72,7 +72,7 @@ ROS2 Foxy + Gazebo Classic 11 環境で、直線路上をロボットと逆方�
 | `robot_pose_topic` | string | `/amcl_pose` | ロボット位置購読トピック名 |
 | `velocity` | double | `-0.5` (x 方向 m/s) | 初期直進速度。ロボットと逆方向を想定し、World X 正方向に対して負方向へ設定。必要に応じて XYZ ベクトル3要素で拡張可。|
 | `stop_distance` | double | `1.0` | ロボットとの水平距離が以下になったら停止。|
-| `start_distance` | double | `15.0` | ロボットとの水平距離が以下になったら走行開始。初期状態は静止。|
+| `start_distance` | double | `20.0` | ロボットとの水平距離が以下になったら走行開始。初期状態は静止。|
 | `use_sim_time` | bool | `true` | ROS2 ノードでシミュレーション時間を使用。|
 
 備考: 速度は Box 配置方向に合わせて SDF 側で符号を選択できるようにし、プラグイン側はベクトルをそのまま適用する。
@@ -82,14 +82,16 @@ ROS2 Foxy + Gazebo Classic 11 環境で、直線路上をロボットと逆方�
 ## 4. SDF モデル設計
 * 形状: Box（0.5 m 立方）。質量・慣性はデフォルト（物理影響は SetLinearVel によるため最小限）。
 * Collision/Visual: `size=0.5 0.5 0.5`、シンプルな色指定のみ。
-  * Plugin 埋め込み: `model.sdf` の `<plugin name="moving_obstacle_plugin" filename="libmoving_obstacle_plugin.so">` 内でパラメータを指定。
+  * Plugin 設定: `road_course_moving_obstacle.world` の `<include>` 配下で `<plugin name="moving_obstacle_plugin" filename="libmoving_obstacle_plugin.so">` を記述し、各障害物に固有の速度・開始/停止距離を与える。
   * 例
     ```xml
-    <robot_pose_topic>/amcl_pose</robot_pose_topic>
-    <velocity>-0.5 0 0</velocity>
-    <stop_distance>1.0</stop_distance>
-    <start_distance>15.0</start_distance>
-    <use_sim_time>true</use_sim_time>
+    <plugin name="moving_obstacle_plugin" filename="libmoving_obstacle_plugin.so">
+      <robot_pose_topic>/amcl_pose</robot_pose_topic>
+      <velocity>-0.5 0 0</velocity>
+      <stop_distance>1.0</stop_distance>
+      <start_distance>20.0</start_distance>
+      <use_sim_time>true</use_sim_time>
+    </plugin>
     ```
 * モデル配置: `road_course_moving_obstacle.world` で道路上の適切な位置（ロボット進行方向に対向する向き）へ `<include>` で配置。
 

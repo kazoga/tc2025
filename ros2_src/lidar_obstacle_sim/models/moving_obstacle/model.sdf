@@ -27,12 +27,5 @@
       </visual>
     </link>
 
-    <plugin name="moving_obstacle_plugin" filename="libmoving_obstacle_plugin.so">
-      <robot_pose_topic>/amcl_pose</robot_pose_topic>
-      <velocity>-0.5 0 0</velocity>
-      <stop_distance>1.0</stop_distance>
-      <start_distance>15.0</start_distance>
-      <use_sim_time>true</use_sim_time>
-    </plugin>
   </model>
 </sdf>

@@ -169,7 +169,7 @@ private:
 
   ignition::math::Vector3d velocity_{-0.5, 0.0, 0.0};
   double stop_distance_{1.0};
-  double start_distance_{15.0};
+  double start_distance_{20.0};
   std::string robot_pose_topic_{"/amcl_pose"};
   bool use_sim_time_{true};
 

@@ -25,12 +25,26 @@
       <uri>model://moving_obstacle</uri>
       <name>moving_obstacle_front</name>
       <pose>40 0 0.25 0 0 3.14159</pose>
+      <plugin name="moving_obstacle_front_plugin" filename="libmoving_obstacle_plugin.so">
+        <robot_pose_topic>/amcl_pose</robot_pose_topic>
+        <velocity>-0.4 0 0</velocity>
+        <stop_distance>1.0</stop_distance>
+        <start_distance>20.0</start_distance>
+        <use_sim_time>true</use_sim_time>
+      </plugin>
     </include>
 
     <include>
       <uri>model://moving_obstacle</uri>
       <name>moving_obstacle_back</name>
-      <pose>80 0 0.25 0 0 3.14159</pose>
+      <pose>90 0 0.25 0 0 3.14159</pose>
+      <plugin name="moving_obstacle_back_plugin" filename="libmoving_obstacle_plugin.so">
+        <robot_pose_topic>/amcl_pose</robot_pose_topic>
+        <velocity>-1.0 0 0</velocity>
+        <stop_distance>1.0</stop_distance>
+        <start_distance>20.0</start_distance>
+        <use_sim_time>true</use_sim_time>
+      </plugin>
     </include>
   </world>
 </sdf>

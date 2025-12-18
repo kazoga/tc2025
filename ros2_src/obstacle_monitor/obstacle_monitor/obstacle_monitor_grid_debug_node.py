@@ -292,7 +292,7 @@ class ObstacleMonitorGridDebugNode(Node):
         image[obstacle_mask] = (0, 0, 255)
         image[free_mask] = (255, 0, 0)
 
-        flipped = np.flipud(image)
+        flipped = np.ascontiguousarray(np.flipud(image))
 
         yaw = self._get_latest_yaw()
         if yaw is not None:

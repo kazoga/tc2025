@@ -6,16 +6,59 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+
+def _compute_contact_range(
+    spawn_position: float, obstacle_speed: float
+) -> Tuple[float, float]:
+    """移動障害物とロボットの接触想定区間を算出する.
+
+    ロボット速度 1.07 m/s、停止距離 1 m、走行開始距離 20 m を既存プラグイン
+    設定と同条件で仮定し、さらにロボット側へ 5 m の余裕を持って禁止区間を
+    拡張する。
+
+    Args:
+        spawn_position (float): 障害物の初期 x 座標[m]。
+        obstacle_speed (float): 障害物の走行速度[m/s]。符号は考慮せず絶対値を使用。
+
+    Returns:
+        Tuple[float, float]: (禁止区間開始位置, spawn 位置)。
+    """
+
+    robot_speed = 1.07
+    start_distance = 20.0
+    stop_distance = 1.0
+
+    closing_speed = robot_speed + abs(obstacle_speed)
+    if closing_speed <= 0.0:
+        return spawn_position, spawn_position
+
+    travel = max(start_distance - stop_distance, 0.0) * abs(obstacle_speed) / closing_speed
+    contact_position = spawn_position - travel
+    safety_start = contact_position - 5.0
+
+    return safety_start, spawn_position
 
 
 def generate_launch_description() -> LaunchDescription:
     """移動障害物シナリオ用の LaunchDescription を生成する."""
+
+    enable_pylons_arg = DeclareLaunchArgument(
+        'enable_pylons',
+        default_value='true',
+        description='Enable random pylon spawning: true / false',
+    )
+
+    enable_pylons = LaunchConfiguration('enable_pylons')
+
     pkg_share = get_package_share_directory('lidar_obstacle_sim')
     pkg_prefix = get_package_prefix('lidar_obstacle_sim')
 
@@ -41,8 +84,10 @@ def generate_launch_description() -> LaunchDescription:
         'gazebo',
         '--verbose',
         world_path,
-        '-s', 'libgazebo_ros_init.so',
-        '-s', 'libgazebo_ros_factory.so',
+        '-s',
+        'libgazebo_ros_init.so',
+        '-s',
+        'libgazebo_ros_factory.so',
     ]
 
     gazebo_env: Dict[str, str] = {
@@ -57,6 +102,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     simple_robot_path = os.path.join(pkg_share, 'models', 'simple_robot', 'model.sdf')
+    pylon_model_path = os.path.join(pkg_share, 'models', 'pylon', 'model.sdf')
 
     spawn_robot_node = Node(
         package='gazebo_ros',
@@ -74,6 +120,27 @@ def generate_launch_description() -> LaunchDescription:
             '0.5',
         ],
         output='screen',
+    )
+
+    contact_range_front = _compute_contact_range(40.0, 0.4)
+    contact_range_back = _compute_contact_range(90.0, 1.0)
+
+    spawn_pylons_node = Node(
+        package='lidar_obstacle_sim',
+        executable='random_pylon_spawner.py',
+        name='spawn_random_pylons',
+        output='screen',
+        condition=IfCondition(enable_pylons),
+        parameters=[
+            {'model_path': pylon_model_path},
+            {'road_type': 'straight'},
+            {'road_width': 3.0},
+            {'min_longitudinal_spacing': 5.0},
+            {'longitudinal_margin': 1.0},
+            {'restricted_start_s_list': [contact_range_front[0], contact_range_back[0]]},
+            {'restricted_end_s_list': [contact_range_front[1], contact_range_back[1]]},
+            {'restricted_half_width_list': [0.4, 0.4]},
+        ],
     )
 
     fake_amcl_node = Node(
@@ -109,8 +176,10 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     return LaunchDescription([
+        enable_pylons_arg,
         gazebo_process,
         spawn_robot_node,
+        spawn_pylons_node,
         fake_amcl_node,
         map_to_odom_tf,
         base_to_mid360_tf,

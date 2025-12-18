@@ -17,7 +17,7 @@ import math
 import os
 import random
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import rclpy
 from gazebo_msgs.srv import SpawnEntity
@@ -118,6 +118,9 @@ class RandomPylonSpawner(Node):
         self.declare_parameter('road_width', 5.0)         # [m]
         self.declare_parameter('min_lateral_gap', 1.0)    # [m] 必ず残す隙間
         self.declare_parameter('pylon_block_half', 0.25)  # [m] パイロンが塞ぐ半幅（概念上）
+        self.declare_parameter('restricted_start_s_list', [])
+        self.declare_parameter('restricted_end_s_list', [])
+        self.declare_parameter('restricted_half_width_list', [])
 
         # Gazebo 原点周辺を避ける安全距離[m]
         self.origin_safety_radius = 5.0
@@ -135,6 +138,8 @@ class RandomPylonSpawner(Node):
         self.pylon_block_half = self._get_parameter_as_float('pylon_block_half')
         # S 字路のみ長手方向の密度を抑えるための保持確率。
         self.scurve_density_keep_prob = 0.5
+
+        self.restricted_ranges = self._build_restricted_ranges()
 
         self.get_logger().info(
             f'Road type: {self.road_type}, width: {self.road_width:.2f} m'
@@ -208,6 +213,89 @@ class RandomPylonSpawner(Node):
                 f'{name} を float に変換できないため 0.0 を使用します。'
             )
         return 0.0
+
+    def _build_restricted_ranges(self) -> List[Tuple[float, float, float]]:
+        """長手方向にパイロンを禁止する区間情報を組み立てる.
+
+        Returns:
+            List[Tuple[float, float, float]]: (start_s, end_s, half_width) のリスト。
+        """
+
+        starts = self._get_parameter_as_float_array('restricted_start_s_list')
+        ends = self._get_parameter_as_float_array('restricted_end_s_list')
+        half_widths = self._get_parameter_as_float_array('restricted_half_width_list')
+
+        max_len = min(len(starts), len(ends), len(half_widths))
+        ranges: List[Tuple[float, float, float]] = []
+
+        for i in range(max_len):
+            start = starts[i]
+            end = ends[i]
+            half_width = abs(half_widths[i])
+
+            if end < start:
+                start, end = end, start
+
+            if half_width <= 0.0:
+                self.get_logger().warn(
+                    'restricted_half_width_list の値が 0 以下のためスキップします。'
+                )
+                continue
+
+            ranges.append((start, end, half_width))
+
+        if ranges:
+            message = '長手方向のパイロン禁止区間を適用します: '
+            for start, end, half_width in ranges:
+                message += f'[s={start:.2f}〜{end:.2f}m, ±{half_width:.2f}m], '
+            self.get_logger().info(message.rstrip(', '))
+
+        return ranges
+
+    def _get_restricted_half_width(self, s: float) -> Optional[float]:
+        """指定距離が禁止区間内なら半幅を返す."""
+
+        for start, end, half_width in self.restricted_ranges:
+            if start <= s <= end:
+                return half_width
+        return None
+
+    def _get_parameter_as_float_array(self, name: str) -> List[float]:
+        """配列パラメータを float リストとして取得する.
+
+        Args:
+            name (str): 取得するパラメータ名。
+
+        Returns:
+            List[float]: 変換済みの float 配列。変換できない要素は無視する。
+        """
+
+        parameter = self.get_parameter(name)
+        parameter_value = parameter.get_parameter_value()
+        param_type = getattr(parameter_value, 'type', None)
+        if param_type is None:
+            param_type = getattr(parameter, 'type_', None)
+
+        if param_type == Parameter.Type.DOUBLE_ARRAY:
+            return list(parameter_value.double_array_value)
+        if param_type == Parameter.Type.INTEGER_ARRAY:
+            return [float(v) for v in parameter_value.integer_array_value]
+        if param_type == Parameter.Type.STRING_ARRAY:
+            floats: List[float] = []
+            for text in parameter_value.string_array_value:
+                try:
+                    floats.append(float(text))
+                except ValueError:
+                    self.get_logger().warn(
+                        f'{name} の要素を float に変換できませんでした: "{text}"'
+                    )
+            return floats
+
+        try:
+            return [float(v) for v in parameter.value]
+        except (TypeError, ValueError):
+            self.get_logger().warn(f'{name} を配列として解釈できません。空リストを使用します。')
+        return []
 
     # ------------------ 中心線上の位置計算 ------------------
 
@@ -376,6 +464,8 @@ class RandomPylonSpawner(Node):
             for s in axis_positions:
                 center_x, center_y, yaw = self._pose_on_centerline(s)
 
+                restricted_half_width = self._get_restricted_half_width(s)
+
                 # 1〜3 本ランダムに配置しつつ、隙間 1m を残す。
                 num_pylons = random.randint(1, 3)
                 arrangement = self._choose_arrangement(num_pylons)
@@ -415,6 +505,21 @@ class RandomPylonSpawner(Node):
                             '隙間 1m を確保できないためセンター 1 本に縮退します。'
                         )
                         lateral_offsets = [0.0]
+
+                if restricted_half_width is not None:
+                    filtered_offsets = [
+                        offset
+                        for offset in lateral_offsets
+                        if abs(offset) >= restricted_half_width
+                    ]
+
+                    if not filtered_offsets:
+                        self.get_logger().debug(
+                            '移動障害物との接触想定区間のためパイロン配置をスキップします。'
+                        )
+                        continue
+
+                    lateral_offsets = filtered_offsets
 
                 # 各オフセットごとにパイロンをスポーン
                 for lateral_offset in lateral_offsets:

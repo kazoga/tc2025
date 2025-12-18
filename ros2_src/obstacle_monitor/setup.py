@@ -36,7 +36,7 @@ setup(
     version='0.2.0',
     packages=[package_name],
     data_files=data_files,
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'tf-transformations'],
     zip_safe=True,
     maintainer='auto',
     maintainer_email='auto@example.com',

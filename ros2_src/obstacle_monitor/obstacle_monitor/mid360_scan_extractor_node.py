@@ -30,7 +30,7 @@ class Mid360ScanExtractorNode(Node):
         self.declare_parameter('angle_min_deg', -180.0)
         self.declare_parameter('angle_max_deg', 180.0)
         self.declare_parameter('angle_increment_deg', 0.5)
-        self.declare_parameter('frame_id', '/mid360_frame')
+        self.declare_parameter('frame_id', 'mid360_frame')
         self.declare_parameter('input_topic', '/mid360/livox/lidar')
         self.declare_parameter('output_topic', '/mid360/scan')
 
@@ -41,7 +41,9 @@ class Mid360ScanExtractorNode(Node):
         angle_min_deg = float(self.get_parameter('angle_min_deg').value)
         angle_max_deg = float(self.get_parameter('angle_max_deg').value)
         angle_increment_deg = float(self.get_parameter('angle_increment_deg').value)
-        self.frame_id: str = str(self.get_parameter('frame_id').value)
+        self.frame_id: str = self._normalize_frame_id(
+            str(self.get_parameter('frame_id').value)
+        )
         input_topic = str(self.get_parameter('input_topic').value)
         output_topic = str(self.get_parameter('output_topic').value)
 
@@ -123,6 +125,18 @@ class Mid360ScanExtractorNode(Node):
         scan.range_max = float(self.max_radius)
         scan.ranges = [float(r) for r in ranges]
         return scan
+
+    def _normalize_frame_id(self, frame_id: str) -> str:
+        """tf2 仕様に従う frame_id へ正規化する."""
+
+        if frame_id.startswith('/'):
+            normalized = frame_id.lstrip('/')
+            self.get_logger().warn(
+                f'frame_id に先頭スラッシュが含まれていたため除去しました: '
+                f"'{frame_id}' -> '{normalized}'"
+            )
+            return normalized
+        return frame_id
 
 
 def main() -> None:

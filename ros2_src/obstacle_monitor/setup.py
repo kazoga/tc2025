@@ -49,7 +49,6 @@ setup(
             'laser_scan_simulator = obstacle_monitor.laser_scan_simulator_node:main',
             'mid360_scan_extractor = obstacle_monitor.mid360_scan_extractor_node:main',
             'mid360_points2d_extractor = obstacle_monitor.mid360_points2d_extractor_node:main',
-            'obstacle_monitor_grid_debug = obstacle_monitor.obstacle_monitor_grid_debug_node:main',
         ],
     },
 )

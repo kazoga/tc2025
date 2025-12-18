@@ -36,7 +36,7 @@ setup(
     version='0.2.0',
     packages=[package_name],
     data_files=data_files,
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'tf-transformations'],
     zip_safe=True,
     maintainer='auto',
     maintainer_email='auto@example.com',
@@ -46,6 +46,10 @@ setup(
     entry_points={
         'console_scripts': [
             'obstacle_monitor = obstacle_monitor.obstacle_monitor_node:main',
+            (
+                'obstacle_monitor_grid_debug = '
+                'obstacle_monitor.obstacle_monitor_grid_debug_node:main'
+            ),
             'laser_scan_simulator = obstacle_monitor.laser_scan_simulator_node:main',
             'mid360_scan_extractor = obstacle_monitor.mid360_scan_extractor_node:main',
             'mid360_points2d_extractor = obstacle_monitor.mid360_points2d_extractor_node:main',

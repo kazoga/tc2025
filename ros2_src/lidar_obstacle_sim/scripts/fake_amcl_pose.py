@@ -56,7 +56,7 @@ class FakeAmclPose(Node):
         self.pub.publish(out)
 
         transform = TransformStamped()
-        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.stamp = out.header.stamp
         transform.header.frame_id = self.odom_frame_id
         transform.child_frame_id = 'base_link'
         transform.transform.translation.x = msg.pose.pose.position.x

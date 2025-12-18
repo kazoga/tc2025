@@ -28,7 +28,7 @@ class Mid360Points2DExtractorNode(Node):
         self.declare_parameter('height_max_m', 1.0)
         self.declare_parameter('max_radius_m', 20.0)
         self.declare_parameter('range_min_m', 0.05)
-        self.declare_parameter('frame_id', '/mid360_frame')
+        self.declare_parameter('frame_id', 'mid360_frame')
         self.declare_parameter('input_topic', '/mid360/livox/lidar')
         self.declare_parameter('output_topic', '/mid360/points2d')
 

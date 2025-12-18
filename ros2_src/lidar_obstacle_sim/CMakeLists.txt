@@ -1,12 +1,16 @@
 cmake_minimum_required(VERSION 3.5)
 project(lidar_obstacle_sim)
 
-# Python3 を使うパッケージなので C++ 標準は特に不要だが、
-# 他の依存がある場合のために残しておく
+# ============================================================
+# Compiler settings
+# ============================================================
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
 endif()
 
+# ============================================================
+# Dependencies
+# ============================================================
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
@@ -24,27 +28,29 @@ link_directories(${GAZEBO_LIBRARY_DIRS})
 # ============================================================
 # Build Gazebo Model Plugin
 # ============================================================
-add_library(moving_obstacle_plugin SHARED plugins/moving_obstacle_plugin.cpp)
+add_library(moving_obstacle_plugin SHARED
+  plugins/moving_obstacle_plugin.cpp
+)
+
 ament_target_dependencies(
   moving_obstacle_plugin
   rclcpp
   geometry_msgs
-  Eigen3
   gazebo_dev
+  Eigen3
 )
-target_link_libraries(moving_obstacle_plugin ${GAZEBO_LIBRARIES})
-ament_export_targets(moving_obstacle_plugin HAS_LIBRARY_TARGET)
-ament_export_libraries(moving_obstacle_plugin)
-ament_export_dependencies(rclcpp geometry_msgs gazebo_dev Eigen3 eigen3_cmake_module)
+
+target_link_libraries(
+  moving_obstacle_plugin
+  ${GAZEBO_LIBRARIES}
+)
 
 # ============================================================
 # Install Gazebo Model Plugin
 # ============================================================
 install(
   TARGETS moving_obstacle_plugin
-  ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
-  RUNTIME DESTINATION bin
 )
 
 # ============================================================
@@ -56,7 +62,7 @@ install(
 )
 
 # ============================================================
-# Install Worlds (6 files)
+# Install Worlds
 # ============================================================
 install(
   DIRECTORY worlds
@@ -64,7 +70,7 @@ install(
 )
 
 # ============================================================
-# Install Models (全モデルフォルダごとコピー)
+# Install Models
 # ============================================================
 install(
   DIRECTORY models
@@ -72,7 +78,7 @@ install(
 )
 
 # ============================================================
-# Install Python Nodes / Scripts
+# Install Python Scripts
 # ============================================================
 install(
   PROGRAMS

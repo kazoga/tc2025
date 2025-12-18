@@ -33,8 +33,8 @@ def generate_launch_description() -> LaunchDescription:
     )
     frame_id_arg = DeclareLaunchArgument(
         'frame_id',
-        default_value='/mid360_frame',
-        description='出力フレームID (デフォルト: /mid360_frame)',
+        default_value='mid360_frame',
+        description='出力フレームID (デフォルト: mid360_frame)',
     )
     input_topic_arg = DeclareLaunchArgument(
         'input_topic',

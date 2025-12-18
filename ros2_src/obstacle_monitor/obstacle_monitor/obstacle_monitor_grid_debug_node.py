@@ -203,7 +203,7 @@ class ObstacleMonitorGridDebugNode(Node):
         stamp = Time.from_msg(msg.header.stamp)
         dt = self._compute_dt(stamp, is_scan=True)
 
-        transform = self._lookup_transform(msg.header.frame_id, stamp)
+        transform = self._lookup_transform(msg.header.frame_id, Time())
         if transform is None:
             return
 
@@ -231,7 +231,7 @@ class ObstacleMonitorGridDebugNode(Node):
         stamp = Time.from_msg(msg.header.stamp)
         dt = self._compute_dt(stamp, is_scan=False)
 
-        transform = self._lookup_transform(msg.header.frame_id, stamp)
+        transform = self._lookup_transform(msg.header.frame_id, Time())
         if transform is None:
             return
 

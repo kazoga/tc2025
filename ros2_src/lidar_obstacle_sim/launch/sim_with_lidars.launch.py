@@ -77,9 +77,16 @@ def generate_launch_description() -> LaunchDescription:
         name='fake_amcl_pose',
         output='screen',
         parameters=[
-            {'odom_topic': '/odom'},
+            {'odom_topic': '/ypspur_ros/odom'},
             {'amcl_topic': '/amcl_pose'},
         ],
+    )
+
+    map_to_odom_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_map_to_odom',
+        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
     )
 
     base_to_mid360_tf = Node(
@@ -100,6 +107,7 @@ def generate_launch_description() -> LaunchDescription:
         gazebo_process,
         spawn_pylons_node,
         fake_amcl_node,
+        map_to_odom_tf,
         base_to_mid360_tf,
         base_to_laser_tf,
     ])

@@ -7,6 +7,9 @@ Phase2 では legacy の避障ロジックを ROS2 へ移植し、`/sensor_viewe
 （`sensor_msgs/Image`）で LaserScan の可視化も提供します。動作確認用に
 `laser_scan_simulator` ノードも同梱しています。
 
+Phase3 では `obstacle_monitor_grid_debug` ノードを追加し、UTM-30LX と Mid-360
+の入力を rolling grid に統合した OpenCV 可視化を提供します。
+
 ## 主な機能
 - `/scan` の ±90° 以内の点群からロボット幅帯を抽出し、左右の回避オフセットを算出。
 - `front_cone_half_deg`・`stop_dist_m` を用いた前方くさび判定で閉塞状況を検知。
@@ -23,6 +26,13 @@ ros2 launch obstacle_monitor obstacle_monitor.launch.py \
 ```
 - launch 引数で購読・配信トピック名を remap できます。
 - `params/default.yaml` が既定パラメータを提供します。
+
+```bash
+ros2 launch obstacle_monitor obstacle_monitor_grid_debug.launch.py \
+  scan_topic:=/scan mid_topic:=/mid360/points2d amcl_topic:=/amcl_pose
+```
+- rolling grid デバッグノードを起動し、OpenCV ウィンドウに統合マップを表示します。
+- `mid_topic` は `mid360_points2d_extractor` の `output_topic` に合わせて指定してください。
 
 ### 実行ファイルを直接起動
 ```bash

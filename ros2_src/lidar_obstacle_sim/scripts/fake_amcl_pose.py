@@ -12,7 +12,7 @@ from rclpy.node import Node
 
 
 class FakeAmclPose(Node):
-    """Gazebo の /odom をそのまま /amcl_pose として publish するノード."""
+    """Gazebo の /ypspur_ros/odom をそのまま /amcl_pose として publish するノード."""
 
     def __init__(self) -> None:
         super().__init__('fake_amcl_pose')

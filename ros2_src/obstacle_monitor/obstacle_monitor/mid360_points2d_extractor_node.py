@@ -28,7 +28,7 @@ class Mid360Points2DExtractorNode(Node):
         self.declare_parameter('height_max_m', 1.0)
         self.declare_parameter('max_radius_m', 20.0)
         self.declare_parameter('range_min_m', 0.05)
-        self.declare_parameter('frame_id', 'mid360_frame')
+        self.declare_parameter('frame_id', '/mid360_frame')
         self.declare_parameter('input_topic', '/mid360/livox/lidar')
         self.declare_parameter('output_topic', '/mid360/points2d')
 
@@ -36,9 +36,7 @@ class Mid360Points2DExtractorNode(Node):
         self.height_max = float(self.get_parameter('height_max_m').value)
         self.max_radius = float(self.get_parameter('max_radius_m').value)
         self.range_min = float(self.get_parameter('range_min_m').value)
-        self.frame_id: str = self._normalize_frame_id(
-            str(self.get_parameter('frame_id').value)
-        )
+        self.frame_id: str = str(self.get_parameter('frame_id').value)
         input_topic = str(self.get_parameter('input_topic').value)
         output_topic = str(self.get_parameter('output_topic').value)
 
@@ -97,28 +95,6 @@ class Mid360Points2DExtractorNode(Node):
         header.stamp = cloud_in.header.stamp
         header.frame_id = self.frame_id
         return point_cloud2.create_cloud_xyz32(header, points)
-
-    def _normalize_frame_id(self, frame_id: str) -> str:
-        """tf2 仕様に合うよう frame_id を正規化する.
-
-        tf2 では先頭にスラッシュを付与したフレーム名は無効となるため、
-        誤って指定された場合は除去して警告ログを出す。
-
-        Args:
-            frame_id (str): 入力されたフレームID.
-
-        Returns:
-            str: 先頭スラッシュを除去したフレームID.
-        """
-
-        if frame_id.startswith('/'):
-            normalized = frame_id.lstrip('/')
-            self.get_logger().warn(
-                f'frame_id に先頭スラッシュが含まれていたため除去しました: '
-                f"'{frame_id}' -> '{normalized}'"
-            )
-            return normalized
-        return frame_id
 
 
 def main() -> None:

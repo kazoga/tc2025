@@ -9,7 +9,7 @@ Livox MID360 由来の `/mid360/livox/lidar` (sensor_msgs/msg/PointCloud2) を�
 ## 2. 入出力仕様
 - 入力トピック: `/mid360/livox/lidar` (sensor_msgs/msg/PointCloud2)
 - 出力トピック: `/mid360/scan` (sensor_msgs/msg/LaserScan)
-- フレームID: `mid360_frame` (入力と同一)
+- フレームID: `/mid360_frame` (入力と同一)
 - QoS: SensorDataQoS (`qos_profile_sensor_data`) を購読・配信双方で使用
 - 更新タイミング: 入力受信ごとに即時処理して publish
 
@@ -23,7 +23,7 @@ Livox MID360 由来の `/mid360/livox/lidar` (sensor_msgs/msg/PointCloud2) を�
 | `angle_min_deg` | double | -180.0 | LaserScan の開始角度 [deg] |
 | `angle_max_deg` | double | 180.0 | LaserScan の終了角度 [deg] |
 | `angle_increment_deg` | double | 0.5 | LaserScan の角度分解能 [deg] |
-| `frame_id` | string | `mid360_frame` | 出力 LaserScan の frame_id |
+| `frame_id` | string | `/mid360_frame` | 出力 LaserScan の frame_id |
 | `input_topic` | string | `/mid360/livox/lidar` | PointCloud2 購読先 |
 | `output_topic` | string | `/mid360/scan` | LaserScan 配信先 |
 
@@ -57,7 +57,7 @@ Livox MID360 の点群を高さ・水平半径でフィルタし、Z=0 に正規
 
 - 入力トピック: `/mid360/livox/lidar` (sensor_msgs/msg/PointCloud2)
 - 出力トピック: `/mid360/points2d` (sensor_msgs/msg/PointCloud2)
-- フレームID: `mid360_frame` (入力と同一)
+- フレームID: `/mid360_frame` (入力と同一)
 - QoS: SensorDataQoS (`qos_profile_sensor_data`) を購読・配信双方で使用
 - 更新タイミング: 入力受信ごとに即時処理して publish
 
@@ -68,7 +68,7 @@ Livox MID360 の点群を高さ・水平半径でフィルタし、Z=0 に正規
 | `height_max_m` | double | 1.0 | 抽出する高さ範囲の上限 [m] |
 | `max_radius_m` | double | 20.0 | 水平方向に残す最大半径 [m] |
 | `range_min_m` | double | 0.05 | これ未満の近距離点を除外する下限 [m] |
-| `frame_id` | string | `mid360_frame` | 出力 PointCloud2 の frame_id |
+| `frame_id` | string | `/mid360_frame` | 出力 PointCloud2 の frame_id |
 | `input_topic` | string | `/mid360/livox/lidar` | PointCloud2 購読先 |
 | `output_topic` | string | `/mid360/points2d` | PointCloud2 配信先 |
 

@@ -14,6 +14,7 @@
   <depend>cv_bridge</depend>
   <depend>route_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
 
   <!-- Python deps for Foxy -->
   <exec_depend>python3-numpy</exec_depend>

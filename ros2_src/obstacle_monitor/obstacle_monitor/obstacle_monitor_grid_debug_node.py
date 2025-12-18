@@ -15,7 +15,6 @@ from rclpy.time import Time
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from sensor_msgs.msg import LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
-import tf_transformations
 from tf2_ros import Buffer, LookupException, TransformException, TransformListener
 
 
@@ -305,10 +304,9 @@ class ObstacleMonitorGridDebugNode(Node):
     @staticmethod
     def _quaternion_to_yaw(quat) -> float:
         """クォータニオンから yaw [rad] を算出する."""
-        _, _, yaw = tf_transformations.euler_from_quaternion(
-            [quat.x, quat.y, quat.z, quat.w]
-        )
-        return yaw
+        siny_cosp = 2.0 * (quat.w * quat.z + quat.x * quat.y)
+        cosy_cosp = 1.0 - 2.0 * (quat.y * quat.y + quat.z * quat.z)
+        return math.atan2(siny_cosp, cosy_cosp)
 
     def _get_latest_yaw(self) -> Optional[float]:
         """最新の amcl_pose から yaw を取得する."""

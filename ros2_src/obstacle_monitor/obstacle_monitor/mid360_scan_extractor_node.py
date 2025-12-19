@@ -4,16 +4,21 @@
 
 高さ・半径のフィルタを通した点群を擬似的な LiDAR スキャンに変換する。
 ``/mid360/livox/lidar`` を購読し、``/mid360/scan`` を Publish する。
+さらに、laserScanViewer 相当の画像を生成して publish する。
 """
 
 import math
 from typing import Iterable, List
 
+import cv2
+import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan, PointCloud2
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy, qos_profile_sensor_data
+from sensor_msgs.msg import Image, LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
+
+from cv_bridge import CvBridge
 
 
 class Mid360ScanExtractorNode(Node):
@@ -34,6 +39,12 @@ class Mid360ScanExtractorNode(Node):
         self.declare_parameter('frame_id', '/mid360_frame')
         self.declare_parameter('input_topic', '/mid360/livox/lidar')
         self.declare_parameter('output_topic', '/mid360/scan')
+        self.declare_parameter('viewer_topic', '/mid360/scan_viewer')
+        self.declare_parameter('viewer_x_range_m', 20.0)
+        self.declare_parameter('viewer_y_range_m', 5.0)
+        self.declare_parameter('viewer_pixel_pitch', 40)
+        self.declare_parameter('viewer_grid_interval_m', 5.0)
+        self.declare_parameter('robot_width_m', 0.8)
 
         self.height_min = float(self.get_parameter('height_min_m').value)
         self.height_max = float(self.get_parameter('height_max_m').value)
@@ -46,6 +57,7 @@ class Mid360ScanExtractorNode(Node):
         self.frame_id: str = str(self.get_parameter('frame_id').value)
         input_topic = str(self.get_parameter('input_topic').value)
         output_topic = str(self.get_parameter('output_topic').value)
+        viewer_topic = str(self.get_parameter('viewer_topic').value)
 
         self.angle_min = math.radians(angle_min_deg)
         self.angle_max = math.radians(angle_max_deg)
@@ -67,6 +79,18 @@ class Mid360ScanExtractorNode(Node):
             output_topic,
             qos_profile_sensor_data,
         )
+        qos_rel_volatile_shallow = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=1,
+        )
+        self.pub_viewer = self.create_publisher(
+            Image,
+            viewer_topic,
+            qos_rel_volatile_shallow,
+        )
+
+        self.bridge = CvBridge()
 
         self.get_logger().info('mid360_scan_extractor を起動しました。')
 
@@ -105,6 +129,7 @@ class Mid360ScanExtractorNode(Node):
 
         scan_msg = self._build_scan_msg(msg, ranges)
         self.pub_scan.publish(scan_msg)
+        self._publish_scan_image(scan_msg)
 
     def _iterate_points(self, msg: PointCloud2) -> Iterable[List[float]]:
         """PointCloud2 から (x, y, z) を取得するジェネレータ."""
@@ -126,6 +151,81 @@ class Mid360ScanExtractorNode(Node):
         scan.range_max = float(self.max_radius)
         scan.ranges = [float(r) for r in ranges]
         return scan
+
+    def _publish_scan_image(self, scan: LaserScan) -> None:
+        """LaserScan を 2D 画像化して publish する."""
+        x_range_m = float(self.get_parameter('viewer_x_range_m').value)
+        y_range_m = float(self.get_parameter('viewer_y_range_m').value)
+        pixel_pitch = int(self.get_parameter('viewer_pixel_pitch').value)
+        grid_interval_m = float(self.get_parameter('viewer_grid_interval_m').value)
+        robot_width = float(self.get_parameter('robot_width_m').value)
+
+        x_min = 0.0
+        x_max = x_range_m
+        y_min = -1.0 * y_range_m
+        y_max = y_range_m
+
+        width = int((y_max - y_min) * pixel_pitch)
+        height = int((x_max - x_min) * pixel_pitch)
+        grid = np.full((height, width, 3), 255, dtype=np.uint8)
+
+        # ロボット幅ライン（黒）
+        center_px = int(width / 2)
+        offset_px = int(robot_width * pixel_pitch)
+        for line_x in (center_px - offset_px, center_px + offset_px):
+            if 0 <= line_x < width:
+                cv2.line(
+                    grid,
+                    (line_x, height),
+                    (line_x, 0),
+                    (0, 0, 0),
+                    thickness=2,
+                    lineType=cv2.LINE_AA,
+                )
+
+        # 縦方向の補助線（5mごと）
+        if grid_interval_m > 0.0:
+            max_step = int(math.floor(x_max / grid_interval_m))
+            for idx in range(1, max_step + 1):
+                x_pos = grid_interval_m * idx
+                py = height - int(round(x_pos * pixel_pitch))
+                if 0 <= py < height:
+                    cv2.line(
+                        grid,
+                        (0, py),
+                        (width, py),
+                        (220, 220, 220),
+                        thickness=1,
+                        lineType=cv2.LINE_AA,
+                    )
+
+        # 点群の描画（赤）
+        points_xy = self._scan_ranges_to_xy(scan)
+        for x, y in points_xy:
+            if x_min < x < x_max and y_min < y < y_max:
+                px = int(width / 2) - int(y * pixel_pitch)
+                py = height - int(x * pixel_pitch)
+                if 0 <= px < width and 0 <= py < height:
+                    cv2.circle(grid, (px, py), 3, (0, 0, 255), -1)
+
+        img_msg = self.bridge.cv2_to_imgmsg(grid, encoding='bgr8')
+        img_msg.header.stamp = scan.header.stamp
+        img_msg.header.frame_id = scan.header.frame_id
+        self.pub_viewer.publish(img_msg)
+
+    def _scan_ranges_to_xy(self, scan: LaserScan) -> np.ndarray:
+        """LaserScan の ranges を XY 点群へ変換する."""
+        points = []
+        angle = float(scan.angle_min)
+        for r in scan.ranges:
+            if math.isfinite(r):
+                x = r * math.cos(angle)
+                y = r * math.sin(angle)
+                points.append((x, y))
+            angle += float(scan.angle_increment)
+        if not points:
+            return np.empty((0, 2), dtype=np.float32)
+        return np.asarray(points, dtype=np.float32)
 
 
 def main() -> None:

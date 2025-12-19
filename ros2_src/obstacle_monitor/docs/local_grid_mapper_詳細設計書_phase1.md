@@ -51,16 +51,22 @@ UTM-30LX（/scan）と Mid-360（/mid360/points2d）を base_link 座標系へ�
 - 点のサイズ、描画範囲、背景色は既存 `_publish_scan_image()` に合わせる。
 
 ## 6. 更新タイミング
-- `/scan` または `/mid360/points2d` を受信したタイミングで描画を更新する。
+- センサコールバックはデータ受信・変換・キャッシュ更新のみを行う。
+- 描画および `/grid_viewer` への publish は **timer 駆動（10Hz）** で行う。
 - 未受信側の点群は直近のキャッシュを使用する。
 
 ## 7. 例外処理
 - tf 取得失敗時は warn ログを出力し、当該処理をスキップする。
 - 片方の点群が未受信の場合でも、受信済み点群のみ描画する。
 
-## 8. 実行例
+## 8. 並行実行と排他制御
+- `MultiThreadedExecutor` を使用し、センサ受信とタイマ更新を並行実行する。
+- `MutuallyExclusiveCallbackGroup` をセンサ・タイマの各コールバックに明示指定する。
+- 共有データ（点群キャッシュ、header）へのアクセスは `threading.Lock` で保護し、
+  コールバックグループの排他に依存しない整合性を確保する。
+
+## 9. 実行例
 ```bash
 ros2 launch obstacle_monitor local_grid_mapper.launch.py \
   scan_topic:=/scan mid_topic:=/mid360/points2d target_frame:=base_link
 ```
-

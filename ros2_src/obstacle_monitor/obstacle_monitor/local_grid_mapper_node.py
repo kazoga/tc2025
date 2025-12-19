@@ -7,12 +7,15 @@ laserScanViewer 相当の描画仕様で画像を生成して /grid_viewer に p
 """
 
 import math
+import threading
 from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
 import rclpy
 from rclpy.duration import Duration
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
@@ -53,17 +56,22 @@ class LocalGridMapperNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # ---- Pub/Sub ----
+        self.sensor_callback_group = MutuallyExclusiveCallbackGroup()
+        self.timer_callback_group = MutuallyExclusiveCallbackGroup()
+
         self.sub_scan = self.create_subscription(
             LaserScan,
             scan_topic,
             self._on_scan,
             qos_profile_sensor_data,
+            callback_group=self.sensor_callback_group,
         )
         self.sub_mid = self.create_subscription(
             PointCloud2,
             mid_topic,
             self._on_mid,
             qos_profile_sensor_data,
+            callback_group=self.sensor_callback_group,
         )
         qos_rel_volatile_shallow = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -78,9 +86,16 @@ class LocalGridMapperNode(Node):
 
         self.bridge = CvBridge()
 
+        self.data_lock = threading.Lock()
         self.last_scan_points: List[Tuple[float, float]] = []
         self.last_mid_points: List[Tuple[float, float]] = []
         self.last_header: Optional[Header] = None
+
+        self.viewer_timer = self.create_timer(
+            0.1,
+            self._on_timer_publish,
+            callback_group=self.timer_callback_group,
+        )
 
         self.get_logger().info('local_grid_mapper を起動しました。')
 
@@ -115,11 +130,9 @@ class LocalGridMapperNode(Node):
             points.append((base_x, base_y))
             angle += msg.angle_increment
 
-        self.last_scan_points = points
-        self.last_header = self._make_header(msg.header.stamp)
-        self._publish_scan_image(
-            self.last_scan_points, self.last_mid_points, self.last_header
-        )
+        with self.data_lock:
+            self.last_scan_points = points
+            self.last_header = self._make_header(msg.header.stamp)
 
     def _on_mid(self, msg: PointCloud2) -> None:
         """Mid-360 の点群を受信し base_link へ変換して描画する."""
@@ -143,11 +156,22 @@ class LocalGridMapperNode(Node):
             base_y = ty + sin_yaw * x + cos_yaw * y
             points.append((float(base_x), float(base_y)))
 
-        self.last_mid_points = points
-        self.last_header = self._make_header(msg.header.stamp)
-        self._publish_scan_image(
-            self.last_scan_points, self.last_mid_points, self.last_header
-        )
+        with self.data_lock:
+            self.last_mid_points = points
+            self.last_header = self._make_header(msg.header.stamp)
+
+    def _on_timer_publish(self) -> None:
+        """タイマ周期で描画と publish を行う."""
+        with self.data_lock:
+            if self.last_header is None:
+                return
+            scan_points = list(self.last_scan_points)
+            mid_points = list(self.last_mid_points)
+            header = Header()
+            header.stamp = self.last_header.stamp
+            header.frame_id = self.last_header.frame_id
+
+        self._publish_scan_image(scan_points, mid_points, header)
 
     def _make_header(self, stamp) -> Header:
         """base_link 基準のヘッダを生成する."""
@@ -268,7 +292,9 @@ def main() -> None:
     rclpy.init()
     node = LocalGridMapperNode()
     try:
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor()
+        executor.add_node(node)
+        executor.spin()
     finally:
         node.destroy_node()
         rclpy.shutdown()

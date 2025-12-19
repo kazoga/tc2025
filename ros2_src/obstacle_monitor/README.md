@@ -10,6 +10,9 @@ Phase2 では legacy の避障ロジックを ROS2 へ移植し、`/sensor_viewe
 Phase3 では `obstacle_monitor_grid_debug` ノードを追加し、UTM-30LX と Mid-360
 の入力を rolling grid に統合した OpenCV 可視化を提供します。
 
+Phase3 では `local_grid_mapper` ノードを追加し、`/scan` と `/mid360/points2d` を
+base_link 座標系へ揃えた可視化画像（`/grid_viewer`）を提供します。
+
 ## 主な機能
 - `/scan` の ±90° 以内の点群からロボット幅帯を抽出し、左右の回避オフセットを算出。
 - `front_cone_half_deg`・`stop_dist_m` を用いた前方くさび判定で閉塞状況を検知。
@@ -34,6 +37,12 @@ ros2 launch obstacle_monitor obstacle_monitor_grid_debug.launch.py \
 - rolling grid デバッグノードを起動し、OpenCV ウィンドウに統合マップを表示します。
 - `mid_topic` は `mid360_points2d_extractor` の `output_topic` に合わせて指定してください。
 
+```bash
+ros2 launch obstacle_monitor local_grid_mapper.launch.py \
+  scan_topic:=/scan mid_topic:=/mid360/points2d target_frame:=base_link
+```
+- base_link 座標系に揃えた点群を `/grid_viewer` へ可視化配信します。
+
 ### 実行ファイルを直接起動
 ```bash
 ros2 run obstacle_monitor obstacle_monitor
@@ -48,12 +57,14 @@ ros2 run obstacle_monitor obstacle_monitor
 | `/scan` | `sensor_msgs/LaserScan` | LiDAR 入力。SensorDataQoS（BEST_EFFORT / VOLATILE / depth=1）。 |
 | `/amcl_pose` | `geometry_msgs/PoseWithCovarianceStamped` | 現在姿勢。viewer で目標線を描画するために利用。 | RELIABLE / VOLATILE / depth=10 |
 | `/active_target` | `geometry_msgs/PoseStamped` | 現在の目標位置。viewer の矢印描画に利用。 | RELIABLE / VOLATILE / depth=10 |
+| `/mid360/points2d` | `sensor_msgs/PointCloud2` | Mid-360 の擬似2D点群。`local_grid_mapper` で利用。 | SensorDataQoS |
 
 ### Publisher
 | 名称 | 型 | 説明 | QoS |
 |------|----|------|-----|
 | `/obstacle_avoidance_hint` | `route_msgs/ObstacleAvoidanceHint` | front_blocked・front_clearance_m・左右オフセット[m] を配信。 | BEST_EFFORT / VOLATILE / depth=1 |
 | `/sensor_viewer` | `sensor_msgs/Image` | LaserScanViewer 相当のデバッグ画像（bgr8）。 | BEST_EFFORT / VOLATILE / depth=1 |
+| `/grid_viewer` | `sensor_msgs/Image` | `/scan` と `/mid360/points2d` を色分けした可視化画像（bgr8）。 | RELIABLE / VOLATILE / depth=1 |
 
 > サービス・アクションは提供しません。
 

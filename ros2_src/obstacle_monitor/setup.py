@@ -53,6 +53,7 @@ setup(
             'laser_scan_simulator = obstacle_monitor.laser_scan_simulator_node:main',
             'mid360_scan_extractor = obstacle_monitor.mid360_scan_extractor_node:main',
             'mid360_points2d_extractor = obstacle_monitor.mid360_points2d_extractor_node:main',
+            'local_grid_mapper = obstacle_monitor.local_grid_mapper_node:main',
         ],
     },
 )

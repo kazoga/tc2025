@@ -25,6 +25,7 @@ class Mid360ScanExtractorNode(Node):
         # ---- Parameters ----
         self.declare_parameter('height_min_m', 0.1)
         self.declare_parameter('height_max_m', 1.0)
+        self.declare_parameter('sensor_height_m', 1.005)
         self.declare_parameter('max_radius_m', 20.0)
         self.declare_parameter('range_min_m', 0.05)
         self.declare_parameter('angle_min_deg', -180.0)
@@ -36,6 +37,7 @@ class Mid360ScanExtractorNode(Node):
 
         self.height_min = float(self.get_parameter('height_min_m').value)
         self.height_max = float(self.get_parameter('height_max_m').value)
+        self.sensor_height = float(self.get_parameter('sensor_height_m').value)
         self.max_radius = float(self.get_parameter('max_radius_m').value)
         self.range_min = float(self.get_parameter('range_min_m').value)
         angle_min_deg = float(self.get_parameter('angle_min_deg').value)
@@ -88,7 +90,8 @@ class Mid360ScanExtractorNode(Node):
         ranges = [math.inf] * self.bin_count
 
         for x, y, z in self._iterate_points(msg):
-            if z < self.height_min or z > self.height_max:
+            absolute_height = z + self.sensor_height
+            if absolute_height < self.height_min or absolute_height > self.height_max:
                 continue
             r = math.hypot(x, y)
             if r < self.range_min or r > self.max_radius:

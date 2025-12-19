@@ -71,8 +71,11 @@ Livox MID360 の点群を高さ・水平半径でフィルタし、Z=0 に正規
 
 - 入力トピック: `/mid360/livox/lidar` (sensor_msgs/msg/PointCloud2)
 - 出力トピック: `/mid360/points2d` (sensor_msgs/msg/PointCloud2)
+- 画像トピック: `/mid360/points2d_viewer` (sensor_msgs/msg/Image)
 - フレームID: `/mid360_frame` (入力と同一)
-- QoS: SensorDataQoS (`qos_profile_sensor_data`) を購読・配信双方で使用
+- QoS:
+  - PointCloud2: SensorDataQoS (`qos_profile_sensor_data`)
+  - 画像: Reliable / Volatile / depth=1
 - 更新タイミング: 入力受信ごとに即時処理して publish
 
 ### 7.1 パラメータ
@@ -85,6 +88,12 @@ Livox MID360 の点群を高さ・水平半径でフィルタし、Z=0 に正規
 | `frame_id` | string | `/mid360_frame` | 出力 PointCloud2 の frame_id |
 | `input_topic` | string | `/mid360/livox/lidar` | PointCloud2 購読先 |
 | `output_topic` | string | `/mid360/points2d` | PointCloud2 配信先 |
+| `viewer_topic` | string | `/mid360/points2d_viewer` | 点群画像の配信先 |
+| `viewer_x_range_m` | double | 20.0 | 画像化する前方距離範囲 [m] |
+| `viewer_y_range_m` | double | 5.0 | 画像化する左右距離範囲 [m] |
+| `viewer_pixel_pitch` | int | 40 | 画像化の解像度 [pix/m] |
+| `viewer_grid_interval_m` | double | 5.0 | 進行方向の補助線間隔 [m] |
+| `robot_width_m` | double | 0.8 | ロボット幅ライン描画用の幅 [m] |
 
 ### 7.2 処理フロー
 1. ノード初期化時に高さ・半径・入出力トピックを declare し、高さ範囲が逆転している場合は交換する。
@@ -93,6 +102,10 @@ Livox MID360 の点群を高さ・水平半径でフィルタし、Z=0 に正規
    2. `height_min_m <= z <= height_max_m` かつ `range_min_m <= sqrt(x^2 + y^2) <= max_radius_m` を満たす点のみ残す。
    3. 残した点の z を 0.0 に置き換えて新しい PointCloud2 を生成する。
    4. ヘッダは入力の stamp を用い、frame_id はパラメータの値に設定して publish する。
+   5. 抽出点群を画像化し、以下の条件で publish する。
+      - 表示範囲: x 0..`viewer_x_range_m`, y ±`viewer_y_range_m`
+      - 解像度: `viewer_pixel_pitch` [pix/m]
+      - ロボット幅ラインと進行方向の補助線（`viewer_grid_interval_m` 間隔）を描画する。
 
 ### 7.3 テスト方針
 - ROS 環境外では単体テストが困難なため、静的検証に留める。

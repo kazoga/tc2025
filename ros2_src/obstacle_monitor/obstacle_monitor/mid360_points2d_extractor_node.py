@@ -26,6 +26,7 @@ class Mid360Points2DExtractorNode(Node):
         # ---- Parameters ----
         self.declare_parameter('height_min_m', 0.1)
         self.declare_parameter('height_max_m', 1.0)
+        self.declare_parameter('sensor_height_m', 1.005)
         self.declare_parameter('max_radius_m', 20.0)
         self.declare_parameter('range_min_m', 0.05)
         self.declare_parameter('frame_id', 'mid360_frame')
@@ -34,6 +35,7 @@ class Mid360Points2DExtractorNode(Node):
 
         self.height_min = float(self.get_parameter('height_min_m').value)
         self.height_max = float(self.get_parameter('height_max_m').value)
+        self.sensor_height = float(self.get_parameter('sensor_height_m').value)
         self.max_radius = float(self.get_parameter('max_radius_m').value)
         self.range_min = float(self.get_parameter('range_min_m').value)
         self.frame_id: str = str(self.get_parameter('frame_id').value)
@@ -69,7 +71,8 @@ class Mid360Points2DExtractorNode(Node):
         """PointCloud2 を受信して擬似2Dの PointCloud2 を生成する."""
         points = []
         for x, y, z in self._iterate_points(msg):
-            if z < self.height_min or z > self.height_max:
+            absolute_height = z + self.sensor_height
+            if absolute_height < self.height_min or absolute_height > self.height_max:
                 continue
             radius = math.hypot(x, y)
             if radius < self.range_min or radius > self.max_radius:
